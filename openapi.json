@@ -553,7 +553,7 @@
           "groups"
         ],
         "summary": "Submit an MLS Commit",
-        "description": "`mls_message` is an MLS PublicMessage (Commit or Proposal), so the hub can parse it. The hub reads the epoch from the MLS framing (there is no client epoch field) and accepts the Commit only for the group's current epoch, advancing it by one. Membership changes are derived from the Add/Remove/Update proposals; each added member's gim-core credential (type 0xF001) is validated against their DeviceList, members are identified by user ID + device ID from their credentials, and `group.member_added` / `group.member_removed` events carry the `user_id`. The optional Welcome is delivered as a `welcome` event to `welcome_recipients`.\n\nResubmitting the same Commit (same hash) returns the original result with `duplicate: true` and emits nothing. Any other Commit for a past epoch fails with 409 `stale_epoch`.",
+        "description": "`mls_message` is an MLS PublicMessage (Commit or Proposal), so the hub can parse it. The hub reads the epoch from the MLS framing (there is no client epoch field) and accepts the Commit only for the group's current epoch, advancing it by one. Membership changes are derived from the Add/Remove/Update proposals; each added member's gim-core credential (type 0xF001) is validated against their DeviceList, members are identified by user ID + device ID from their credentials, and `group.member_added` / `group.member_removed` events carry the `user_id`. The optional Welcome is delivered as a `welcome` event to `welcome_recipients`.\n\nResubmitting the same Commit (same hash) returns the original result with `duplicate: true` and emits nothing. Any other Commit for a past epoch fails with 409 `stale_epoch`.\n\nFor a group owned by another hub (federation), this hub forwards the Commit to the owning hub, which sequences it; the response is the owner's result and the local replica already holds the Commit. Added members on other hubs get their Welcome through their own hub. This needs the caller's hosting record listing this hub (403 `hosting_record_required`); when the owning hub refuses the request the result is 502 `peer_refused`, when it cannot be reached 503 `peer_unavailable` with `Retry-After` (retry the same Commit: it is idempotent by hash).",
         "operationId": "submit_commit",
         "parameters": [
           {
@@ -619,7 +619,7 @@
             }
           },
           "403": {
-            "description": "Caller is not a member of the group (`not_member`), or group policy forbids the change (`forbidden`)",
+            "description": "Caller is not a member of the group (`not_member`), group policy forbids the change (`forbidden`), or the group is owned by another hub and the caller has no valid hosting record listing this hub (`hosting_record_required`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -657,6 +657,26 @@
                 }
               }
             }
+          },
+          "502": {
+            "description": "The owning hub of the group refused the request (`peer_refused`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The owning hub of the group is unreachable (`peer_unavailable`); retry after `Retry-After` seconds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -672,7 +692,7 @@
           "messages"
         ],
         "summary": "List group messages",
-        "description": "Commits and application messages with `seq >= from_seq`, ascending.",
+        "description": "Commits and application messages with `seq >= from_seq`, ascending. For a group owned by another hub (federation), this hub serves its replica, which holds the log from the Commit that added this hub's first member on: a lower `from_seq` returns messages starting there.",
         "operationId": "list_messages",
         "parameters": [
           {
@@ -774,7 +794,7 @@
           "messages"
         ],
         "summary": "Send an application message",
-        "description": "Stores the opaque MLS message, assigns the next `seq` and emits a `message` event to every member device except the sender. The epoch is read from the MLS framing; a message for another epoch fails with 409 `stale_epoch`.\n\nResending the same `client_id` from the same device returns the stored message with 200 and emits nothing. A decoded message larger than the hub limit (default 262144 bytes) fails with 413.",
+        "description": "Stores the opaque MLS message, assigns the next `seq` and emits a `message` event to every member device except the sender. The epoch is read from the MLS framing; a message for another epoch fails with 409 `stale_epoch`.\n\nResending the same `client_id` from the same device returns the stored message with 200 and emits nothing. A decoded message larger than the hub limit (default 262144 bytes) fails with 413.\n\nFor a group owned by another hub (federation), this hub forwards the message to the owning hub, which assigns the `seq`; the response is the sequenced message. This needs the caller's hosting record listing this hub (403 `hosting_record_required`); when the owning hub refuses the request the result is 502 `peer_refused`, when it cannot be reached 503 `peer_unavailable` with `Retry-After` (retry with the same `client_id`).",
         "operationId": "send_message",
         "parameters": [
           {
@@ -840,7 +860,7 @@
             }
           },
           "403": {
-            "description": "Caller is not a member of the group (`not_member`)",
+            "description": "Caller is not a member of the group (`not_member`), or the group is owned by another hub and the caller has no valid hosting record listing this hub (`hosting_record_required`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -871,6 +891,26 @@
           },
           "413": {
             "description": "Payload too large (`payload_too_large`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The owning hub of the group refused the request (`peer_refused`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The owning hub of the group is unreachable (`peer_unavailable`); retry after `Retry-After` seconds",
             "content": {
               "application/json": {
                 "schema": {

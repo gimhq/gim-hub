@@ -31,6 +31,27 @@ pub fn insert_pending(
     Ok(tx.last_insert_rowid())
 }
 
+/// Stores a Welcome delivered by the owning hub for one recipient device,
+/// deduplicated by `(message_id, user_id, device_id)`. Returns false for a
+/// duplicate.
+pub fn insert_delivered(
+    tx: &Transaction<'_>,
+    user_id: &str,
+    device_id: &str,
+    gid: &str,
+    payload: &str,
+    message_id: &str,
+    now: i64,
+) -> Result<bool, DbError> {
+    let inserted = tx.execute(
+        "INSERT OR IGNORE INTO pending_welcomes \
+         (user_id, device_id, gid, payload, created_at, message_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![user_id, device_id, gid, payload, now, message_id],
+    )?;
+    Ok(inserted > 0)
+}
+
 /// Unacknowledged Welcomes of one device, oldest first, at most `limit`.
 pub fn list_pending(
     conn: &Connection,
@@ -123,6 +144,26 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+
+        assert!(db
+            .write(|tx| insert_delivered(tx, "u1", "d1", "g3", "{}", "m1", 50))
+            .await
+            .unwrap());
+        assert!(!db
+            .write(|tx| insert_delivered(tx, "u1", "d1", "g3", "{}", "m1", 60))
+            .await
+            .unwrap());
+        assert!(db
+            .write(|tx| insert_delivered(tx, "u1", "d2", "g3", "{}", "m1", 60))
+            .await
+            .unwrap());
+        assert_eq!(
+            db.read(|c| list_pending(c, "u1", "d1", 10))
+                .await
+                .unwrap()
+                .len(),
+            2
         );
     }
 }

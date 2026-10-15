@@ -600,6 +600,25 @@ Credential validation of remote members (Commits submitted locally or via `Submi
 - DeviceLists of all users involved are made fresh (§5.1) **before** the write transaction; the
   transaction re-reads them from the database.
 
+Resolved in H3-T5:
+
+- **Identity from the credential.** For a `SubmitCommit` Add whose `kp_ref` is in neither ledger,
+  the expected identity is `(user_id of the credential's root key, device_id of the leaf's MLS
+  signature key)`; `check_leaf_credential` then verifies it against that user's DeviceList.
+- **Freshness and refetch.** Before the transaction the hub calls `device_list_for` for the
+  committer (if it sets own leaves) and every added user, then runs the credential checks against
+  the stored lists (`users`, else `remote_device_lists`) and calls `refetch_after_failure` for
+  every user whose check failed. The transaction repeats the checks authoritatively. A remote list
+  that cannot be fetched and is not cached answers 503 `peer_unavailable` (`INTERNAL` to a member
+  hub); any other missing list fails closed (`device_list_unknown`).
+- **Local events.** Events (`message`, membership, `welcome`) go only to devices of local users
+  (a row in `users`); remote members get theirs from their own hub. Welcome recipients that are
+  local get the pending Welcome and event as on a single hub; for the others one
+  `DeliverWelcome` per (recipient hub, recipient user) is queued, with the Commit's `message_id`.
+- **Fan-out records.** The hosting records of the roster and of the added users are resolved
+  (cached) before the transaction; the transaction reads the stored rows. A user without a stored
+  record contributes no hub.
+
 ### 5.4 Replicas on member hubs
 
 A member hub keeps a replica of every remote-owned group with a local member, so the client API
@@ -628,6 +647,21 @@ locally and survives an owner outage for reads.
 - History: a replica serves `GET /v2/groups/{gid}/messages` only from `replica_from_seq` on; a
   `from_seq` below it returns messages starting at `replica_from_seq` (the client could not
   decrypt earlier messages anyway). This is the only client-visible difference in reads (§6.7).
+
+Resolved in H3-T5:
+
+- **Join point.** A replica created (or replaced) from a `DeliverWelcome` starts just before the
+  Commit that produced it: `last_seq = snapshot.seq - 1`, `epoch = snapshot.epoch - 1`,
+  `replica_from_seq = snapshot.seq`, roster = snapshot. The Commit itself then arrives through
+  `Deliver` (queued right behind the Welcome, §7.2) and emits `group.member_added` to the new
+  local members as on a single hub. The Commit's `message` event goes to the previous local
+  members only: devices the Commit adds are excluded even when the snapshot already lists them.
+- "Local members" are roster devices of users with a `users` row. Replica roster rows have no
+  leaf index (the owner validates Commits).
+- With federation enabled, a gid whose prefix is another hub is always handled as a replica; with
+  federation disabled every gid is handled locally (single-hub behaviour).
+- Not implemented in H3-T5: deleting detached replicas in the retention task (the retention loop
+  is outside this subtask's files, and `groups` has no detach timestamp yet).
 
 ## 6. Flows
 
@@ -774,6 +808,34 @@ column with a unique index); for each recipient device that is an active device 
 recipient: create/replace the replica (§5.4), insert the pending Welcome and emit `welcome` with
 the snapshot's `epoch`/`seq` and the request's `sender_device_id`. Unknown or inactive devices are
 skipped; the response is `{}` either way.
+
+Resolved in H3-T5:
+
+- **Member hub forwarding (§6.3, §6.5).** Checks in order: replica exists (404) and the device is
+  in its roster (403 `not_member`); for Commits every Add `kp_ref` is in this hub's ledger (400);
+  the sender has a hosting record listing this hub (403 `hosting_record_required`). Transport
+  failures map as: `PeerRefused` (local policy or the owner refused `Hello`) → 502 `peer_refused`;
+  every other transport failure → 503 `peer_unavailable`. The owner's `Error.message` becomes the
+  400 message. The stale-epoch catch-up is a gap fill bounded to 2 s; without
+  `Error.current_epoch` the replica's epoch is reported.
+- **Owner answers.** `SubmitCommit`/`SubmitMessage` for a gid this hub does not own → `INVALID`;
+  caller not listed for the sender → `UNAUTHORIZED`; sender not in the roster → `UNAUTHORIZED` +
+  `not_member`. Sequencing errors keep their client code in `client_code` (`validation_failed`,
+  `not_member`, `forbidden`, `not_found`, `stale_epoch`); a stale epoch is `CONFLICT` for Commits
+  and `STALE_EPOCH` for application messages, with `current_epoch`.
+- **Gap fill.** One fill per (hub, gid) at a time, started by a gap in `Deliver` or in a submit
+  response; it pages `FetchLog` (limit 256) from `last_seq + 1` until `complete` or no progress.
+  A failed fill is retried when the next `Deliver` for the gid arrives (the outbox resends
+  unacknowledged entries).
+- **`FetchLog` (owner).** A gid this hub does not own → `UNAUTHORIZED`; unknown group →
+  `NOT_FOUND`. "Listed" is first checked against the stored hosting records of the current and
+  removed members; only if none lists the caller are they refreshed one by one (§3.7). `limit = 0`
+  means 256; `next_seq` = last returned seq + 1 (or `from_seq`); `complete = next_seq > last_seq`.
+- **`DeliverWelcome`.** Nothing is created when no recipient device is an active device here.
+- **Outbox source (§7.7).** `ops::deliver::GroupSource` builds `deliver` entries from `messages` +
+  `commit_membership`, `device_list` entries with `ops::device_list::local_device_list`, and the
+  resync nudge from the newest message of every owned group with a member whose stored hosting
+  record lists the peer. `refresh_peer` stays the default no-op.
 
 ### 6.7 Client-visible behaviour
 

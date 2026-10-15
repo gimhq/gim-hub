@@ -10,8 +10,8 @@ use std::{
 use gim_hub_api::{AppState, Clock, Config, HubIdentity};
 use gim_hub_db::Db;
 use gim_hub_s2s::{
-    outbox::NoSource, FederationConfig, FederationService, Hosting, HostingSettings, Outbox,
-    OutboxConfig,
+    FederationConfig, FederationService, GroupService, GroupSource, Hosting, HostingSettings,
+    Outbox, OutboxConfig,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -61,9 +61,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => (None, None),
     };
     // Registered last: the handlers keep a copy of the final state.
-    let _claims = federation
+    let _ops = federation
         .as_ref()
-        .map(|service| register_identity_ops(&state, service));
+        .map(|service| register_ops(&state, service));
 
     let listener = tokio::net::TcpListener::bind(state.config.listen).await?;
     tracing::info!(listen = %state.config.listen, "gim-hub listening");
@@ -144,17 +144,22 @@ fn enable_federation(
 }
 
 /// Registers the remote identity ops (`GetDeviceList`, `NotifyDeviceList`,
-/// `ClaimKeyPackage`) with handlers on `state`. Returns the claim handler,
-/// which must be kept alive.
-fn register_identity_ops(
+/// `ClaimKeyPackage`) and the group ops (`SubmitCommit`, `SubmitMessage`,
+/// `Deliver`, `DeliverWelcome`, `FetchLog`) with handlers on `state`.
+/// Returns the claim and group handlers, which must be kept alive.
+fn register_ops(
     state: &AppState,
     service: &FederationService,
-) -> Arc<gim_hub_s2s::ClaimService> {
+) -> (Arc<gim_hub_s2s::ClaimService>, Arc<GroupService>) {
     gim_hub_api::handlers::register_device_list_ops(state, service);
-    gim_hub_api::handlers::register_claim_op(state, service)
+    (
+        gim_hub_api::handlers::register_claim_op(state, service),
+        gim_hub_api::handlers::register_group_ops(state, service),
+    )
 }
 
-/// Starts the S2S outbox worker, sending through `federation`.
+/// Starts the S2S outbox worker, sending through `federation`. Entries are
+/// built from the group log and the `users` table ([`GroupSource`]).
 fn start_outbox(
     config: &FederationConfig,
     state: &AppState,
@@ -163,7 +168,7 @@ fn start_outbox(
     let outbox = Outbox::new(
         state.db.clone(),
         Arc::new(federation.clone()),
-        Arc::new(NoSource),
+        Arc::new(GroupSource::new(state.hub.hub_id().clone())),
         OutboxConfig::from(config),
     );
     outbox.start(Some(federation.transport().subscribe()));
@@ -408,7 +413,7 @@ mod tests {
         let mut state = hub.state.clone();
         let (republish, outbox) = enable_federation(&mut state, &federation, &config(&allowlist));
         assert!(state.federation.is_enabled());
-        drop(register_identity_ops(&state, &federation));
+        drop(register_ops(&state, &federation));
         republish.unwrap().abort();
         outbox.shutdown();
         federation.shutdown();

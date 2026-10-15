@@ -11,6 +11,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_hosting.sql"),
     include_str!("../migrations/0003_remote_identity.sql"),
     include_str!("../migrations/0004_outbox.sql"),
+    include_str!("../migrations/0005_group_federation.sql"),
 ];
 
 /// Schema version after all migrations.
@@ -63,6 +64,7 @@ mod tests {
             [
                 "auth_challenges",
                 "blobs",
+                "commit_membership",
                 "devices",
                 "events",
                 "group_members",

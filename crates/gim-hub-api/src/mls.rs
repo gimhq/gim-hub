@@ -8,7 +8,9 @@
 
 use std::collections::BTreeSet;
 
-use gim_hub_identity::{CredentialError, DeviceList, GimCredential, UserId};
+use gim_hub_identity::{
+    parse_public_key, CredentialError, DeviceId, DeviceList, GimCredential, UserId,
+};
 use openmls::prelude::{
     tls_codec::{Deserialize, Serialize, VLBytes},
     ContentType, Credential, KeyPackageIn, MlsMessageBodyIn, MlsMessageIn, ProposalIn,
@@ -246,6 +248,20 @@ pub fn check_leaf_credential(
         return Err(reject("identity_mismatch"));
     }
     Ok(())
+}
+
+/// The `(user_id, device_id)` a leaf's gim credential claims: the user of
+/// its root key and the device of its MLS signature key. Not a validation:
+/// [`check_leaf_credential`] still has to accept the leaf for that
+/// identity. Used for members added by Commits from other hubs, whose claim
+/// ledger the owning hub cannot see (docs/federation.md §5.3).
+pub fn credential_identity(leaf: &LeafCredential) -> Option<(String, String)> {
+    let credential = GimCredential::decode_typed(leaf.credential_type, &leaf.content).ok()?;
+    let device_key = parse_public_key(&leaf.signature_key).ok()?;
+    Some((
+        UserId::from_root_pubkey(credential.root_pubkey()).to_string(),
+        DeviceId::from_device_pubkey(&device_key).to_string(),
+    ))
 }
 
 #[cfg(test)]

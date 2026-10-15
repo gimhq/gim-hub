@@ -12,7 +12,7 @@
 //!   the `GetHostingRecord` op (§4).
 //! - [`outbox`]: the durable outbound queue and its per-peer worker (§7).
 //! - [`ops`]: remote DeviceLists and cross-hub KeyPackage claims (§5.1,
-//!   §5.2).
+//!   §5.2), and group federation (§5.3, §5.4, §6).
 
 pub mod config;
 pub mod federation;
@@ -29,7 +29,11 @@ pub use federation::{
 pub use hosting::{Hosting, HostingError, HostingSettings, Purpose};
 pub use ops::{
     claim::{ClaimOutcome, ClaimService, LocalClaims},
+    deliver::GroupSource,
     device_list::{DeviceListEvents, DeviceLists},
+    owner_of,
+    submit::SubmitError,
+    GroupService, Groups,
 };
 pub use outbox::{Outbox, OutboxConfig, OutboxSender, OutboxSource};
 pub use policy::{AllowlistPolicy, Decision, FederationPolicy, OpKind, PolicyError};
