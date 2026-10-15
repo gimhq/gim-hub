@@ -9,6 +9,7 @@ use std::{
 };
 
 use gim_hub_db::Db;
+use gim_hub_s2s::{Disabled, Federation, Hosting};
 
 use crate::{config::Config, hub::HubIdentity, notifier::Notifier};
 
@@ -20,6 +21,26 @@ pub struct AppState {
     pub hub: HubIdentity,
     pub notifier: Notifier,
     pub clock: Clock,
+    /// Hub-to-hub federation; [`Disabled`] unless `GIM_HUB_FEDERATION=true`.
+    pub federation: Arc<dyn Federation>,
+    /// Hosting records: local records, the remote cache and resolution.
+    pub hosting: Hosting,
+}
+
+impl AppState {
+    /// State with federation disabled.
+    pub fn new(db: Db, config: Config, hub: HubIdentity, clock: Clock) -> Self {
+        let hosting = Hosting::local(db.clone(), hub.hub_id().clone(), clock.as_now());
+        Self {
+            db,
+            config: Arc::new(config),
+            hub,
+            notifier: Notifier::default(),
+            clock,
+            federation: Arc::new(Disabled),
+            hosting,
+        }
+    }
 }
 
 /// Source of the current time in milliseconds since the Unix epoch. Tests
@@ -50,6 +71,12 @@ impl Clock {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
         }
+    }
+
+    /// This clock as a hosting-record time source.
+    pub fn as_now(&self) -> gim_hub_s2s::hosting::Now {
+        let clock = self.clone();
+        Arc::new(move || clock.now_ms())
     }
 
     /// Moves a manual clock forward by `ms`.

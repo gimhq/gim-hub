@@ -9,11 +9,10 @@ use gim_hub_db::{
     users::{self, Device, StoredDeviceList},
     Db,
 };
+use gim_hub_s2s::{Federation, Hosting, HostingSettings};
 use tempfile::TempDir;
 
-use crate::{
-    auth::token_hash, config::Config, hub::HubIdentity, notifier::Notifier, state::Clock, AppState,
-};
+use crate::{auth::token_hash, config::Config, hub::HubIdentity, state::Clock, AppState};
 
 /// Start time of the manual test clock (ms since the Unix epoch).
 pub const TEST_NOW: i64 = 1_760_479_200_000;
@@ -48,17 +47,31 @@ impl TestHub {
             std::fs::write(config.hub_key_path(), seed).expect("write hub key");
         }
         let hub = HubIdentity::load_or_create(&config.hub_key_path()).expect("hub key");
-        let state = AppState {
-            db: Db::open_in_memory().expect("in-memory db"),
-            config: Arc::new(config),
+        let state = AppState::new(
+            Db::open_in_memory().expect("in-memory db"),
+            config,
             hub,
-            notifier: Notifier::default(),
-            clock: Clock::manual(TEST_NOW),
-        };
+            Clock::manual(TEST_NOW),
+        );
         Self {
             state,
             _data_dir: data_dir,
         }
+    }
+
+    /// Replaces federation (default [`gim_hub_s2s::Disabled`]) with
+    /// `federation`, e.g. a fake peer; hosting resolution then sends through
+    /// it (without a DHT).
+    pub fn set_federation(&mut self, federation: Arc<dyn Federation>) {
+        self.state.federation = federation.clone();
+        self.state.hosting = Hosting::new(
+            self.state.db.clone(),
+            self.state.hub.hub_id().clone(),
+            federation,
+            None,
+            HostingSettings::default(),
+            self.state.clock.as_now(),
+        );
     }
 
     /// The client API router on this state.

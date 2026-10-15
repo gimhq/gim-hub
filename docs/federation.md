@@ -339,6 +339,17 @@ DeviceList)
 - 200 same body as PUT (`hosted` is about this hub); 404 `not_found` (no record, or expired);
   503 `peer_unavailable` (resolution needed a peer that did not answer and the DHT had nothing).
 
+Resolved in H3-T2:
+
+- A record larger than 8192 decoded bytes is 413 `payload_too_large` (as for recovery backups);
+  a `hosting_record` that is not base64, or a record whose `seq` exceeds 2^63-1, is 400
+  `invalid_hosting_record`. The message names the identity error code:
+  `invalid hosting record (<code>)`, e.g. `(user_id_mismatch)` or `(lifetime_out_of_range)`.
+- `POST .../hosting-entry` needs a JSON body; `{}` means priority 0.
+- `GET .../hosting-record` is "rate limited like recovery-backup GET": both document 429 and
+  neither enforces a limit yet. `hosted` is false for users that are not local. A local user's
+  record is served even when it no longer lists this hub.
+
 ### 4.3 Storage
 
 ```sql
@@ -364,6 +375,13 @@ CREATE INDEX hosting_records_expires_at ON hosting_records(expires_at);
 - Expired remote cache rows are deleted by the hourly retention task; expired local rows are kept
   (they still order future uploads) with `hosted = 0`.
 
+Resolved in H3-T2: two columns are added to `hosting_records`, `expiring_notified_seq` and
+`expiring_notified_at`, so that `hosting_record.expiring` (§4.1) is emitted once per record `seq`
+and at most once per 24 hours per user, across restarts. The check runs in the hourly retention
+task (also when federation is disabled), only for hosted rows (`hosted = 1`, so a user that moved
+away is not warned), right after the retention step that deletes expired cache rows and sets
+`hosted = 0` on expired local rows.
+
 ### 4.4 DHT publication and validator
 
 - Key `/gim/user/<user_id>`, value = `SignedHostingRecord` bytes; kad record `expires` = the
@@ -380,6 +398,12 @@ CREATE INDEX hosting_records_expires_at ON hosting_records(expires_at);
      `Ok(false)` keeps, any `Err` rejects;
   4. inbound puts only: the sender is a bound peer.
 - Key `/gim/hub/<hub_id>`: §3.5 validator. Any other key prefix is rejected.
+
+Resolved in H3-T2: besides the republish tick (immediately at startup, then every
+`GIM_HUB_DHT_REPUBLISH_HOURS`), hosted records whose current version was never published
+(`published_at IS NULL`, e.g. the put failed for lack of peers) are published again whenever a
+peer hub comes up. The failure metric is a counter on the hosting service
+(`Hosting::publish_failures`).
 
 ### 4.5 Lookup and cache
 
@@ -398,6 +422,26 @@ CREATE INDEX hosting_records_expires_at ON hosting_records(expires_at);
    replaces a cached higher one) with `fetched_at = now`.
 
 Concurrent resolutions of the same `user_id` are coalesced (single flight).
+
+Resolved in H3-T2:
+
+- Step 3 asks the hubs in order (caller first for `purpose = authorize`, then the cached record's
+  hubs by `(priority, hub_id)`, this hub skipped) and stops at the first valid record. A hub
+  answers `GetHostingRecord` only for its local users (never from its cache, so a stale cache is
+  not passed on); otherwise `NOT_FOUND`.
+- Step 4: the transport's `dht_get` returns the collected values at once, so the 5 s limit is a
+  timeout on the whole lookup (nothing is used on timeout); it stops early at 3 valid records.
+- Step 5: a network record replaces the cached row only if it `supersedes` it (`Ok(true)`); an
+  equal-seq conflict keeps the cached row. When the network returns the cached record itself,
+  only `fetched_at` is refreshed. When nothing newer is found, an unexpired cached row is
+  returned even if stale. The client API answers 503 `peer_unavailable` (with `Retry-After: 5`)
+  only when no valid record is known and at least one asked hub did not answer; otherwise 404.
+- Stored records were verified on insert, so loading one only decodes it and compares
+  `expires_at` with the current time.
+- Helpers for the other subtasks (`gim_hub_s2s::Hosting`): `require_hosting_record(user_id)`
+  (local, unexpired, lists this hub; else `HostingError::Required`, mapped to 403
+  `hosting_record_required`), `resolve(user_id)` and `resolve_for(user_id,
+  Purpose::Authorize(caller))`.
 
 ## 5. Remote users, devices and groups
 
