@@ -15,9 +15,9 @@ use gim_hub_identity::{HubId, SigningKey};
 use gim_hub_proto::s2s::{
     s2s_request::Op, s2s_response::Result as OpOutput, CopyPendingWelcomesRequest,
     CopyPendingWelcomesResponse, DeliverResponse, DeliverWelcomeRequest, DeliverWelcomeResponse,
-    ErrorCode, GroupAck, NotifyDeviceListResponse, NotifyHostingRecordRequest,
-    NotifyHostingRecordResponse, S2sRequest, S2sResponse, SeedReplicaRequest, SeedReplicaResponse,
-    SequencedMessage,
+    ErrorCode, GetHostingRecordResponse, GroupAck, NotifyDeviceListResponse,
+    NotifyHostingRecordRequest, NotifyHostingRecordResponse, S2sRequest, S2sResponse,
+    SeedReplicaRequest, SeedReplicaResponse, SequencedMessage,
 };
 use prost::Message;
 
@@ -37,6 +37,10 @@ struct FakePeer {
     invalid_gids: Mutex<HashSet<String>>,
     /// Answer `DeliverWelcome` with `UNAUTHORIZED`.
     reject_welcomes: AtomicBool,
+    /// Answer this many more `DeliverWelcome`s with `UNAUTHORIZED`.
+    stale_welcomes: AtomicUsize,
+    /// Hosting records served by `GetHostingRecord`, by user.
+    records: Mutex<HashMap<String, Vec<u8>>>,
 }
 
 impl FakePeer {
@@ -84,7 +88,24 @@ impl FakePeer {
             Op::DeliverWelcome(_) if self.reject_welcomes.load(Ordering::SeqCst) => {
                 Err(error(ErrorCode::Unauthorized, "not the owner"))
             }
+            Op::DeliverWelcome(_)
+                if self
+                    .stale_welcomes
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                    .is_ok() =>
+            {
+                Err(error(ErrorCode::Unauthorized, "stale hosting record"))
+            }
             Op::DeliverWelcome(_) => Ok(OpOutput::DeliverWelcome(DeliverWelcomeResponse {})),
+            Op::GetHostingRecord(request) => {
+                let records = self.records.lock().unwrap();
+                match records.get(&request.user_id) {
+                    Some(record) => Ok(OpOutput::GetHostingRecord(GetHostingRecordResponse {
+                        hosting_record_cbor: record.clone(),
+                    })),
+                    None => Err(error(ErrorCode::NotFound, "no record")),
+                }
+            }
             Op::NotifyDeviceList(_) => Ok(OpOutput::NotifyDeviceList(NotifyDeviceListResponse {})),
             Op::NotifyHostingRecord(_) => Ok(OpOutput::NotifyHostingRecord(
                 NotifyHostingRecordResponse {},
@@ -612,4 +633,111 @@ async fn disabled_federation_queues_nothing() {
         .await
         .unwrap();
     assert!(db.read(store::pending_peers).await.unwrap().is_empty());
+}
+
+/// fed §7.4 with the real source: the peer refuses a `DeliverWelcome` once
+/// because its view of the recipient's record is stale; before the retry the
+/// source re-resolves the recipient's record bypassing the fresh cache, and
+/// the retry succeeds. (In the protocol the peer's verdict does not depend on
+/// the sender's record, so the fake peer simply accepts the second attempt;
+/// the test checks that the refresh happens in between.)
+#[tokio::test]
+async fn unauthorized_refreshes_queued_records_before_the_retry() {
+    use gim_hub_identity::UserId;
+
+    use crate::{
+        hosting::{stored_record, testing::sign_record, verify, Hosting, HostingSettings},
+        GroupSource,
+    };
+
+    let db = Db::open_in_memory().unwrap();
+    let peer = Arc::new(FakePeer::default());
+    peer.up.store(true, Ordering::SeqCst);
+    peer.stale_welcomes.store(1, Ordering::SeqCst);
+    let (own, other) = (hub(1), hub(2));
+    let bob_key = SigningKey::from_bytes(&[60; 32]);
+    let bob = UserId::from_root_pubkey(&bob_key.verifying_key());
+    let expires = T0 as u64 + 24 * 3600 * 1000;
+    let hub_key = |seed: u8| SigningKey::from_bytes(&[seed; 32]);
+    let (k2, k3) = (hub_key(2), hub_key(3));
+    // Cached (and fresh) seq 1; the network has seq 2.
+    let v1 = verify(&sign_record(&bob_key, 1, expires, &[(&k2, 0)]), &bob, T0).unwrap();
+    let v2 = sign_record(&bob_key, 2, expires, &[(&k2, 0), (&k3, 1)]);
+    peer.records
+        .lock()
+        .unwrap()
+        .insert(bob.to_string(), v2.clone());
+    let cached = stored_record(&v1, false, T0).unwrap();
+    db.write(move |tx| gim_hub_db::hosting::put(tx, &cached))
+        .await
+        .unwrap();
+
+    let hosting = Hosting::new(
+        db.clone(),
+        own.clone(),
+        peer.clone(),
+        None,
+        HostingSettings::default(),
+        Arc::new(|| T0),
+    );
+    let outbox = Outbox::with_clock(
+        db.clone(),
+        peer.clone(),
+        Arc::new(GroupSource::new(own).with_hosting(hosting)),
+        config(),
+        Arc::new(|| T0),
+    );
+    let welcome = DeliverWelcomeRequest {
+        gid: "g".into(),
+        recipient_user_id: bob.to_string(),
+        ..DeliverWelcomeRequest::default()
+    }
+    .encode_to_vec()
+    .leak();
+    {
+        let (outbox, other) = (outbox.clone(), other.clone());
+        db.write(move |tx| {
+            outbox.enqueue_in_tx(
+                tx,
+                &other,
+                NewEntry::DeliverWelcome {
+                    gid: "g",
+                    payload: welcome,
+                },
+            )
+        })
+        .await
+        .unwrap();
+    }
+    outbox.start(None);
+    let queued = || {
+        let (db, other) = (db.clone(), other.as_str().to_owned());
+        async move {
+            db.read(move |conn| store::head(conn, &other, 0, 10))
+                .await
+                .unwrap()
+                .len()
+        }
+    };
+    eventually("queue drained", || async { queued().await == 0 }).await;
+
+    let ops: Vec<&str> = peer
+        .requests()
+        .iter()
+        .map(|op| match op {
+            Op::DeliverWelcome(_) => "welcome",
+            Op::GetHostingRecord(request) if request.user_id == bob.as_str() => "refresh",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(ops, ["welcome", "refresh", "welcome"]);
+    assert_eq!(outbox.dropped_total(&other, DropReason::Rejected), 0);
+    let user = bob.to_string();
+    let stored = db
+        .read(move |conn| gim_hub_db::hosting::get(conn, &user))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((stored.seq, stored.record), (2, v2));
+    outbox.shutdown();
 }

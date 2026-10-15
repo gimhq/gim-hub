@@ -167,8 +167,6 @@ fn enable_federation(
     service: &FederationService,
     config: &FederationConfig,
 ) -> (Option<tokio::task::JoinHandle<()>>, Outbox) {
-    let outbox = start_outbox(config, state, service);
-    state.outbox = Arc::new(outbox.clone());
     state.federation = Arc::new(service.clone());
     state.hosting = Hosting::new(
         state.db.clone(),
@@ -179,6 +177,8 @@ fn enable_federation(
         state.clock.as_now(),
     );
     state.hosting.register(service);
+    let outbox = start_outbox(config, state, service);
+    state.outbox = Arc::new(outbox.clone());
     state.device_lists = state.device_lists.with_federation(
         state.federation.clone(),
         state.hosting.clone(),
@@ -225,7 +225,8 @@ fn register_ops(
 }
 
 /// Starts the S2S outbox worker, sending through `federation`. Entries are
-/// built from the group log and the `users` table ([`GroupSource`]).
+/// built from the group log and the `users` table ([`GroupSource`]); an
+/// `UNAUTHORIZED` refreshes hosting records through `state.hosting`.
 fn start_outbox(
     config: &FederationConfig,
     state: &AppState,
@@ -234,15 +235,15 @@ fn start_outbox(
     let outbox = Outbox::new(
         state.db.clone(),
         Arc::new(federation.clone()),
-        Arc::new(GroupSource::new(state.hub.hub_id().clone())),
+        Arc::new(GroupSource::new(state.hub.hub_id().clone()).with_hosting(state.hosting.clone())),
         OutboxConfig::from(config),
     );
     outbox.start(Some(federation.transport().subscribe()));
     outbox
 }
 
-/// Deletes events older than the retention window and expired link bundles,
-/// expires hosting records and emits `hosting_record.expiring`, and purges
+/// Deletes events and detached replicas older than the retention window and
+/// expired link bundles, expires hosting records and emits `hosting_record.expiring`, and purges
 /// users removed longer than `GIM_HUB_UNHOSTED_GRACE_HOURS` ago, now and
 /// then hourly.
 async fn prune_periodically(state: AppState) {
@@ -250,8 +251,10 @@ async fn prune_periodically(state: AppState) {
     loop {
         interval.tick().await;
         match prune(&state).await {
-            Ok((0, 0)) => {}
-            Ok((events, link_bundles)) => tracing::info!(events, link_bundles, "pruned"),
+            Ok((0, 0, 0)) => {}
+            Ok((events, link_bundles, replicas)) => {
+                tracing::info!(events, link_bundles, replicas, "pruned")
+            }
             Err(err) => tracing::error!(%err, "pruning failed"),
         }
         match gim_hub_api::handlers::prune_remote_claims(&state).await {
@@ -274,8 +277,9 @@ async fn prune_periodically(state: AppState) {
     }
 }
 
-/// Runs one pruning pass; returns the deleted events and link bundles.
-async fn prune(state: &AppState) -> Result<(usize, usize), gim_hub_db::DbError> {
+/// Runs one pruning pass; returns the deleted events, link bundles and
+/// detached replicas (docs/federation.md §5.4).
+async fn prune(state: &AppState) -> Result<(usize, usize, usize), gim_hub_db::DbError> {
     let now = state.clock.now_ms();
     let cutoff = now - i64::from(state.config.event_retention_days) * DAY_MS;
     state
@@ -284,6 +288,7 @@ async fn prune(state: &AppState) -> Result<(usize, usize), gim_hub_db::DbError> 
             Ok((
                 gim_hub_db::events::prune_before(tx, cutoff)?,
                 gim_hub_db::links::prune_expired(tx, now)?,
+                gim_hub_db::groups::delete_detached_replicas(tx, cutoff)?,
             ))
         })
         .await
@@ -438,8 +443,43 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(prune(&hub.state).await.unwrap(), (0, 1));
-        assert_eq!(prune(&hub.state).await.unwrap(), (0, 0));
+        assert_eq!(prune(&hub.state).await.unwrap(), (0, 1, 0));
+        assert_eq!(prune(&hub.state).await.unwrap(), (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn prune_deletes_detached_replicas_past_retention() {
+        let hub = TestHub::new();
+        let now = hub.state.clock.now_ms();
+        let retention = i64::from(hub.state.config.event_retention_days) * DAY_MS;
+        hub.state
+            .db
+            .write(move |tx| {
+                for gid in ["h2/old", "h2/recent"] {
+                    let group = gim_hub_db::groups::Group {
+                        gid: gid.into(),
+                        kind: "group".into(),
+                        epoch: 0,
+                        last_seq: 0,
+                        created_by_user_id: "u".into(),
+                        created_by_device_id: "d".into(),
+                        created_at: 0,
+                    };
+                    gim_hub_db::groups::create_replica(tx, &group, &[], now)?;
+                }
+                gim_hub_db::groups::set_detached(tx, "h2/old", Some(now - retention - 1))?;
+                gim_hub_db::groups::set_detached(tx, "h2/recent", Some(now - retention + 60_000))
+            })
+            .await
+            .unwrap();
+        assert_eq!(prune(&hub.state).await.unwrap(), (0, 0, 1));
+        let left = |gid: &'static str| {
+            hub.state
+                .db
+                .read(move |conn| gim_hub_db::groups::get(conn, gid))
+        };
+        assert!(left("h2/old").await.unwrap().is_none());
+        assert!(left("h2/recent").await.unwrap().is_some());
     }
 
     #[tokio::test]

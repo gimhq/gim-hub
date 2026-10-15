@@ -233,15 +233,18 @@ pub fn set_removed_at(
 
 /// Effects of removing local user `user_id` from this hub (§7.3 steps 2 and
 /// 4): deletes the user's unclaimed KeyPackages and detaches the replicas
-/// whose local members all belong to removed users. Call after
-/// [`set_removed_at`]. Returns `(key packages deleted, replicas detached)`.
+/// whose local members all belong to removed users, at the user's
+/// `removed_at`. Call after [`set_removed_at`]. Returns `(key packages
+/// deleted, replicas detached)`.
 pub fn remove_local_user(tx: &Transaction<'_>, user_id: &str) -> Result<(usize, usize), DbError> {
     let key_packages = tx.execute(
         "DELETE FROM key_packages WHERE user_id = ?1 AND claimed_at IS NULL",
         [user_id],
     )?;
     let detached = tx.execute(
-        "UPDATE groups SET detached = 1 WHERE replica_from_seq IS NOT NULL AND detached = 0 \
+        "UPDATE groups SET detached = 1, \
+         detached_at = (SELECT removed_at FROM hosting_records WHERE user_id = ?1) \
+         WHERE replica_from_seq IS NOT NULL AND detached = 0 \
          AND gid IN (SELECT gid FROM group_members WHERE user_id = ?1) \
          AND NOT EXISTS (SELECT 1 FROM group_members AS m \
              JOIN users AS u ON u.user_id = m.user_id \
@@ -462,14 +465,15 @@ mod tests {
         let detached: String = db
             .read(|conn| {
                 Ok::<_, DbError>(conn.query_row(
-                    "SELECT group_concat(gid) FROM groups WHERE detached = 1",
+                    "SELECT group_concat(gid || ':' || detached_at) FROM groups \
+                     WHERE detached = 1",
                     [],
                     |row| row.get(0),
                 )?)
             })
             .await
             .unwrap();
-        assert_eq!(detached, "h9/g1");
+        assert_eq!(detached, "h9/g1:10");
         assert_eq!(
             db.read(|conn| removed_at(conn, "u1")).await.unwrap(),
             Some(10)

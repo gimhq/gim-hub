@@ -662,8 +662,14 @@ Resolved in H3-T5:
   leaf index (the owner validates Commits).
 - With federation enabled, a gid whose prefix is another hub is always handled as a replica; with
   federation disabled every gid is handled locally (single-hub behaviour).
-- Not implemented in H3-T5: deleting detached replicas in the retention task (the retention loop
-  is outside this subtask's files, and `groups` has no detach timestamp yet).
+- **Detached replica retention (H4-CL3).** `groups.detached_at` (unix ms, migration
+  `0008_replica_detached_at.sql`) is set when a replica is detached: by a Commit that removes its
+  last local member (the Commit's time), or by the removal of its last local user (the user's
+  `removed_at`, multihoming.md §7.3). Re-detaching keeps the first time; a replica replaced from a
+  `DeliverWelcome` starts attached with `detached_at = NULL`. Replicas detached before the
+  migration count from the migration time. The hourly retention task deletes replicas with
+  `detached_at` older than `GIM_HUB_EVENT_RETENTION_DAYS`, cascading to their roster, messages and
+  `commit_membership`; groups owned here (`replica_from_seq = NULL`) are never deleted.
 
 ## 6. Flows
 
@@ -837,7 +843,11 @@ Resolved in H3-T5:
 - **Outbox source (§7.7).** `ops::deliver::GroupSource` builds `deliver` entries from `messages` +
   `commit_membership`, `device_list` entries with `ops::device_list::local_device_list`, and the
   resync nudge from the newest message of every owned group with a member whose stored hosting
-  record lists the peer. `refresh_peer` stays the default no-op.
+  record lists the peer. `refresh_peer` (H4-CL3) refreshes the records of the users of the
+  peer's first 256 queued entries (the entry's `user_id`, or the recipient of a
+  `deliver_welcome`) through `Hosting` with `Purpose::Refresh`: a remote user's record is
+  re-resolved bypassing the fresh cache (listed hubs, then always the DHT) and stored if newer; a
+  local user's record is republished to the DHT, where the peer's own refresh finds it.
 
 ### 6.7 Client-visible behaviour
 
@@ -1019,6 +1029,7 @@ numbering lets subtasks work in parallel; each adds one line to the list):
 | `0003_remote_identity.sql` | `remote_device_lists`, `remote_kp_claims` | H3-T3 |
 | `0004_outbox.sql` | `s2s_outbox`, `s2s_peers` | H3-T4 |
 | `0005_group_federation.sql` | `commit_membership`, `groups.replica_from_seq`, `groups.detached`, `pending_welcomes.message_id` + unique index `(message_id, user_id, device_id) WHERE message_id IS NOT NULL` | H3-T5 |
+| `0008_replica_detached_at.sql` | `groups.detached_at` (§5.4) | H4-CL3 |
 
 Single-hub databases migrate in place; owned groups have `replica_from_seq = NULL`. Existing
 Commits get no `commit_membership` rows; a `FetchLog` over them returns Commits without membership

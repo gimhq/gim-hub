@@ -118,29 +118,6 @@ pub trait OutboxSource: Send + Sync + 'static {
     }
 }
 
-/// Placeholder until the group and identity code provide the real source:
-/// every build fails, so queued entries wait (and eventually expire).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoSource;
-
-impl OutboxSource for NoSource {
-    fn deliver_messages(
-        &self,
-        _: &Connection,
-        _: &[(String, u64)],
-    ) -> Result<Vec<Option<SequencedMessage>>, DbError> {
-        Err(DbError::Task("no outbox source".into()))
-    }
-
-    fn device_list(&self, _: &Connection, _: &str) -> Result<Option<Vec<u8>>, DbError> {
-        Err(DbError::Task("no outbox source".into()))
-    }
-
-    fn resync_nudge(&self, _: &Connection, _: &HubId) -> Result<Vec<SequencedMessage>, DbError> {
-        Err(DbError::Task("no outbox source".into()))
-    }
-}
-
 /// Outbox settings (§10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutboxConfig {
