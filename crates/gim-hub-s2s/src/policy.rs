@@ -161,6 +161,24 @@ impl AllowlistPolicy {
             .expect("allowlist lock")
             .contains_key(hub_id)
     }
+
+    /// [`FederationPolicy::admit`] evaluated at an explicit `now`.
+    fn admit_at(&self, hub_id: &HubId, op: OpKind, now: Instant) -> Decision {
+        if !self.listed(hub_id) {
+            return Decision::Deny("hub not allowlisted");
+        }
+        let (bucket, limit) = match op {
+            OpKind::ClaimKeyPackage => (Bucket::Claim, CLAIM_LIMIT),
+            OpKind::GetDeviceList | OpKind::GetHostingRecord => (Bucket::Lookup, LOOKUP_LIMIT),
+            _ => return Decision::Allow,
+        };
+        self.buckets
+            .lock()
+            .expect("rate limit lock")
+            .entry((hub_id.clone(), bucket))
+            .or_insert_with(|| TokenBucket::new(limit, now))
+            .take(now)
+    }
 }
 
 impl FederationPolicy for AllowlistPolicy {
@@ -177,21 +195,7 @@ impl FederationPolicy for AllowlistPolicy {
     }
 
     fn admit(&self, hub_id: &HubId, op: OpKind) -> Decision {
-        if !self.listed(hub_id) {
-            return Decision::Deny("hub not allowlisted");
-        }
-        let (bucket, limit) = match op {
-            OpKind::ClaimKeyPackage => (Bucket::Claim, CLAIM_LIMIT),
-            OpKind::GetDeviceList | OpKind::GetHostingRecord => (Bucket::Lookup, LOOKUP_LIMIT),
-            _ => return Decision::Allow,
-        };
-        let now = Instant::now();
-        self.buckets
-            .lock()
-            .expect("rate limit lock")
-            .entry((hub_id.clone(), bucket))
-            .or_insert_with(|| TokenBucket::new(limit, now))
-            .take(now)
+        self.admit_at(hub_id, op, Instant::now())
     }
 
     fn may_contact(&self, hub_id: &HubId) -> bool {
@@ -395,26 +399,46 @@ mod tests {
         let path = dir.path().join("allowlist");
         std::fs::write(&path, format!("{}\n{}\n", hub(2), hub(3))).unwrap();
         let policy = AllowlistPolicy::load(&path, &hub(1), None).unwrap();
+        let now = Instant::now();
         for _ in 0..CLAIM_LIMIT {
             assert_eq!(
-                policy.admit(&hub(2), OpKind::ClaimKeyPackage),
+                policy.admit_at(&hub(2), OpKind::ClaimKeyPackage, now),
                 Decision::Allow
             );
         }
-        assert!(matches!(
-            policy.admit(&hub(2), OpKind::ClaimKeyPackage),
-            Decision::RateLimited { retry_after_ms } if retry_after_ms > 0 && retry_after_ms <= 100
-        ));
+        assert_eq!(
+            policy.admit_at(&hub(2), OpKind::ClaimKeyPackage, now),
+            Decision::RateLimited {
+                retry_after_ms: 100
+            }
+        );
         // Other buckets, ops and callers are unaffected.
         assert_eq!(
-            policy.admit(&hub(2), OpKind::GetDeviceList),
+            policy.admit_at(&hub(2), OpKind::GetDeviceList, now),
             Decision::Allow
         );
-        assert_eq!(policy.admit(&hub(2), OpKind::Deliver), Decision::Allow);
         assert_eq!(
-            policy.admit(&hub(3), OpKind::ClaimKeyPackage),
+            policy.admit_at(&hub(2), OpKind::Deliver, now),
             Decision::Allow
         );
+        assert_eq!(
+            policy.admit_at(&hub(3), OpKind::ClaimKeyPackage, now),
+            Decision::Allow
+        );
+        assert_eq!(
+            policy.admit_at(&hub(4), OpKind::Deliver, now),
+            Decision::Deny("hub not allowlisted")
+        );
+        // The exhausted bucket refills one token after `retry_after_ms`.
+        assert_eq!(
+            policy.admit_at(
+                &hub(2),
+                OpKind::ClaimKeyPackage,
+                now + Duration::from_millis(100)
+            ),
+            Decision::Allow
+        );
+        // The trait entry point still applies the allowlist.
         assert_eq!(
             policy.admit(&hub(4), OpKind::Deliver),
             Decision::Deny("hub not allowlisted")
