@@ -53,15 +53,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = open_state(config)?;
     tracing::info!(hub_id = %state.hub.hub_id(), "hub identity loaded");
     let federation = start_federation(&federation_config, &state).await?;
-    let republish = federation
-        .as_ref()
-        .and_then(|service| enable_federation(&mut state, service, &federation_config));
-    let outbox = federation
-        .as_ref()
-        .map(|federation| start_outbox(&federation_config, &state, federation));
-    if let Some(outbox) = &outbox {
-        state.outbox = Arc::new(outbox.clone());
-    }
+    let (republish, outbox) = match &federation {
+        Some(service) => {
+            let (republish, outbox) = enable_federation(&mut state, service, &federation_config);
+            (republish, Some(outbox))
+        }
+        None => (None, None),
+    };
 
     let listener = tokio::net::TcpListener::bind(state.config.listen).await?;
     tracing::info!(listen = %state.config.listen, "gim-hub listening");
@@ -113,13 +111,16 @@ async fn start_federation(
 }
 
 /// Wires a started federation service into `state`: S2S sends, hosting
-/// resolution through peers and the DHT, the `/gim/user/` validator and the
-/// `GetHostingRecord` op. Returns the hosting record republish task.
+/// resolution through peers and the DHT, the `/gim/user/` validator, the
+/// `GetHostingRecord` op and the outbox. Returns the hosting record
+/// republish task and the started outbox.
 fn enable_federation(
     state: &mut AppState,
     service: &FederationService,
     config: &FederationConfig,
-) -> Option<tokio::task::JoinHandle<()>> {
+) -> (Option<tokio::task::JoinHandle<()>>, Outbox) {
+    let outbox = start_outbox(config, state, service);
+    state.outbox = Arc::new(outbox.clone());
     state.federation = Arc::new(service.clone());
     state.hosting = Hosting::new(
         state.db.clone(),
@@ -130,7 +131,7 @@ fn enable_federation(
         state.clock.as_now(),
     );
     state.hosting.register(service);
-    state.hosting.spawn_republisher()
+    (state.hosting.spawn_republisher(), outbox)
 }
 
 /// Starts the S2S outbox worker, sending through `federation`.
@@ -380,10 +381,10 @@ mod tests {
         assert!(data_dir.join("runtime_key").is_file());
         assert!(data_dir.join("runtime_cert").is_file());
         let mut state = hub.state.clone();
-        let republish = enable_federation(&mut state, &federation, &config(&allowlist)).unwrap();
+        let (republish, outbox) = enable_federation(&mut state, &federation, &config(&allowlist));
         assert!(state.federation.is_enabled());
-        republish.abort();
-        start_outbox(&config(&allowlist), &hub.state, &federation).shutdown();
+        republish.unwrap().abort();
+        outbox.shutdown();
         federation.shutdown();
     }
 

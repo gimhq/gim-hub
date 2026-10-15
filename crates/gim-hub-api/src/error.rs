@@ -52,6 +52,9 @@ pub enum ApiError {
     StaleHostingRecord,
     #[error("no valid hosting record lists this hub")]
     HostingRecordRequired,
+    /// A peer hub needed for the request refused it.
+    #[error("{0}")]
+    PeerRefused(String),
     /// A peer hub needed for the request did not answer; retry after
     /// `retry_after` seconds.
     #[error("peer hub unavailable")]
@@ -87,6 +90,7 @@ impl ApiError {
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::RangeNotSatisfiable => StatusCode::RANGE_NOT_SATISFIABLE,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            Self::PeerRefused(_) => StatusCode::BAD_GATEWAY,
             Self::PeerUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
             Self::NotImplemented => StatusCode::NOT_IMPLEMENTED,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -116,6 +120,7 @@ impl ApiError {
             Self::InvalidHostingRecord(_) => "invalid_hosting_record",
             Self::StaleHostingRecord => "stale_hosting_record",
             Self::HostingRecordRequired => "hosting_record_required",
+            Self::PeerRefused(_) => "peer_refused",
             Self::PeerUnavailable { .. } => "peer_unavailable",
             Self::NotImplemented => "not_implemented",
             Self::Internal(_) => "internal",
@@ -226,6 +231,9 @@ mod tests {
         let response = ApiError::PeerUnavailable { retry_after: 5 }.into_response();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.headers()[header::RETRY_AFTER], "5");
+        let (status, body) = render(ApiError::PeerRefused("not allowlisted".into())).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body["error"]["code"], "peer_refused");
         let (status, body) = render(gim_hub_s2s::HostingError::Required.into()).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body["error"]["code"], "hosting_record_required");
