@@ -1,1 +1,1 @@
-gim-core 6c8e97c docs/identity.md crates/gim-identity/tests/vectors/identity.json
+gim-core 5f1aa29 docs/identity.md crates/gim-identity/tests/vectors/identity.json crates/gim-identity/tests/vectors/hosting.json crates/gim-identity/tests/vectors/auth.json crates/gim-identity/tests/vectors/recovery.json crates/gim-identity/tests/vectors/link.json
