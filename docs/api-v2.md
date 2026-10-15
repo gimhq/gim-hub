@@ -108,18 +108,19 @@ the calling device's credential; one failing package rejects the whole upload.
 A leaf credential is accepted only if all of these hold, in order:
 
 1. the credential type is `0xF001` and its content decodes (gim-core validation steps 1-2);
-2. the expected user has a valid stored DeviceList on this hub;
-3. the DeviceCert verifies under the credential's root key, the leaf's MLS signature key equals the
-   certified device key, and the stored DeviceList does not revoke the device (gim-core steps 3-5);
-4. the certified `(user_id, device_id)` is the expected device;
-5. the stored DeviceList certifies that device.
+2. the DeviceCert verifies under the credential's root key and the leaf's MLS signature key equals
+   the certified device key (gim-core steps 3-4);
+3. the expected user has a valid stored DeviceList on this hub (`device_list_unknown`), it is the
+   certified user's list (`identity_mismatch`), it does not revoke the device (`revoked_device`)
+   and it certifies the device with the leaf's key (`device_not_in_list`) (gim-core step 5);
+4. the certified `(user_id, device_id)` is the expected device (`identity_mismatch`).
 
 The `validation_failed` message names the first failing check by its code: the gim-core
 credential codes (`wrong_credential_type`, `non_canonical_cbor`, `malformed_content`,
 `unsupported_version`, `bad_cert_signature`, `user_id_mismatch`, `device_id_mismatch`,
-`invalid_cert`, `leaf_key_mismatch`, `revoked_device`) or the hub
-codes `no_device_list`, `identity_mismatch` and `unknown_device`, e.g.
-`invalid MLS credential (leaf_key_mismatch)`.
+`invalid_cert`, `leaf_key_mismatch`, `device_list_unknown`, `revoked_device`,
+`device_not_in_list`) or the hub code `identity_mismatch` (the leaf is not the expected device),
+e.g. `invalid MLS credential (leaf_key_mismatch)`.
 
 `POST /v2/groups/{gid}/messages` carries only `PrivateMessage` application messages; the hub reads
 the epoch from the framing but cannot see their content.
