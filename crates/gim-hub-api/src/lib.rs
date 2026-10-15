@@ -1,10 +1,26 @@
 //! Client HTTP/WebSocket API v2 for the gim hub.
 //!
 //! [`ApiDoc`] is the OpenAPI contract (committed as `openapi.json` at the
-//! repository root); [`router`] serves it.
+//! repository root); [`router`] serves it on an [`AppState`].
 
+pub mod auth;
+pub mod config;
 pub mod dto;
+pub mod error;
 pub mod handlers;
+pub mod hub;
+pub mod mls;
+pub mod notifier;
+pub mod state;
+#[cfg(feature = "testing")]
+pub mod testing;
+
+pub use auth::AuthDevice;
+pub use config::Config;
+pub use error::ApiError;
+pub use hub::HubIdentity;
+pub use notifier::Notifier;
+pub use state::{AppState, Clock};
 
 use axum::{
     routing::{get, post, put},
@@ -110,7 +126,7 @@ pub fn openapi_json() -> String {
 }
 
 /// Routes of the client API, including `/healthz`.
-pub fn router() -> Router {
+pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(h::healthz))
         .route("/v2/auth/challenge", post(h::create_auth_challenge))
@@ -153,4 +169,5 @@ pub fn router() -> Router {
             "/v2/push/registration",
             put(h::put_push_registration).delete(h::delete_push_registration),
         )
+        .with_state(state)
 }
