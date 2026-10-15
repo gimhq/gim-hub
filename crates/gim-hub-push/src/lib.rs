@@ -26,7 +26,7 @@ pub mod webpush;
 use async_trait::async_trait;
 
 pub use config::{build_providers, ApnsConfig, FcmConfig, PushConfig};
-pub use dispatcher::{Dispatcher, DispatcherSettings, MetricsSnapshot, PushGate};
+pub use dispatcher::{message_id, Dispatcher, DispatcherSettings, MetricsSnapshot, PushGate};
 pub use gim_hub_db::push::Registration;
 pub use log::{LogProvider, LoggedPush, PushLog, LOG_MAX_PAYLOAD};
 pub use payload::{encode_within, PushKind, PushNotification};

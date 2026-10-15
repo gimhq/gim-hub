@@ -2,7 +2,7 @@
 //! transport, ephemeral ports): claim routing over the listed hubs with
 //! fallback and per-device follow-up, routing of local users not hosted
 //! here, `duplicate_key_package`, burns and `kp_not_claimed`
-//! (docs/multihoming.md §5.2-§5.4).
+//! (docs/multihoming.md §5.2-§5.4), and claims of removed users (§7.3).
 
 mod mls_support;
 
@@ -15,8 +15,9 @@ use gim_hub_api::{
 };
 use gim_hub_db::DbError;
 use gim_hub_identity::{HostingRecord, HubId};
+use gim_hub_proto::s2s::{s2s_request::Op, ClaimKeyPackageRequest, ErrorCode, S2sRequest};
 use gim_hub_s2s::{
-    hosting::testing::sign_record, AllowlistPolicy, ClaimService, FederationConfig,
+    hosting::testing::sign_record, AllowlistPolicy, ClaimService, Federation, FederationConfig,
     FederationService,
 };
 use serde_json::{json, Value};
@@ -438,4 +439,48 @@ async fn add_with_a_package_claimed_through_another_hub_is_kp_not_claimed() {
     assert!(message.contains("kp_not_claimed"), "{message}");
     // B saw its unclaimed copy in the Add and burned it.
     assert_eq!(b.stock(&alice_b).await, (0, false));
+}
+
+#[tokio::test]
+async fn removed_user_claim_is_not_found() {
+    let nodes = cluster(&[101, 102]).await;
+    let (a, b) = (&nodes[0], &nodes[1]);
+    let alice = Client::new(&b.hub, 1, 11).await;
+    alice.upload_key_packages(&b.hub, 2).await;
+    b.put_record(1, &record(1, &[(102, 0)])).await;
+    let bob_record = record(2, &[(101, 0)]);
+    Client::new(&a.hub, 2, 21).await;
+    a.put_record(2, &bob_record).await;
+    b.store_record(&bob_record).await;
+    let request = || S2sRequest {
+        request_id: "r".into(),
+        op: Some(Op::ClaimKeyPackage(ClaimKeyPackageRequest {
+            requester_user_id: user_id(2),
+            target_user_id: user_id(1),
+            device_id: None,
+        })),
+    };
+    let response = a.service.send(&b.id(), request()).await.unwrap();
+    assert!(response.error.is_none(), "{:?}", response.error);
+
+    // A newer record moves alice to A only: she is removed on B.
+    let expires_at = u64::try_from(TEST_NOW + 7 * DAY).unwrap();
+    let moved = sign_record(&key(1), 2, expires_at, &[(&key(101), 0)]);
+    let (status, body) = send(
+        &b.hub,
+        Method::PUT,
+        &format!("/v2/users/{}/hosting-record", user_id(1)),
+        "",
+        Some(json!({ "hosting_record": b64(&moved) })),
+    )
+    .await;
+    assert!(status.is_success(), "{status} {body}");
+    assert_eq!(body["hosted"], json!(false));
+
+    let response = a.service.send(&b.id(), request()).await.unwrap();
+    let error = response.error.expect("claim of a removed user fails");
+    assert_eq!(
+        (error.code(), error.message.as_str()),
+        (ErrorCode::NotFound, "target is not hosted here")
+    );
 }
