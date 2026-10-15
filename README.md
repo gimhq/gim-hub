@@ -5,3 +5,21 @@ closed federation over libp2p, and multi-homing.
 
 Plan: `docs/plan/20261015-1546-m2-identity-hub-federation.md` in the im-client workspace.
 Design basis: cluster-architecture.md (hub model).
+
+## Layout
+
+- `crates/gim-hub-identity`: self-certifying identity types and verification (shared with gim-core).
+- `crates/gim-hub-proto`: protobuf types generated from `proto/*.proto`.
+- `crates/gim-hub-db`: SQLite storage.
+- `crates/gim-hub-api`: client HTTP/WebSocket API v2.
+- `crates/gim-hub-s2s`: hub-to-hub federation.
+- `crates/gim-hub`: server binary (`GIM_HUB_LISTEN`, default `0.0.0.0:8080`; `GET /healthz`).
+
+## Checks
+
+```bash
+bash scripts/check.sh
+```
+
+Runs `cargo fmt`, `cargo clippy -D warnings` and `cargo test` (all `--locked`) in a
+`rust:1.99-bookworm` container. CI runs the same commands natively.
