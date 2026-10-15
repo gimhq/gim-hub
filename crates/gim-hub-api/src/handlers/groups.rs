@@ -224,19 +224,27 @@ pub async fn get_group(
     post,
     path = "/v2/groups/{gid}/commits",
     tag = "groups",
-    summary = "Submit an MLS Commit",
+    summary = "Submit an MLS Commit or Proposal",
     description = "`mls_message` is an MLS PublicMessage (Commit or Proposal), so the hub can parse \
 it. The hub reads the epoch from the MLS framing (there is no client epoch field) and \
 accepts the Commit only for the group's current epoch, advancing it by one. Membership changes \
-are derived from the Add/Remove/Update proposals; each added member's gim-core credential \
+are derived from the Add/Remove/Update proposals, carried by value or referenced (ProposalRef) \
+from Proposals sequenced in the same epoch (an unknown reference fails with 400); each added \
+member's gim-core credential \
 (type 0xF001) is validated against their DeviceList, members are identified by user ID + device \
 ID from their credentials, and `group.member_added` / `group.member_removed` events carry the `user_id`. The \
 optional Welcome is delivered as a `welcome` event to `welcome_recipients`.\n\n\
-Resubmitting the same Commit (same hash) returns the original result with `duplicate: true` \
-and emits nothing. Any other Commit for a past epoch fails with 409 `stale_epoch`.\n\n\
-For a group owned by another hub (federation), this hub forwards the Commit to the owning hub, \
-which sequences it; the response is the owner's result and the local replica already holds the \
-Commit. Added members on other hubs get their Welcome through their own hub. This needs the \
+A Proposal (Add, Remove, SelfRemove or Update) must be for the current epoch; the hub \
+sequences it and delivers it as a `message` of kind `proposal`, without changing the epoch or \
+the roster: a later Commit that references it does. The result carries the Proposal's `seq` and \
+the unchanged `epoch`; a Welcome is not allowed. Proposals of an epoch can no longer be \
+referenced once the epoch advances.\n\n\
+Resubmitting the same Commit or Proposal (same hash) returns the original result with \
+`duplicate: true` and emits nothing. Any other Commit or Proposal for a past epoch fails with \
+409 `stale_epoch`.\n\n\
+For a group owned by another hub (federation), this hub forwards the Commit or Proposal to the \
+owning hub, which sequences it; the response is the owner's result and the local replica already \
+holds the message. Added members on other hubs get their Welcome through their own hub. This needs the \
 caller's hosting record listing this hub (403 `hosting_record_required`); when the owning hub \
 refuses the request the result is 502 `peer_refused`, when it cannot be reached 503 \
 `peer_unavailable` with `Retry-After` (retry the same Commit: it is idempotent by hash).",
@@ -244,13 +252,13 @@ refuses the request the result is 502 `peer_refused`, when it cannot be reached 
     request_body = SubmitCommitRequest,
     security(("bearerAuth" = [])),
     responses(
-        (status = 200, description = "Duplicate of an accepted Commit (`duplicate: true`)", body = CommitResult),
-        (status = 201, description = "Commit accepted", body = CommitResult),
-        (status = 400, description = "Not a PublicMessage Commit for this group, invalid credential of an added member, or Welcome fields inconsistent (`validation_failed`)", body = Error),
+        (status = 200, description = "Duplicate of an accepted Commit or Proposal (`duplicate: true`)", body = CommitResult),
+        (status = 201, description = "Commit or Proposal accepted", body = CommitResult),
+        (status = 400, description = "Not a PublicMessage Commit/Proposal for this group, unknown proposal reference, invalid credential of an added member or of the sender's leaf, or Welcome fields inconsistent (`validation_failed`)", body = Error),
         (status = 401, description = "Missing or invalid bearer token (`unauthorized`)", body = Error),
         (status = 403, description = "Caller is not a member of the group (`not_member`), group policy forbids the change (`forbidden`), or the group is owned by another hub and the caller has no valid hosting record listing this hub (`hosting_record_required`)", body = Error),
         (status = 404, description = "Not found (`not_found`)", body = Error),
-        (status = 409, description = "Commit epoch is not the group epoch (`stale_epoch`)", body = StaleEpochError),
+        (status = 409, description = "Commit or Proposal epoch is not the group epoch (`stale_epoch`)", body = StaleEpochError),
         (status = 413, description = "Payload too large (`payload_too_large`)", body = Error),
         (status = 502, description = "The owning hub of the group refused the request (`peer_refused`)", body = Error),
         (status = 503, description = "The owning hub of the group is unreachable (`peer_unavailable`); retry after `Retry-After` seconds", body = Error),
@@ -263,19 +271,24 @@ pub async fn submit_commit(
     body: Result<Json<SubmitCommitRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<CommitResult>), ApiError> {
     let body = json_body(body)?;
-    let commit = CommitInput::validate(&state, gid, body)?;
+    let submission = Submission::validate(&state, gid, body)?;
     let sender = Sender {
         user_id: auth.user_id,
         device_id: auth.device_id,
     };
-    if let Some(owner) = remote_owner(&state, &commit.gid) {
-        return forward_commit(&state, sender, owner, commit).await;
+    if let Some(owner) = remote_owner(&state, submission.gid()) {
+        return forward_commit(&state, sender, owner, submission).await;
     }
-    let (seq, epoch, duplicate) =
-        match sequence_commit(&state, sender, commit, Origin::Client).await? {
-            CommitOutcome::Duplicate { seq, epoch } => (seq, epoch, true),
-            CommitOutcome::Accepted { seq, epoch, .. } => (seq, epoch, false),
-        };
+    let outcome = match submission {
+        Submission::Commit(commit) => {
+            sequence_commit(&state, sender, commit, Origin::Client).await?
+        }
+        Submission::Proposal(proposal) => sequence_proposal(&state, sender, proposal).await?,
+    };
+    let (seq, epoch, duplicate) = match outcome {
+        CommitOutcome::Duplicate { seq, epoch } => (seq, epoch, true),
+        CommitOutcome::Accepted { seq, epoch, .. } => (seq, epoch, false),
+    };
     Ok((
         if duplicate {
             StatusCode::OK
@@ -319,6 +332,13 @@ pub(crate) fn remote_owner(state: &AppState, gid: &str) -> Option<HubId> {
         .and_then(|owner| HubId::parse(owner).ok())
 }
 
+/// A Commit or Proposal request checked as far as possible without the
+/// database.
+enum Submission {
+    Commit(CommitInput),
+    Proposal(ProposalInput),
+}
+
 /// A Commit request checked as far as possible without the database.
 struct CommitInput {
     gid: String,
@@ -326,6 +346,14 @@ struct CommitInput {
     mls_message: Vec<u8>,
     parsed: mls::ParsedCommit,
     welcome: Option<WelcomeInput>,
+}
+
+/// A Proposal request checked as far as possible without the database.
+struct ProposalInput {
+    gid: String,
+    client_id: String,
+    mls_message: Vec<u8>,
+    parsed: mls::ParsedProposal,
 }
 
 struct WelcomeInput {
@@ -341,7 +369,14 @@ struct Recipient {
     device_id: String,
 }
 
-impl CommitInput {
+impl Submission {
+    fn gid(&self) -> &str {
+        match self {
+            Self::Commit(commit) => &commit.gid,
+            Self::Proposal(proposal) => &proposal.gid,
+        }
+    }
+
     fn validate(
         state: &AppState,
         gid: String,
@@ -378,7 +413,7 @@ impl CommitInput {
         Self::new(state, gid, body.client_id, mls_message, welcome)
     }
 
-    /// A Commit forwarded by a member hub.
+    /// A Commit or Proposal forwarded by a member hub.
     fn from_peer(state: &AppState, request: s2s::SubmitCommitRequest) -> Result<Self, ApiError> {
         let welcome = match request.welcome {
             None if request.welcome_recipient_device_ids.is_empty() => {
@@ -436,16 +471,31 @@ impl CommitInput {
                 return Err(ApiError::PayloadTooLarge);
             }
         }
-        let parsed = mls::parse_commit(&mls_message)?;
-        if parsed.group_id != gid.as_bytes() {
+        let parsed = mls::parse_handshake(&mls_message)?;
+        let group_id = match &parsed {
+            mls::Handshake::Commit(commit) => &commit.group_id,
+            mls::Handshake::Proposal(proposal) => &proposal.group_id,
+        };
+        if group_id != gid.as_bytes() {
             return Err(invalid("MLS group ID does not match the gid"));
         }
-        Ok(Self {
-            gid,
-            client_id,
-            mls_message,
-            parsed,
-            welcome,
+        Ok(match parsed {
+            mls::Handshake::Commit(parsed) => Self::Commit(CommitInput {
+                gid,
+                client_id,
+                mls_message,
+                parsed,
+                welcome,
+            }),
+            mls::Handshake::Proposal(_) if welcome.is_some() => {
+                return Err(invalid("a Welcome can only come with a Commit"));
+            }
+            mls::Handshake::Proposal(parsed) => Self::Proposal(ProposalInput {
+                gid,
+                client_id,
+                mls_message,
+                parsed,
+            }),
         })
     }
 }
@@ -465,6 +515,21 @@ enum CommitOutcome {
         /// The stored Commit and its membership changes.
         message: Box<s2s::SequencedMessage>,
     },
+}
+
+impl CommitOutcome {
+    /// The answer to a resubmitted Commit or Proposal: the epoch after the
+    /// Commit, or the epoch the Proposal was sent in.
+    fn duplicate(seq: u64, framing_epoch: u64, kind: &str) -> Self {
+        Self::Duplicate {
+            seq,
+            epoch: if kind == "commit" {
+                framing_epoch + 1
+            } else {
+                framing_epoch
+            },
+        }
+    }
 }
 
 fn event_data(data: &impl Serialize) -> Result<String, ApiError> {
@@ -537,6 +602,17 @@ async fn prepare_commit(
             checks.push((user_id.clone(), device_id.clone(), leaf.clone()));
         }
     }
+    prepare(state, &commit.gid, checks).await
+}
+
+/// Brings the DeviceLists of the leaves in `checks` (`(user_id, device_id,
+/// leaf)`) and the hosting records of the members of `gid` up to date, see
+/// [`prepare_commit`].
+async fn prepare(
+    state: &AppState,
+    gid: &str,
+    checks: Vec<(String, String, mls::LeafCredential)>,
+) -> Result<(), ApiError> {
     let users: BTreeSet<String> = checks.iter().map(|(user, _, _)| user.clone()).collect();
     for user_id in &users {
         match state.device_lists.device_list_for(user_id).await {
@@ -571,7 +647,7 @@ async fn prepare_commit(
         }
     }
     let mut members = users;
-    members.extend(roster_users(state, &commit.gid).await?);
+    members.extend(roster_users(state, gid).await?);
     resolve_hosting(state, members).await;
     Ok(())
 }
@@ -654,9 +730,12 @@ pub(crate) fn queue_deliver(
 async fn sequence_commit(
     state: &AppState,
     sender: Sender,
-    commit: CommitInput,
+    mut commit: CommitInput,
     origin: Origin,
 ) -> Result<CommitOutcome, ApiError> {
+    if !commit.parsed.resolved {
+        resolve_references(state, &commit.gid, &mut commit.parsed).await?;
+    }
     let federated = state.federation.is_enabled();
     let parsed = commit.parsed.clone();
     let identities = state
@@ -724,19 +803,18 @@ fn apply_commit(
         .find(|m| m.user_id == auth.user_id && m.device_id == auth.device_id)
         .ok_or(ApiError::NotMember)?;
     let commit_hash: [u8; 32] = Sha256::digest(&mls_message).into();
-    if let Some((seq, epoch)) = messages::find_commit(tx, &gid, &commit_hash)? {
-        return Ok((
-            CommitOutcome::Duplicate {
-                seq,
-                epoch: epoch + 1,
-            },
-            BTreeSet::new(),
-        ));
+    if let Some((seq, epoch, kind)) = messages::find_commit(tx, &gid, &commit_hash)? {
+        return Ok((CommitOutcome::duplicate(seq, epoch, &kind), BTreeSet::new()));
     }
     if parsed.epoch != group.epoch {
         return Err(ApiError::StaleEpoch {
             current_epoch: group.epoch,
         });
+    }
+    // References are resolved for the current epoch before the transaction,
+    // and pending Proposals only go away when the epoch advances.
+    if !parsed.resolved {
+        return Err(invalid("unknown proposal reference"));
     }
     if sender.leaf_index != Some(parsed.sender_leaf) {
         return Err(invalid("Commit sender leaf is not the calling device"));
@@ -1015,6 +1093,178 @@ fn record_commit(
     Ok(wake)
 }
 
+/// Resolves the proposal references of a Commit for `gid` against the
+/// Proposals sequenced (or replicated) here in the Commit's epoch. A Commit
+/// for another epoch stays unresolved: it is stale or a duplicate. Returns
+/// the group's epoch; an unknown reference fails.
+async fn resolve_references(
+    state: &AppState,
+    gid: &str,
+    parsed: &mut mls::ParsedCommit,
+) -> Result<u64, ApiError> {
+    let refs: Vec<Vec<u8>> = parsed.references().map(<[u8]>::to_vec).collect();
+    let (key, epoch) = (gid.to_owned(), parsed.epoch);
+    let (group_epoch, found) = state
+        .db
+        .read(move |conn| {
+            let group_epoch = groups::group_epoch(conn, &key)?.ok_or(ApiError::NotFound)?;
+            let mut found = HashMap::new();
+            if i64::try_from(epoch) == Ok(group_epoch) {
+                for proposal_ref in refs {
+                    if let Some(stored) =
+                        messages::pending_proposal(conn, &key, group_epoch, &proposal_ref)?
+                    {
+                        let proposal = mls::parse_proposal(&stored.payload)?.proposal;
+                        found.insert(proposal_ref, proposal);
+                    }
+                }
+            }
+            Ok::<_, ApiError>((u64::try_from(group_epoch).unwrap_or_default(), found))
+        })
+        .await?;
+    if !parsed.resolved && group_epoch == parsed.epoch {
+        parsed.resolve(&found)?;
+    }
+    Ok(group_epoch)
+}
+
+/// Sequences a Proposal of a group owned here: the sender's DeviceList
+/// for an Update, then [`apply_proposal`].
+async fn sequence_proposal(
+    state: &AppState,
+    sender: Sender,
+    proposal: ProposalInput,
+) -> Result<CommitOutcome, ApiError> {
+    let federated = state.federation.is_enabled();
+    if federated {
+        let checks = match &proposal.parsed.proposal {
+            mls::RosterProposal::Update(leaf) => vec![(
+                sender.user_id.clone(),
+                sender.device_id.clone(),
+                leaf.clone(),
+            )],
+            _ => Vec::new(),
+        };
+        prepare(state, &proposal.gid, checks).await?;
+    }
+    let context = CommitContext {
+        sender,
+        identities: Vec::new(),
+        message_id: random_id()?,
+        now: state.clock.now_ms(),
+        fan_out: federated.then(|| (state.hub.hub_id().clone(), state.outbox.clone())),
+    };
+    let (outcome, wake) = state
+        .db
+        .write(move |tx| apply_proposal(tx, proposal, context))
+        .await?;
+    for (user_id, device_id) in &wake {
+        state.notifier.notify(user_id, device_id);
+    }
+    Ok(outcome)
+}
+
+/// Sequences a Proposal: checks it like a Commit (member sender at its
+/// leaf, current epoch, the credential of an Update), appends it to the
+/// log, makes it resolvable by reference until the epoch advances, emits it
+/// to the other local members and queues the fan-out. Neither the epoch nor
+/// the roster changes; a Commit referencing the Proposal does that.
+fn apply_proposal(
+    tx: &Transaction<'_>,
+    proposal: ProposalInput,
+    context: CommitContext,
+) -> Result<(CommitOutcome, BTreeSet<(String, String)>), ApiError> {
+    let ProposalInput {
+        gid,
+        client_id,
+        mls_message,
+        parsed,
+    } = proposal;
+    let CommitContext {
+        sender: auth,
+        message_id,
+        now,
+        fan_out,
+        ..
+    } = context;
+
+    let group = groups::get(tx, &gid)?.ok_or(ApiError::NotFound)?;
+    let members = groups::members(tx, &gid)?;
+    let sender = members
+        .iter()
+        .find(|m| m.user_id == auth.user_id && m.device_id == auth.device_id)
+        .ok_or(ApiError::NotMember)?;
+    let proposal_hash: [u8; 32] = Sha256::digest(&mls_message).into();
+    if let Some((seq, epoch, kind)) = messages::find_commit(tx, &gid, &proposal_hash)? {
+        return Ok((CommitOutcome::duplicate(seq, epoch, &kind), BTreeSet::new()));
+    }
+    if parsed.epoch != group.epoch {
+        return Err(ApiError::StaleEpoch {
+            current_epoch: group.epoch,
+        });
+    }
+    if sender.leaf_index != Some(parsed.sender_leaf) {
+        return Err(invalid("Proposal sender leaf is not the calling device"));
+    }
+    if messages::find_by_client_id(tx, &gid, &auth.device_id, &client_id)?.is_some() {
+        return Err(invalid("client_id was already used in this group"));
+    }
+    // An Add is checked against the claim ledger and DeviceList when a
+    // Commit references it.
+    match &parsed.proposal {
+        mls::RosterProposal::Remove(leaf) => {
+            if !members.iter().any(|m| m.leaf_index == Some(*leaf)) {
+                return Err(invalid("Remove proposal targets an empty leaf"));
+            }
+        }
+        mls::RosterProposal::Update(leaf) => {
+            let device_list = stored_device_list(tx, &auth.user_id)?;
+            mls::check_leaf_credential(
+                leaf,
+                device_list.as_deref(),
+                &auth.user_id,
+                &auth.device_id,
+            )?;
+        }
+        mls::RosterProposal::Add(..) | mls::RosterProposal::Neutral => {}
+    }
+
+    let framing_epoch =
+        i64::try_from(parsed.epoch).map_err(|_| invalid("Proposal epoch out of range"))?;
+    let stored = messages::append(
+        tx,
+        &messages::NewMessage {
+            gid: &gid,
+            epoch: framing_epoch,
+            kind: "proposal",
+            sender_user_id: &auth.user_id,
+            sender_device_id: &auth.device_id,
+            client_id: &client_id,
+            payload: &mls_message,
+            commit_hash: Some(&proposal_hash),
+            message_id: &message_id,
+        },
+        now,
+    )?;
+    messages::insert_pending_proposal(tx, &gid, framing_epoch, stored.seq, &parsed.refs)?;
+    let wake = message_handlers::emit_message_events(tx, &stored, now)?
+        .into_iter()
+        .collect();
+    if let Some((own, outbox)) = &fan_out {
+        let peers = hubs_of(tx, members.iter().map(|m| m.user_id.as_str()), own)?;
+        queue_deliver(tx, outbox.as_ref(), &peers, &stored)?;
+    }
+    let seq = u64::try_from(stored.seq).unwrap_or_default();
+    Ok((
+        CommitOutcome::Accepted {
+            seq,
+            epoch: group.epoch,
+            message: Box::new(to_sequenced(stored, Membership::default())),
+        },
+        wake,
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Member hub: forwarding to the owner (§6.3)
 // ---------------------------------------------------------------------------
@@ -1022,37 +1272,59 @@ fn record_commit(
 /// How long a member hub catches up its replica before answering 409.
 const CATCH_UP_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Forwards a Commit for a remote-owned group to its owner with
-/// `SubmitCommit` and applies the sequenced Commit to the replica.
+/// Forwards a Commit or Proposal for a remote-owned group to its owner with
+/// `SubmitCommit` and applies the sequenced message to the replica.
 async fn forward_commit(
     state: &AppState,
     sender: Sender,
     owner: HubId,
-    commit: CommitInput,
+    submission: Submission,
 ) -> Result<(StatusCode, Json<CommitResult>), ApiError> {
-    let gid = commit.gid.clone();
-    let parsed = commit.parsed.clone();
-    let member = sender.clone();
-    let identities = state
+    let (gid, member) = (submission.gid().to_owned(), sender.clone());
+    state
         .db
         .read(move |conn| {
             groups::get(conn, &gid)?.ok_or(ApiError::NotFound)?;
             if !groups::is_member(conn, &gid, &member.user_id, &member.device_id)? {
                 return Err(ApiError::NotMember);
             }
-            added_identities(conn, &parsed, Origin::Client)
+            Ok(())
         })
         .await?;
-    keypackage_handlers::burn_added(state, &commit.parsed).await?;
-    if identities.iter().any(Option::is_none) {
-        return Err(invalid(mls::KP_NOT_CLAIMED));
-    }
+    let (gid, client_id, mls_message, welcome, expected) = match submission {
+        Submission::Commit(mut commit) => {
+            resolve_forwarded(state, &owner, &commit.gid, &mut commit.parsed).await?;
+            let parsed = commit.parsed.clone();
+            let identities = state
+                .db
+                .read(move |conn| added_identities(conn, &parsed, Origin::Client))
+                .await?;
+            keypackage_handlers::burn_added(state, &commit.parsed).await?;
+            if identities.iter().any(Option::is_none) {
+                return Err(invalid(mls::KP_NOT_CLAIMED));
+            }
+            (
+                commit.gid,
+                commit.client_id,
+                commit.mls_message,
+                commit.welcome,
+                s2s::MessageKind::Commit,
+            )
+        }
+        Submission::Proposal(proposal) => (
+            proposal.gid,
+            proposal.client_id,
+            proposal.mls_message,
+            None,
+            s2s::MessageKind::Proposal,
+        ),
+    };
     state
         .hosting
         .require_hosting_record(&sender.user_id)
         .await?;
 
-    let (welcome, recipients, ratchet_tree) = match commit.welcome {
+    let (welcome, recipients, ratchet_tree) = match welcome {
         Some(welcome) => (
             Some(welcome.welcome),
             welcome
@@ -1065,24 +1337,27 @@ async fn forward_commit(
         None => (None, Vec::new(), None),
     };
     let request = s2s::SubmitCommitRequest {
-        gid: commit.gid.clone(),
+        gid: gid.clone(),
         sender_user_id: sender.user_id,
         sender_device_id: sender.device_id,
-        client_id: commit.client_id,
-        mls_message: commit.mls_message,
+        client_id,
+        mls_message,
         welcome,
         welcome_recipient_device_ids: recipients,
         ratchet_tree,
     };
     let response = match submit::submit_commit(state.federation.as_ref(), &owner, request).await {
         Ok(response) => response,
-        Err(err) => return Err(forward_error(state, &owner, &commit.gid, err).await),
+        Err(err) => return Err(forward_error(state, &owner, &gid, err).await),
     };
-    if let Some(message) = response.message.filter(|message| message.gid == commit.gid) {
-        // Read-your-writes: the replica holds the Commit before the client
+    if let Some(message) = response
+        .message
+        .filter(|message| message.gid == gid && message.kind() == expected)
+    {
+        // Read-your-writes: the replica holds the message before the client
         // hears back (§6.3).
         if let Err(err) = apply_replica(state, &owner, vec![message], true).await {
-            tracing::error!(%err, gid = commit.gid, "applying the submitted Commit failed");
+            tracing::error!(%err, gid, "applying the submitted handshake message failed");
         }
     }
     Ok((
@@ -1097,6 +1372,39 @@ async fn forward_commit(
             duplicate: response.duplicate,
         }),
     ))
+}
+
+/// Resolves the proposal references of a Commit to forward against the
+/// replica, so Adds by reference get the claim ledger checks of this hub.
+/// The replica may not hold the referenced Proposals yet: it then catches
+/// up with the owner once. A Commit for an older epoch is forwarded
+/// unresolved (the owner answers duplicate or stale).
+async fn resolve_forwarded(
+    state: &AppState,
+    owner: &HubId,
+    gid: &str,
+    parsed: &mut mls::ParsedCommit,
+) -> Result<(), ApiError> {
+    if parsed.resolved {
+        return Ok(());
+    }
+    let first = resolve_references(state, gid, parsed).await;
+    if matches!(first, Ok(epoch) if parsed.resolved || parsed.epoch < epoch) {
+        return Ok(());
+    }
+    let _ = tokio::time::timeout(
+        CATCH_UP_TIMEOUT,
+        fill_gap(state.clone(), owner.clone(), gid.to_owned()),
+    )
+    .await;
+    let epoch = resolve_references(state, gid, parsed).await?;
+    if !parsed.resolved && parsed.epoch > epoch {
+        tracing::info!(%owner, gid, "replica behind the Commit epoch");
+        return Err(ApiError::PeerUnavailable {
+            retry_after: PEER_UNAVAILABLE_RETRY_AFTER,
+        });
+    }
+    Ok(())
 }
 
 /// Maps a failed submit to the owner to the client error (§6.3 table). A
@@ -1233,21 +1541,28 @@ pub(crate) async fn apply_replica(
 }
 
 /// Stores one message at the replica's next seq and emits its local events;
-/// a Commit also updates roster and epoch, and detaches the replica when no
-/// local member is left.
+/// a Proposal of the current epoch becomes resolvable by reference, a Commit
+/// also updates roster and epoch, and detaches the replica when no local
+/// member is left.
 fn apply_replicated(
     tx: &Transaction<'_>,
     message: &s2s::SequencedMessage,
     now: i64,
 ) -> Result<BTreeSet<(String, String)>, ApiError> {
-    let commit = message.kind() == s2s::MessageKind::Commit;
-    let commit_hash: Option<[u8; 32]> = commit.then(|| Sha256::digest(&message.payload).into());
+    let kind = match message.kind() {
+        s2s::MessageKind::Commit => "commit",
+        s2s::MessageKind::Proposal => "proposal",
+        _ => "application",
+    };
+    let commit = kind == "commit";
+    let commit_hash: Option<[u8; 32]> =
+        (kind != "application").then(|| Sha256::digest(&message.payload).into());
     let stored = messages::append(
         tx,
         &messages::NewMessage {
             gid: &message.gid,
             epoch: i64::try_from(message.epoch).map_err(|_| invalid("epoch out of range"))?,
-            kind: if commit { "commit" } else { "application" },
+            kind,
             sender_user_id: &message.sender_user_id,
             sender_device_id: &message.sender_device_id,
             client_id: &message.client_id,
@@ -1257,6 +1572,20 @@ fn apply_replicated(
         },
         i64::try_from(message.created_at).unwrap_or(i64::MAX),
     )?;
+    if kind == "proposal" && groups::group_epoch(tx, &message.gid)? == Some(stored.epoch) {
+        // The owner validated the Proposal; one it could parse but this hub
+        // cannot is only logged (a Commit referencing it fails here).
+        match mls::parse_proposal(&message.payload) {
+            Ok(parsed) => messages::insert_pending_proposal(
+                tx,
+                &message.gid,
+                stored.epoch,
+                stored.seq,
+                &parsed.refs,
+            )?,
+            Err(err) => tracing::warn!(%err, gid = message.gid, "unreadable replicated Proposal"),
+        }
+    }
     if !commit {
         return Ok(message_handlers::emit_message_events(tx, &stored, now)?
             .into_iter()
@@ -1409,12 +1738,15 @@ impl Groups for StateGroups {
                 user_id: request.sender_user_id.clone(),
                 device_id: request.sender_device_id.clone(),
             };
-            let commit = CommitInput::from_peer(state, request).map_err(stale)?;
-            let gid = commit.gid.clone();
-            match sequence_commit(state, sender, commit, Origin::Peer)
-                .await
-                .map_err(stale)?
-            {
+            let submission = Submission::from_peer(state, request).map_err(stale)?;
+            let gid = submission.gid().to_owned();
+            let outcome = match submission {
+                Submission::Commit(commit) => {
+                    sequence_commit(state, sender, commit, Origin::Peer).await
+                }
+                Submission::Proposal(proposal) => sequence_proposal(state, sender, proposal).await,
+            };
+            match outcome.map_err(stale)? {
                 CommitOutcome::Accepted {
                     seq,
                     epoch,

@@ -104,7 +104,9 @@ hub rejects a Commit whose framing carries any other group ID. Percent-encode th
 On `POST /v2/groups/{gid}/commits` the owning hub:
 
 1. parses the `PublicMessage` and reads the epoch from its framing;
-2. extracts the Add, Remove and Update proposals (inline in the Commit or referenced);
+2. extracts the Add, Remove and Update proposals: inline in the Commit, or referenced by
+   `ProposalRef` (RFC 9420 §5.2) to Proposals the hub sequenced for the group in the Commit's epoch
+   (the hash function follows from the reference length: SHA-256, SHA-384 or SHA-512);
 3. validates gim-core MLS credentials (custom credential type `0xF001`, format owned by gim-core
    `docs/identity.md` "MLS credential") against DeviceLists stored on this hub, failing closed:
    - for every Add, the KeyPackage's leaf credential must certify the device that owns the claimed
@@ -115,9 +117,19 @@ On `POST /v2/groups/{gid}/commits` the owning hub:
 5. derives the member events (`group.member_added` / `group.member_removed` with `user_id` and
    `device_ids`), the group roster and the fan-out set from the parsed proposals.
 
+A Proposal on the same endpoint (types Add, Remove, Update and SelfRemove; others are rejected)
+must come from a member at its own leaf, for the group's current epoch (else 409 `stale_epoch`),
+without Welcome fields. An Update's leaf is checked like the committer's own leaves; a Remove must
+target an occupied leaf; an Add is checked (claim ledger, credential) only when a Commit references
+it. The hub sequences the Proposal, delivers it to the other members as a `message` of kind
+`proposal` and answers `{seq, epoch, duplicate}` with the unchanged epoch. Neither the epoch nor
+the roster changes: a member leaving with a self-Remove Proposal stays in the roster until another
+member's Commit references it. Proposals of an epoch can no longer be referenced once the epoch
+advances. Resubmitting the same Proposal answers 200 `duplicate: true`.
+
 | Rejection | Status | Code |
 |---|---|---|
-| `mls_message` is not a `PublicMessage` Commit/Proposal for this group, or Welcome fields inconsistent | 400 | `validation_failed` |
+| `mls_message` is not a `PublicMessage` Commit/Proposal for this group, a Commit references an unknown or no longer pending Proposal, or Welcome fields inconsistent | 400 | `validation_failed` |
 | A checked leaf's credential is invalid or belongs to another device (see *MLS credential checks*) | 400 | `validation_failed` |
 | Sender is not a member, or group policy does not allow the change | 403 | `not_member` / `forbidden` |
 
@@ -304,7 +316,8 @@ client keeps one connection and cursor per listed hub and merges by `message_id`
 replacing the previous one) and `DELETE` removes it; both return 204. Tokens are validated per
 provider (400 `validation_failed`); `unifiedpush` also requires the RFC 8291 keys `p256dh` and
 `auth`, which encrypt its bodies. The hub then pushes `message` and `welcome` events to the
-device's provider (never to the sender's own device). Payload, provider mapping and the test-only
+device's provider (never to the sender's own device; never for `message` events of kind
+`proposal`). Payload, provider mapping and the test-only
 `GET /v2/debug/push-log` (off by default): [`push.md`](push.md).
 
 ## Differences from v1
@@ -323,8 +336,8 @@ device's provider (never to the sender's own device). Payload, provider mapping 
 | Group create | `{kind, member_device_ids}` | `{kind}`; members are added by Commits |
 | Membership | `POST /members`, `DELETE /members/{device_id}` | removed; driven by `POST /v2/groups/{gid}/commits {client_id, mls_message, welcome?, welcome_recipients?, ratchet_tree?}` returning `{seq, epoch, duplicate}` |
 | Epoch | client `epoch` field | read by the hub from the MLS framing |
-| Commit retry | `client_id` replay | same Commit (same hash) returns success with `duplicate: true`; any other Commit for a past epoch is 409 `stale_epoch` |
-| Messages | `{client_id, epoch, kind, payload, recipients?}` | `{client_id, mls_message}` for application messages; Commits go to `/commits`; `kind` is `commit` or `application` |
+| Commit retry | `client_id` replay | same Commit or Proposal (same hash) returns success with `duplicate: true`; any other Commit or Proposal for a past epoch is 409 `stale_epoch` |
+| Messages | `{client_id, epoch, kind, payload, recipients?}` | `{client_id, mls_message}` for application messages; Commits and Proposals go to `/commits`; `kind` is `commit`, `proposal` or `application` |
 | History | `?after_seq` (exclusive) | `?from_seq` (inclusive) |
 | Welcome | message of kind `welcome` with `recipients` | `welcome` event to each recipient device |
 | Members | `device_id` | `user_id` + `device_id` |

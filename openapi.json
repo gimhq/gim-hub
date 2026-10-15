@@ -552,8 +552,8 @@
         "tags": [
           "groups"
         ],
-        "summary": "Submit an MLS Commit",
-        "description": "`mls_message` is an MLS PublicMessage (Commit or Proposal), so the hub can parse it. The hub reads the epoch from the MLS framing (there is no client epoch field) and accepts the Commit only for the group's current epoch, advancing it by one. Membership changes are derived from the Add/Remove/Update proposals; each added member's gim-core credential (type 0xF001) is validated against their DeviceList, members are identified by user ID + device ID from their credentials, and `group.member_added` / `group.member_removed` events carry the `user_id`. The optional Welcome is delivered as a `welcome` event to `welcome_recipients`.\n\nResubmitting the same Commit (same hash) returns the original result with `duplicate: true` and emits nothing. Any other Commit for a past epoch fails with 409 `stale_epoch`.\n\nFor a group owned by another hub (federation), this hub forwards the Commit to the owning hub, which sequences it; the response is the owner's result and the local replica already holds the Commit. Added members on other hubs get their Welcome through their own hub. This needs the caller's hosting record listing this hub (403 `hosting_record_required`); when the owning hub refuses the request the result is 502 `peer_refused`, when it cannot be reached 503 `peer_unavailable` with `Retry-After` (retry the same Commit: it is idempotent by hash).",
+        "summary": "Submit an MLS Commit or Proposal",
+        "description": "`mls_message` is an MLS PublicMessage (Commit or Proposal), so the hub can parse it. The hub reads the epoch from the MLS framing (there is no client epoch field) and accepts the Commit only for the group's current epoch, advancing it by one. Membership changes are derived from the Add/Remove/Update proposals, carried by value or referenced (ProposalRef) from Proposals sequenced in the same epoch (an unknown reference fails with 400); each added member's gim-core credential (type 0xF001) is validated against their DeviceList, members are identified by user ID + device ID from their credentials, and `group.member_added` / `group.member_removed` events carry the `user_id`. The optional Welcome is delivered as a `welcome` event to `welcome_recipients`.\n\nA Proposal (Add, Remove, SelfRemove or Update) must be for the current epoch; the hub sequences it and delivers it as a `message` of kind `proposal`, without changing the epoch or the roster: a later Commit that references it does. The result carries the Proposal's `seq` and the unchanged `epoch`; a Welcome is not allowed. Proposals of an epoch can no longer be referenced once the epoch advances.\n\nResubmitting the same Commit or Proposal (same hash) returns the original result with `duplicate: true` and emits nothing. Any other Commit or Proposal for a past epoch fails with 409 `stale_epoch`.\n\nFor a group owned by another hub (federation), this hub forwards the Commit or Proposal to the owning hub, which sequences it; the response is the owner's result and the local replica already holds the message. Added members on other hubs get their Welcome through their own hub. This needs the caller's hosting record listing this hub (403 `hosting_record_required`); when the owning hub refuses the request the result is 502 `peer_refused`, when it cannot be reached 503 `peer_unavailable` with `Retry-After` (retry the same Commit: it is idempotent by hash).",
         "operationId": "submit_commit",
         "parameters": [
           {
@@ -579,7 +579,7 @@
         },
         "responses": {
           "200": {
-            "description": "Duplicate of an accepted Commit (`duplicate: true`)",
+            "description": "Duplicate of an accepted Commit or Proposal (`duplicate: true`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -589,7 +589,7 @@
             }
           },
           "201": {
-            "description": "Commit accepted",
+            "description": "Commit or Proposal accepted",
             "content": {
               "application/json": {
                 "schema": {
@@ -599,7 +599,7 @@
             }
           },
           "400": {
-            "description": "Not a PublicMessage Commit for this group, invalid credential of an added member, or Welcome fields inconsistent (`validation_failed`)",
+            "description": "Not a PublicMessage Commit/Proposal for this group, unknown proposal reference, invalid credential of an added member or of the sender's leaf, or Welcome fields inconsistent (`validation_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -639,7 +639,7 @@
             }
           },
           "409": {
-            "description": "Commit epoch is not the group epoch (`stale_epoch`)",
+            "description": "Commit or Proposal epoch is not the group epoch (`stale_epoch`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -692,7 +692,7 @@
           "messages"
         ],
         "summary": "List group messages",
-        "description": "Commits and application messages with `seq >= from_seq`, ascending. For a group owned by another hub (federation), this hub serves its replica, which holds the log from the Commit that added this hub's first member on: a lower `from_seq` returns messages starting there.",
+        "description": "Commits, Proposals and application messages with `seq >= from_seq`, ascending. For a group owned by another hub (federation), this hub serves its replica, which holds the log from the Commit that added this hub's first member on: a lower `from_seq` returns messages starting there.",
         "operationId": "list_messages",
         "parameters": [
           {
@@ -2508,7 +2508,7 @@
       },
       "CommitResult": {
         "type": "object",
-        "description": "An accepted Commit.",
+        "description": "An accepted Commit or Proposal.",
         "required": [
           "seq",
           "epoch",
@@ -2517,18 +2517,18 @@
         "properties": {
           "duplicate": {
             "type": "boolean",
-            "description": "True if this exact Commit had already been accepted (nothing was emitted again)."
+            "description": "True if this exact Commit or Proposal had already been accepted (nothing was emitted again)."
           },
           "epoch": {
             "type": "integer",
             "format": "int64",
-            "description": "Group epoch after the Commit.",
+            "description": "Group epoch after the Commit; for a Proposal, the (unchanged) epoch it was sent in.",
             "minimum": 0
           },
           "seq": {
             "type": "integer",
             "format": "int64",
-            "description": "Per-group sequence number of the Commit.",
+            "description": "Per-group sequence number of the Commit or Proposal.",
             "minimum": 0
           }
         }
@@ -3492,7 +3492,8 @@
         "type": "string",
         "enum": [
           "commit",
-          "application"
+          "application",
+          "proposal"
         ]
       },
       "MessageList": {
@@ -3740,7 +3741,7 @@
       },
       "SubmitCommitRequest": {
         "type": "object",
-        "description": "Submit an MLS Commit.",
+        "description": "Submit an MLS Commit or Proposal.",
         "required": [
           "client_id",
           "mls_message"
@@ -3755,7 +3756,7 @@
           },
           "mls_message": {
             "type": "string",
-            "description": "MLSMessage carrying the Commit as a PublicMessage (TLS encoding), base64.",
+            "description": "MLSMessage carrying the Commit or Proposal as a PublicMessage (TLS encoding), base64.",
             "contentEncoding": "base64"
           },
           "ratchet_tree": {
@@ -3771,7 +3772,7 @@
               "string",
               "null"
             ],
-            "description": "MLS Welcome for the devices added by this Commit, base64.",
+            "description": "MLS Welcome for the devices added by this Commit, base64. Not allowed with a Proposal.",
             "contentEncoding": "base64"
           },
           "welcome_recipients": {

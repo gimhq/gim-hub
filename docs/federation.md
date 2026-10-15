@@ -621,6 +621,27 @@ Resolved in H3-T5:
   (cached) before the transaction; the transaction reads the stored rows. A user without a stored
   record contributes no hub.
 
+Resolved in H3-FX3 (Proposals and Commits by reference):
+
+- **Proposals.** A PublicMessage Proposal (Add, Remove, SelfRemove, Update) on
+  `POST /v2/groups/{gid}/commits` or in `SubmitCommit` is sequenced like a Commit (member sender at
+  its leaf, current epoch, dedup by hash, `client_id` unique) but leaves epoch and roster alone. It
+  is stored as `messages.kind = 'proposal'` (`commit_hash` = its hash) and indexed in
+  `pending_proposals (gid, proposal_ref, epoch, seq)` under its `ProposalRef` for SHA-256, SHA-384
+  and SHA-512 (the hub does not know the group's ciphersuite; a reference's length selects the
+  hash). Rows of earlier epochs are deleted whenever the epoch advances. An Update's leaf is checked
+  against the sender's DeviceList; an Add only when a Commit references it.
+- **Commits by reference.** Each `ProposalOrRef::Reference` is resolved against
+  `pending_proposals` for the Commit's epoch before the transaction (an unknown reference is
+  `INVALID` / 400); the resolved Adds, Removes and Updates then go through the same claim ledger,
+  burn and credential checks as proposals by value. An Update by reference sets the proposer's
+  leaf, which was checked when the Proposal was submitted.
+- **Replicas** store a delivered Proposal with `kind = 'proposal'` and index it the same way when
+  it belongs to the replica's current epoch, so a member hub resolves the references of a Commit
+  it forwards (claim ledger rule for Adds by reference, §6.3 step 2). A reference unknown to the
+  replica first triggers a bounded `FetchLog` catch-up; a replica still behind the Commit's epoch
+  answers 503 `peer_unavailable`.
+
 ### 5.4 Replicas on member hubs
 
 A member hub keeps a replica of every remote-owned group with a local member, so the client API
@@ -724,14 +745,16 @@ A direct message (`kind = direct`) is the same flow with one added member.
 alice@A: POST /v2/groups/{gid}/commits {...}        (gid owned by B)
 hub A (member hub), before forwarding:
   1. replica exists and (alice, device) is in its roster → else 403 not_member / 404 not_found
-  2. parse (PublicMessage Commit, group_id = gid); every Add's kp_ref is in A's claim ledger
+  2. parse (PublicMessage Commit or Proposal, group_id = gid); for a Commit, proposal references
+     resolve against the replica (§5.3) and every Add's kp_ref is in A's claim ledger
      (key_packages claimed rows or remote_kp_claims) → else 400 validation_failed
   3. alice hosted on A → else 403 hosting_record_required
 hub A → hub B: SubmitCommit{gid, alice, device, client_id, mls_message, welcome?,
                welcome_recipient_device_ids, ratchet_tree?}  (sync)
 hub B (owner): authorization (§3.7), then the same processing as a local Commit (§6.2 steps 1-3,
   identities of Adds per §5.3), dedup by Commit hash, first valid Commit per epoch wins.
-  → SubmitCommitResponse{seq, epoch (new epoch), duplicate, message: SequencedMessage}
+  → SubmitCommitResponse{seq, epoch (new epoch; for a Proposal its unchanged epoch), duplicate,
+    message: SequencedMessage (kind COMMIT or PROPOSAL)}
 hub A: apply `message` to its replica immediately (§6.6), so alice's other devices get events
   and read-your-writes holds; then 201/200 to alice. B's later Deliver of the same seq is a
   duplicate and is only acknowledged.
@@ -1030,6 +1053,7 @@ numbering lets subtasks work in parallel; each adds one line to the list):
 | `0004_outbox.sql` | `s2s_outbox`, `s2s_peers` | H3-T4 |
 | `0005_group_federation.sql` | `commit_membership`, `groups.replica_from_seq`, `groups.detached`, `pending_welcomes.message_id` + unique index `(message_id, user_id, device_id) WHERE message_id IS NOT NULL` | H3-T5 |
 | `0008_replica_detached_at.sql` | `groups.detached_at` (§5.4) | H4-CL3 |
+| `0009_message_proposal.sql` | `messages` rebuilt with `kind` `'proposal'`; `pending_proposals` (§5.3) | H3-FX3 |
 
 Single-hub databases migrate in place; owned groups have `replica_from_seq = NULL`. Existing
 Commits get no `commit_membership` rows; a `FetchLog` over them returns Commits without membership
@@ -1200,6 +1224,7 @@ All additive; they need L1 / gim-core sign-off before implementation of the affe
 | `POST /v2/keypackages/claim` response | new `unavailable: [ClaimTarget]` |
 | `POST /v2/groups/{gid}/commits`, `POST /v2/groups/{gid}/messages` | for remote-owned gids: 502 `peer_refused`, 503 `peer_unavailable`; 403 `hosting_record_required` |
 | `GET /v2/groups/{gid}/messages` | on a replica, history starts at the join point (§5.4) |
+| `Message.kind` | new value `proposal` for Proposals sequenced through `POST /v2/groups/{gid}/commits` (§5.3, H3-FX3) |
 | New event `hosting_record.expiring` | `{user_id, expires_at, seq}` to the user's active devices when < 48 h remain |
 | Error codes | `invalid_hosting_record` (400), `stale_hosting_record` (409), `hosting_record_required` (403), `peer_refused` (502), `peer_unavailable` (503, with `Retry-After` seconds) |
 
@@ -1343,6 +1368,7 @@ Resolved in H4-CL2:
 | T10 | Non-allowlisted hub refused | profile `refusal`: eve@X claims alice@A and submits to a group owned by A | A answers `Hello` with `UNAUTHORIZED` and closes; eve's claim lists alice in `unavailable`; A logs the refusal; nothing stored on A |
 | T11 | PSK | `compose.psk.yaml`: T2 between A and B over TCP; hub-x without PSK | T2 passes; X cannot connect (pnet handshake fails); startup with a QUIC listen address and a PSK fails |
 | T12 | Runtime cert renewal / rotation | restart hub-a with a new runtime key | B re-binds via `Hello`; gid and hosting records unchanged; messaging continues |
+| T13 | Leave by Proposal | frank@B sends a self-Remove Proposal for a group owned by A; grace@C commits it by reference | Proposal forwarded and sequenced by A (epoch unchanged, `kind = proposal` on every hub); C resolves the reference on its replica; frank removed on every hub with `group.member_removed` |
 
 ## 12. Implementation breakdown
 

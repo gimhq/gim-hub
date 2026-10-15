@@ -1,6 +1,6 @@
 //! `SubmitCommit` / `SubmitMessage` (docs/federation.md §6.3, §6.5): a
-//! member hub forwards its users' Commits and application messages to the
-//! owning hub, which sequences them.
+//! member hub forwards its users' Commits, Proposals (as `SubmitCommit`) and
+//! application messages to the owning hub, which sequences them.
 
 use gim_hub_identity::HubId;
 use gim_hub_proto::s2s::{
