@@ -1,12 +1,35 @@
 //! Per-device event stream (long-poll and WebSocket).
 
-use axum::response::IntoResponse;
+use std::time::Duration;
 
-use super::not_implemented;
-use crate::{
-    auth::AuthDevice,
-    dto::{CursorExpiredError, Error, EventList, EventsQuery, StreamQuery},
+use axum::{
+    extract::{
+        rejection::QueryRejection,
+        ws::{rejection::WebSocketUpgradeRejection, CloseFrame, Message, WebSocket},
+        Query, State, WebSocketUpgrade,
+    },
+    response::Response,
+    Json,
 };
+use gim_hub_db::events::{self, StoredEvent};
+use serde_json::{json, Value};
+
+use crate::{
+    auth::{token_hash, AuthDevice},
+    dto::{CursorExpiredError, Error, EventList, EventsQuery, StreamQuery},
+    error::ApiError,
+    state::AppState,
+};
+
+const DEFAULT_LIMIT: u32 = 100;
+const MAX_LIMIT: u32 = 500;
+const MAX_WAIT_SECONDS: u32 = 30;
+/// Page size used when replaying the backlog over the WebSocket.
+const STREAM_BATCH: u32 = 500;
+const PING_INTERVAL: Duration = Duration::from_secs(30);
+const CLOSE_UNAUTHORIZED: u16 = 4401;
+const CLOSE_CURSOR_EXPIRED: u16 = 4410;
+const CLOSE_INTERNAL: u16 = 1011;
 
 #[utoipa::path(
     get,
@@ -28,8 +51,34 @@ from that cursor.",
         (status = 410, description = "Cursor is older than the retention window (`cursor_expired`)", body = CursorExpiredError),
     ),
 )]
-pub async fn list_events(_auth: AuthDevice) -> impl IntoResponse {
-    not_implemented()
+pub async fn list_events(
+    State(state): State<AppState>,
+    auth: AuthDevice,
+    query: Result<Query<EventsQuery>, QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let Query(query) = query.map_err(|err| ApiError::ValidationFailed(err.body_text()))?;
+    let cursor = query.cursor.unwrap_or(0);
+    let wait = query.wait.unwrap_or(0);
+    if wait > MAX_WAIT_SECONDS {
+        return Err(ApiError::ValidationFailed("wait must be 0-30".into()));
+    }
+    let limit = query.limit.unwrap_or(DEFAULT_LIMIT);
+    if !(1..=MAX_LIMIT).contains(&limit) {
+        return Err(ApiError::ValidationFailed("limit must be 1-500".into()));
+    }
+
+    // Subscribe before reading so an event committed in between wakes us.
+    let mut wake = state.notifier.subscribe(&auth.user_id, &auth.device_id);
+    let mut events = fetch_events(&state, &auth, cursor, limit).await?;
+    let wait = wait.min(state.config.longpoll_max_wait_seconds);
+    if events.is_empty() && wait > 0 {
+        // A timeout simply returns the (empty) result.
+        let _ = tokio::time::timeout(Duration::from_secs(wait.into()), wake.changed()).await;
+        events = fetch_events(&state, &auth, cursor, limit).await?;
+    }
+    let next_cursor = events.last().map_or(cursor, |(cursor, _)| *cursor);
+    let events: Vec<Value> = events.into_iter().map(|(_, event)| event).collect();
+    Ok(Json(json!({ "events": events, "next_cursor": next_cursor })))
 }
 
 #[utoipa::path(
@@ -54,6 +103,168 @@ ignored.",
         (status = 400, description = "Validation failed (`validation_failed`)", body = Error),
     ),
 )]
-pub async fn stream() -> impl IntoResponse {
-    not_implemented()
+pub async fn stream(
+    State(state): State<AppState>,
+    header_auth: Result<AuthDevice, ApiError>,
+    query: Result<Query<StreamQuery>, QueryRejection>,
+    upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+) -> Result<Response, ApiError> {
+    let Query(query) = query.map_err(|err| ApiError::ValidationFailed(err.body_text()))?;
+    let upgrade = upgrade.map_err(|err| ApiError::ValidationFailed(err.body_text()))?;
+    let auth = match (header_auth, query.token) {
+        (Ok(auth), _) => Some(auth),
+        (Err(_), Some(token)) => authenticate_token(&state, &token).await?,
+        (Err(_), None) => None,
+    };
+    let cursor = query.cursor.unwrap_or(0);
+    Ok(upgrade.on_upgrade(move |socket| run_stream(socket, state, auth, cursor)))
+}
+
+/// The device of an unexpired session for `token`, if any.
+async fn authenticate_token(state: &AppState, token: &str) -> Result<Option<AuthDevice>, ApiError> {
+    let hash = token_hash(token);
+    let now = state.clock.now_ms();
+    let session = state
+        .db
+        .read(move |conn| gim_hub_db::auth::lookup_session(conn, &hash, now))
+        .await?;
+    Ok(session.map(|session| AuthDevice {
+        user_id: session.user_id,
+        device_id: session.device_id,
+    }))
+}
+
+async fn run_stream(
+    mut socket: WebSocket,
+    state: AppState,
+    auth: Option<AuthDevice>,
+    mut cursor: u64,
+) {
+    let Some(auth) = auth else {
+        close(&mut socket, CLOSE_UNAUTHORIZED, "unauthorized").await;
+        return;
+    };
+    let mut wake = state.notifier.subscribe(&auth.user_id, &auth.device_id);
+    let mut ping = tokio::time::interval_at(
+        tokio::time::Instant::now() + PING_INTERVAL,
+        PING_INTERVAL,
+    );
+    loop {
+        // Drain everything after `cursor`; the subscription above catches
+        // events committed while draining.
+        loop {
+            let batch = match fetch_events(&state, &auth, cursor, STREAM_BATCH).await {
+                Ok(batch) => batch,
+                Err(ApiError::CursorExpired { cursor: head }) => {
+                    let err = ApiError::CursorExpired { cursor: head };
+                    let frame = json!({
+                        "type": "error",
+                        "error": { "code": err.code(), "message": err.to_string() },
+                        "cursor": head,
+                    });
+                    if socket
+                        .send(Message::Text(frame.to_string().into()))
+                        .await
+                        .is_ok()
+                    {
+                        close(&mut socket, CLOSE_CURSOR_EXPIRED, "cursor_expired").await;
+                    }
+                    return;
+                }
+                Err(err) => {
+                    tracing::error!(%err, "event stream read failed");
+                    close(&mut socket, CLOSE_INTERNAL, "internal").await;
+                    return;
+                }
+            };
+            let full = batch.len() == STREAM_BATCH as usize;
+            for (event_cursor, event) in batch {
+                let frame = json!({ "type": "event", "event": event });
+                if socket
+                    .send(Message::Text(frame.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                cursor = event_cursor;
+            }
+            if !full {
+                break;
+            }
+        }
+
+        // Wait for a wake-up, answering pings and ignoring client frames.
+        loop {
+            tokio::select! {
+                changed = wake.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    break;
+                }
+                frame = socket.recv() => match frame {
+                    None | Some(Err(_) | Ok(Message::Close(_))) => return,
+                    Some(Ok(_)) => {}
+                },
+                _ = ping.tick() => {
+                    if socket.send(Message::Ping(Default::default())).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn close(socket: &mut WebSocket, code: u16, reason: &'static str) {
+    let frame = CloseFrame {
+        code,
+        reason: reason.into(),
+    };
+    // The peer may already be gone; nothing left to do then.
+    let _ = socket.send(Message::Close(Some(frame))).await;
+}
+
+/// Events of the calling device after `cursor` as `(cursor, event JSON)`, or
+/// 410 `cursor_expired` if events after `cursor` may have been pruned.
+async fn fetch_events(
+    state: &AppState,
+    auth: &AuthDevice,
+    cursor: u64,
+    limit: u32,
+) -> Result<Vec<(u64, Value)>, ApiError> {
+    let (user_id, device_id) = (auth.user_id.clone(), auth.device_id.clone());
+    let after = i64::try_from(cursor).unwrap_or(i64::MAX);
+    state
+        .db
+        .read(move |conn| {
+            if after < events::pruned_through(conn)? {
+                let head = events::head_cursor(conn)?;
+                return Err(ApiError::CursorExpired {
+                    cursor: u64::try_from(head).unwrap_or_default(),
+                });
+            }
+            events::list_after(conn, &user_id, &device_id, after, limit)?
+                .into_iter()
+                .map(event_json)
+                .collect()
+        })
+        .await
+}
+
+/// Wire shape of an event: `{cursor, created_at, type, data}`.
+fn event_json(event: StoredEvent) -> Result<(u64, Value), ApiError> {
+    let data: Value = serde_json::from_str(&event.payload)
+        .map_err(|err| ApiError::Internal(format!("event {} payload: {err}", event.id)))?;
+    let cursor = u64::try_from(event.id).unwrap_or_default();
+    Ok((
+        cursor,
+        json!({
+            "cursor": cursor,
+            "created_at": event.created_at,
+            "type": event.event_type,
+            "data": data,
+        }),
+    ))
 }
