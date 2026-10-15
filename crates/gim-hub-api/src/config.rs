@@ -33,6 +33,12 @@ pub struct Config {
     /// `GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN`: unauthenticated reads of one
     /// user per minute.
     pub public_read_per_user_per_min: u32,
+    /// `GIM_HUB_RECOVERY_READ_PER_IP_PER_MIN`: recovery backup reads per
+    /// client IP per minute.
+    pub recovery_read_per_ip_per_min: u32,
+    /// `GIM_HUB_RECOVERY_READ_PER_USER_PER_MIN`: recovery backup reads of one
+    /// user per minute.
+    pub recovery_read_per_user_per_min: u32,
     /// `GIM_HUB_TRUST_FORWARDED_FOR`: key client limits by the left-most
     /// `X-Forwarded-For` address instead of the peer address.
     pub trust_forwarded_for: bool,
@@ -92,6 +98,18 @@ impl Config {
                 get,
                 "GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN",
                 60,
+                Some(1),
+            )?,
+            recovery_read_per_ip_per_min: parse(
+                get,
+                "GIM_HUB_RECOVERY_READ_PER_IP_PER_MIN",
+                20,
+                Some(1),
+            )?,
+            recovery_read_per_user_per_min: parse(
+                get,
+                "GIM_HUB_RECOVERY_READ_PER_USER_PER_MIN",
+                10,
                 Some(1),
             )?,
             trust_forwarded_for: parse(get, "GIM_HUB_TRUST_FORWARDED_FOR", false, None)?,
@@ -209,6 +227,8 @@ mod tests {
         assert_eq!(config.session_ttl_days, 30);
         assert_eq!(config.public_read_per_ip_per_min, 120);
         assert_eq!(config.public_read_per_user_per_min, 60);
+        assert_eq!(config.recovery_read_per_ip_per_min, 20);
+        assert_eq!(config.recovery_read_per_user_per_min, 10);
         assert!(!config.trust_forwarded_for);
         assert_eq!(config.hub_key_path(), PathBuf::from("./data/hub_key"));
         assert_eq!(config.blobs_dir(), PathBuf::from("./data/blobs"));
@@ -258,11 +278,15 @@ mod tests {
             ("GIM_HUB_MAX_BLOB_BYTES", "1024"),
             ("GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN", "5"),
             ("GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN", "3"),
+            ("GIM_HUB_RECOVERY_READ_PER_IP_PER_MIN", "4"),
+            ("GIM_HUB_RECOVERY_READ_PER_USER_PER_MIN", "2"),
             ("GIM_HUB_TRUST_FORWARDED_FOR", "true"),
         ]))
         .unwrap();
         assert_eq!(config.public_read_per_ip_per_min, 5);
         assert_eq!(config.public_read_per_user_per_min, 3);
+        assert_eq!(config.recovery_read_per_ip_per_min, 4);
+        assert_eq!(config.recovery_read_per_user_per_min, 2);
         assert!(config.trust_forwarded_for);
         assert_eq!(config.listen, "127.0.0.1:9000".parse().unwrap());
         assert_eq!(config.database_path, PathBuf::from("/var/lib/gim/hub.db"));
@@ -281,6 +305,9 @@ mod tests {
         assert!(Config::from_vars(vars(&[("GIM_HUB_LISTEN", "nowhere")])).is_err());
         assert!(Config::from_vars(vars(&[("GIM_HUB_SESSION_TTL_DAYS", "0")])).is_err());
         assert!(Config::from_vars(vars(&[("GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN", "0")])).is_err());
+        assert!(
+            Config::from_vars(vars(&[("GIM_HUB_RECOVERY_READ_PER_USER_PER_MIN", "0")])).is_err()
+        );
         assert!(Config::from_vars(vars(&[("GIM_HUB_TRUST_FORWARDED_FOR", "1")])).is_err());
     }
 }

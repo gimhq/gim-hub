@@ -1,5 +1,6 @@
 //! In-memory token-bucket rate limits for the unauthenticated public reads
-//! (`GET /v2/users/{user_id}` and `GET /v2/users/{user_id}/device-list`).
+//! (`GET /v2/users/{user_id}` and `GET /v2/users/{user_id}/device-list`)
+//! and recovery backup reads (`GET /v2/users/{user_id}/recovery-backup`).
 
 use std::{
     collections::HashMap,

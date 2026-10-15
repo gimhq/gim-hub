@@ -2087,7 +2087,7 @@
           "recovery"
         ],
         "summary": "Fetch a recovery backup",
-        "description": "No authentication: this is the restore path of a user who lost every device. The backup is only useful with the recovery code. Requests will be rate limited per client address and per `user_id` (429 `rate_limited` with `Retry-After`).",
+        "description": "No authentication: this is the restore path of a user who lost every device. The backup is only useful with the recovery code. Requests are rate limited per client address and per `user_id` (429 `rate_limited` with `Retry-After`).",
         "operationId": "get_recovery_backup",
         "parameters": [
           {

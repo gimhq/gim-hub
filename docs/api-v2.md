@@ -63,7 +63,9 @@ without a token (the bundle is deleted on first fetch) and then signs in as abov
 
 Recovery: `PUT /v2/users/{user_id}/recovery-backup` stores the encrypted backup (own user only,
 at most 65536 bytes); after losing every device, `GET /v2/users/{user_id}/recovery-backup` (no
-token, rate limited) returns it for decryption with the recovery code.
+token; rate limited per client IP and per `user_id`, `GIM_HUB_RECOVERY_READ_PER_IP_PER_MIN`
+(default 20) and `GIM_HUB_RECOVERY_READ_PER_USER_PER_MIN` (default 10) requests per minute, 429
+`rate_limited` with `Retry-After`) returns it for decryption with the recovery code.
 
 ### Public reads
 

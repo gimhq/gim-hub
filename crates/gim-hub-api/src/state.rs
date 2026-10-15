@@ -40,6 +40,8 @@ pub struct AppState {
     pub push: Dispatcher,
     /// Rate limits of the unauthenticated user reads, from the config.
     pub public_reads: PublicReadLimits,
+    /// Rate limits of the unauthenticated recovery backup reads.
+    pub recovery_reads: PublicReadLimits,
 }
 
 impl AppState {
@@ -70,6 +72,11 @@ impl AppState {
             config.public_read_per_user_per_min,
             config.trust_forwarded_for,
         );
+        let recovery_reads = PublicReadLimits::new(
+            config.recovery_read_per_ip_per_min,
+            config.recovery_read_per_user_per_min,
+            config.trust_forwarded_for,
+        );
         Self {
             db,
             config: Arc::new(config),
@@ -82,6 +89,7 @@ impl AppState {
             device_lists,
             push,
             public_reads,
+            recovery_reads,
         }
     }
 }

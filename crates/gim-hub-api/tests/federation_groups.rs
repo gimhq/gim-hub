@@ -15,10 +15,14 @@ use gim_hub_api::{
 };
 use gim_hub_db::groups;
 use gim_hub_identity::{HostingRecord, HubId};
-use gim_hub_proto::s2s::{s2s_request::Op, ErrorCode, S2sRequest, SubmitMessageRequest};
+use gim_hub_proto::s2s::{
+    s2s_request::Op, s2s_response::Result as OpOutput, ErrorCode, MessageKind, S2sRequest,
+    SequencedMessage, SubmitMessageRequest, SubmitMessageResponse,
+};
 use gim_hub_s2s::{
-    hosting::testing::sign_record, AllowlistPolicy, ClaimService, Federation, FederationConfig,
-    FederationService, GroupService, GroupSource, Multiaddr, Outbox, OutboxConfig,
+    hosting::testing::sign_record, AllowlistPolicy, BoxFuture, ClaimService, Federation,
+    FederationConfig, FederationService, GroupService, GroupSource, Multiaddr, OpKind, OpResult,
+    Outbox, OutboxConfig,
 };
 use openmls::prelude::{
     tls_codec::Deserialize, GroupId, LeafNodeIndex, LeafNodeParameters, MlsGroup,
@@ -938,4 +942,82 @@ async fn submits_from_unlisted_or_unknown_hubs_are_refused() {
     )
     .await;
     assert_eq!(messages["messages"], json!([]));
+}
+
+#[tokio::test]
+async fn forwarded_submit_answered_with_a_non_application_message_is_refused() {
+    let nodes = cluster(&[101, 102], 1000).await;
+    let (a, b) = (&nodes[0], &nodes[1]);
+    let alice = Client::new(&a.hub, 1, 11).await;
+    let bob = Client::new(&b.hub, 2, 21).await;
+    host(&[a, b], 1, a).await;
+    host(&[a, b], 2, b).await;
+    let (gid, mut alice_group) = create_group(&alice, &a.hub, "group").await;
+    let mls = application(&alice, &mut alice_group, b"hi");
+
+    // B holds a replica listing bob; A answers every submit with a Commit.
+    let (key, members) = (
+        gid.clone(),
+        vec![
+            (alice.user_id.clone(), alice.device_id.clone()),
+            (bob.user_id.clone(), bob.device_id.clone()),
+        ],
+    );
+    let creator = (alice.user_id.clone(), alice.device_id.clone());
+    b.hub
+        .state
+        .db
+        .write(move |tx| {
+            groups::create_replica(
+                tx,
+                &groups::Group {
+                    gid: key,
+                    kind: "group".into(),
+                    epoch: 0,
+                    last_seq: 0,
+                    created_by_user_id: creator.0,
+                    created_by_device_id: creator.1,
+                    created_at: TEST_NOW,
+                },
+                &members,
+                TEST_NOW,
+            )
+        })
+        .await
+        .unwrap();
+    a.service.register(
+        OpKind::SubmitMessage,
+        Arc::new(|_: HubId, op: Op| -> BoxFuture<'static, OpResult> {
+            Box::pin(async move {
+                let Op::SubmitMessage(req) = op else {
+                    unreachable!()
+                };
+                Ok(OpOutput::SubmitMessage(SubmitMessageResponse {
+                    seq: 1,
+                    epoch: 1,
+                    duplicate: false,
+                    message: Some(SequencedMessage {
+                        gid: req.gid,
+                        seq: 1,
+                        epoch: 1,
+                        kind: MessageKind::Commit.into(),
+                        sender_user_id: req.sender_user_id,
+                        sender_device_id: req.sender_device_id,
+                        client_id: req.client_id,
+                        payload: req.mls_message,
+                        ..Default::default()
+                    }),
+                }))
+            })
+        }),
+    );
+
+    let (status, body) = post_message(&bob, &b.hub, &gid, "b1", &mls).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    assert_eq!(code(&body), "peer_refused");
+    assert_eq!(
+        body["error"]["message"],
+        "owning hub answered with a non-application message"
+    );
+    assert_eq!(log(&bob, &b.hub, &gid).await, Vec::new());
 }
