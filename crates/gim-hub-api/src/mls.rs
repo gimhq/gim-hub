@@ -1,5 +1,6 @@
 //! Parsing of the MLS (RFC 9420) objects the hub inspects: uploaded
-//! KeyPackages and PublicMessage Commits and Proposals.
+//! KeyPackages, PublicMessage Commits and Proposals, and the framing of
+//! Welcomes.
 //!
 //! The hub never processes MLS state; it reads the framing (group ID, epoch,
 //! sender), the proposals of a Commit (by value, or by reference to
@@ -32,6 +33,10 @@ const WIRE_FORMAT_PUBLIC_MESSAGE: u16 = 1;
 /// ledger (docs/multihoming.md §5.4): the client re-claims through this hub.
 pub const KP_NOT_CLAIMED: &str = "key package not claimed through this hub (kp_not_claimed)";
 
+/// 400 message for a `welcome` that does not decode as an `MLSMessage`
+/// with `wire_format = mls_welcome`.
+pub const WELCOME_NOT_MLS_MESSAGE: &str = "welcome is not an MLSMessage carrying a Welcome";
+
 fn invalid(message: impl Into<String>) -> ApiError {
     ApiError::ValidationFailed(message.into())
 }
@@ -56,6 +61,15 @@ pub fn parse_key_package(bytes: &[u8]) -> Result<([u8; 32], LeafCredential), Api
         .validate(&RustCrypto::default(), ProtocolVersion::Mls10)
         .map_err(|err| invalid(format!("invalid KeyPackage: {err}")))?;
     Ok((hash, leaf))
+}
+
+/// Checks that `bytes` is exactly one TLS-encoded `MLSMessage` carrying a
+/// Welcome. The Welcome is encrypted to its recipients and not inspected.
+pub fn check_welcome(bytes: &[u8]) -> Result<(), ApiError> {
+    match MlsMessageIn::tls_deserialize_exact(bytes).map(MlsMessageIn::extract) {
+        Ok(MlsMessageBodyIn::Welcome(_)) => Ok(()),
+        _ => Err(invalid(WELCOME_NOT_MLS_MESSAGE)),
+    }
 }
 
 /// The parts of a PublicMessage Commit the hub acts on.
@@ -464,6 +478,10 @@ mod tests {
         ));
         assert!(matches!(
             parse_key_package(b"nope"),
+            Err(ApiError::ValidationFailed(_))
+        ));
+        assert!(matches!(
+            check_welcome(b"welcome"),
             Err(ApiError::ValidationFailed(_))
         ));
     }

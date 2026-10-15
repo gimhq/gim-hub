@@ -120,7 +120,8 @@ On `POST /v2/groups/{gid}/commits` the owning hub:
 A Proposal on the same endpoint (types Add, Remove, Update and SelfRemove; others are rejected)
 must come from a member at its own leaf, for the group's current epoch (else 409 `stale_epoch`),
 without Welcome fields. `welcome` (and the `welcome` field of the `welcome` event and of pending
-Welcomes) is the base64 of a TLS-encoded MLSMessage (wire_format = mls_welcome) carrying a Welcome;
+Welcomes) is the base64 of a TLS-encoded MLSMessage (wire_format = mls_welcome) carrying a Welcome
+(the hub checks this framing, not the encrypted contents);
 `ratchet_tree` is the TLS-encoded ratchet tree. An Update's leaf is checked like the committer's own leaves; a Remove must
 target an occupied leaf; an Add is checked (claim ledger, credential) only when a Commit references
 it. The hub sequences the Proposal, delivers it to the other members as a `message` of kind
@@ -133,6 +134,7 @@ advances. Resubmitting the same Proposal answers 200 `duplicate: true`.
 |---|---|---|
 | `mls_message` is not a `PublicMessage` Commit/Proposal for this group, a Commit references an unknown or no longer pending Proposal, or Welcome fields inconsistent | 400 | `validation_failed` |
 | A checked leaf's credential is invalid or belongs to another device (see *MLS credential checks*) | 400 | `validation_failed` |
+| `welcome` is not exactly one MLSMessage with wire_format = mls_welcome (e.g. a bare Welcome without the MLSMessage wrapper, another wire format, trailing bytes): `welcome is not an MLSMessage carrying a Welcome` | 400 | `validation_failed` |
 | Sender is not a member, or group policy does not allow the change | 403 | `not_member` / `forbidden` |
 
 ### MLS credential checks

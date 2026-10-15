@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 use mls_support::{
     b64, code, device_list, encode, gim_credential, group_path, put_device_list, send, signer,
-    unb64, Client,
+    unb64, welcome_fixture, Client,
 };
 
 fn body(client_id: &str, message: &MlsMessageOut) -> Value {
@@ -459,7 +459,7 @@ async fn add_by_reference_follows_the_key_package_ledger() {
         )
         .unwrap();
     let mut with_welcome = body("p10", &proposal);
-    with_welcome["welcome"] = json!(b64(b"welcome"));
+    with_welcome["welcome"] = json!(b64(&welcome_fixture()));
     with_welcome["welcome_recipients"] =
         json!([{ "user_id": dave.user_id, "device_id": dave.device_id }]);
     let (status, result) = alice.submit_commit(&hub, &gid, with_welcome).await;

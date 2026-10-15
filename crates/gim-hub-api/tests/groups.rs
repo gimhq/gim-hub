@@ -12,7 +12,7 @@ use openmls::prelude::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use mls_support::{code, encode, gim_credential, group_path, send, signer, Client};
+use mls_support::{b64, code, encode, gim_credential, group_path, send, signer, Client};
 
 fn commit_body(client_id: &str, commit: &MlsMessageOut) -> Value {
     json!({ "client_id": client_id, "mls_message": encode(commit) })
@@ -366,6 +366,51 @@ async fn welcome_must_target_added_devices() {
     // Nothing was sequenced.
     let (_, info) = send(&hub, Method::GET, &group_path(&gid), &alice.token, None).await;
     assert_eq!(info["epoch"], 0);
+}
+
+#[tokio::test]
+async fn welcome_must_be_an_mls_message_carrying_a_welcome() {
+    let hub = TestHub::new();
+    let alice = Client::new(&hub, 1, 11).await;
+    let bob = Client::new(&hub, 2, 21).await;
+    let (gid, mut group) = alice.create_group(&hub).await;
+    bob.upload_key_packages(&hub, 1).await;
+    let kp = alice.claim(&hub, &bob).await;
+    let (commit, welcome, _) = group
+        .add_members(&alice.provider, &alice.signer, &[kp])
+        .unwrap();
+    let welcome = welcome.tls_serialize_detached().unwrap();
+    let commit_bytes = commit.tls_serialize_detached().unwrap();
+
+    let mut body = commit_body("c1", &commit);
+    body["welcome_recipients"] = json!([{ "user_id": bob.user_id, "device_id": bob.device_id }]);
+    for bad in [
+        // A bare Welcome: the MLSMessage without version and wire_format.
+        welcome[4..].to_vec(),
+        // MLSMessages of other wire formats: a PublicMessage, a KeyPackage.
+        commit_bytes,
+        [&welcome[..2], &[0, 5], bob.key_package().as_slice()].concat(),
+        // Trailing bytes, garbage.
+        [welcome.as_slice(), &[0]].concat(),
+        b"welcome".to_vec(),
+    ] {
+        body["welcome"] = json!(b64(&bad));
+        let (status, response) = alice.submit_commit(&hub, &gid, body.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+        assert_eq!(code(&response), "validation_failed");
+        assert_eq!(
+            response["error"]["message"],
+            "welcome is not an MLSMessage carrying a Welcome"
+        );
+    }
+    // Nothing was sequenced or delivered.
+    let (_, info) = send(&hub, Method::GET, &group_path(&gid), &alice.token, None).await;
+    assert_eq!(info["epoch"], 0);
+    assert!(bob.events_of(&hub, "welcome").await.is_empty());
+
+    body["welcome"] = json!(b64(&welcome));
+    let (status, response) = alice.submit_commit(&hub, &gid, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{response}");
 }
 
 /// Stores `key_package` as a one-time KeyPackage of `owner`, bypassing the

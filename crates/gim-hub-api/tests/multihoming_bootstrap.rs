@@ -18,8 +18,8 @@ use gim_hub_api::{
 use gim_hub_db::{groups, hosting as store, DbError};
 use gim_hub_identity::{HostingRecord, HubId};
 use gim_hub_proto::s2s::{
-    s2s_request::Op, CopyPendingWelcomesRequest, ErrorCode, GroupSnapshot, Member, PendingWelcome,
-    S2sRequest, S2sResponse, SeedReplicaRequest,
+    s2s_request::Op, CopyPendingWelcomesRequest, DeliverWelcomeRequest, ErrorCode, GroupSnapshot,
+    Member, PendingWelcome, S2sRequest, S2sResponse, SeedReplicaRequest,
 };
 use gim_hub_s2s::{
     hosting::testing::sign_record, ops::hosting_record::HostingRecordService, AllowlistPolicy,
@@ -34,7 +34,8 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 
 use mls_support::{
-    b64, device_list, encode, group_path, key, put_device_list, send, unb64, user_id, Client,
+    b64, device_list, encode, group_path, key, put_device_list, send, unb64, user_id,
+    welcome_fixture, Client,
 };
 
 const DAY: i64 = 24 * 60 * 60 * 1000;
@@ -590,7 +591,31 @@ async fn bootstrap_ops_are_authorized_and_idempotent() {
     );
     assert!(alice.events(&b.hub).await.is_empty());
 
-    let payload = json!({ "gid": gid, "seq": 5, "epoch": 2, "welcome": "AA==" }).to_string();
+    // A DeliverWelcome whose welcome is not an MLSMessage carrying a Welcome
+    // is refused and stores nothing.
+    let deliver = Op::DeliverWelcome(DeliverWelcomeRequest {
+        gid: gid.clone(),
+        sender_user_id: alice.user_id.clone(),
+        sender_device_id: alice.device_id.clone(),
+        recipient_user_id: alice.user_id.clone(),
+        recipient_device_ids: vec![alice.device_id.clone()],
+        welcome: welcome_fixture()[4..].to_vec(),
+        message_id: "m0".into(),
+        group: match seed(&alice.user_id, &[&alice.user_id]) {
+            Op::SeedReplica(request) => request.group,
+            _ => unreachable!(),
+        },
+        ..DeliverWelcomeRequest::default()
+    });
+    let response = a.send_op(b, deliver).await;
+    assert_eq!(error_code(&response), Some(ErrorCode::Invalid));
+    assert_eq!(b.welcome_rows(&alice.user_id).await, 0);
+    assert!(alice.events(&b.hub).await.is_empty());
+
+    let welcome = |welcome: &[u8]| {
+        json!({ "gid": gid, "seq": 5, "epoch": 2, "welcome": b64(welcome) }).to_string()
+    };
+    let (payload, bad_payload) = (welcome(&welcome_fixture()), welcome(b"welcome"));
     let copy = |user_id: &str| {
         Op::CopyPendingWelcomes(CopyPendingWelcomesRequest {
             user_id: user_id.to_owned(),
@@ -615,6 +640,14 @@ async fn bootstrap_ops_are_authorized_and_idempotent() {
                     gid: gid.clone(),
                     message_id: "m2".into(),
                     payload_json: "[]".into(),
+                    created_at: 1,
+                },
+                // A welcome that is not an MLSMessage carrying a Welcome: skipped.
+                PendingWelcome {
+                    device_id: alice.device_id.clone(),
+                    gid: gid.clone(),
+                    message_id: "m3".into(),
+                    payload_json: bad_payload.clone(),
                     created_at: 1,
                 },
             ],

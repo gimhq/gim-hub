@@ -599,7 +599,7 @@
             }
           },
           "400": {
-            "description": "Not a PublicMessage Commit/Proposal for this group, unknown proposal reference, invalid credential of an added member or of the sender's leaf, or Welcome fields inconsistent (`validation_failed`)",
+            "description": "Not a PublicMessage Commit/Proposal for this group, unknown proposal reference, invalid credential of an added member or of the sender's leaf, `welcome` not an MLSMessage carrying a Welcome, or Welcome fields inconsistent (`validation_failed`)",
             "content": {
               "application/json": {
                 "schema": {
