@@ -1,12 +1,22 @@
 //! Encrypted recovery backups.
 
-use axum::response::IntoResponse;
+use axum::{
+    extract::{rejection::JsonRejection, Path, State},
+    Json,
+};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use gim_hub_db::recovery;
 
-use super::not_implemented;
+use super::identity::{decode_base64, json_body};
 use crate::{
     auth::AuthDevice,
     dto::{Error, PutRecoveryBackupRequest, RecoveryBackup},
+    error::ApiError,
+    state::AppState,
 };
+
+/// Largest accepted backup in decoded bytes.
+const MAX_BACKUP_BYTES: usize = 65_536;
 
 #[utoipa::path(
     put,
@@ -26,8 +36,37 @@ backup is opaque ciphertext (gim-core recovery backup CBOR) of at most 65536 dec
         (status = 413, description = "Payload too large (`payload_too_large`)", body = Error),
     ),
 )]
-pub async fn put_recovery_backup(_auth: AuthDevice) -> impl IntoResponse {
-    not_implemented()
+pub async fn put_recovery_backup(
+    auth: AuthDevice,
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+    body: Result<Json<PutRecoveryBackupRequest>, JsonRejection>,
+) -> Result<Json<RecoveryBackup>, ApiError> {
+    if user_id != auth.user_id {
+        return Err(ApiError::Forbidden(
+            "can only store the caller's own backup".into(),
+        ));
+    }
+    let body = json_body(body)?;
+    let backup = decode_base64(&body.backup)
+        .ok_or_else(|| ApiError::ValidationFailed("backup is not valid base64".into()))?;
+    if backup.is_empty() {
+        return Err(ApiError::ValidationFailed("backup is empty".into()));
+    }
+    if backup.len() > MAX_BACKUP_BYTES {
+        return Err(ApiError::PayloadTooLarge);
+    }
+    let now = state.clock.now_ms();
+    let user_id_ = user_id.clone();
+    state
+        .db
+        .write(move |tx| recovery::put(tx, &user_id_, &backup, now))
+        .await?;
+    Ok(Json(RecoveryBackup {
+        user_id,
+        backup: body.backup,
+        updated_at: now,
+    }))
 }
 
 #[utoipa::path(
@@ -45,6 +84,19 @@ address and per `user_id` (429 `rate_limited` with `Retry-After`).",
         (status = 429, description = "Rate limited (`rate_limited`)", body = Error),
     ),
 )]
-pub async fn get_recovery_backup() -> impl IntoResponse {
-    not_implemented()
+pub async fn get_recovery_backup(
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+) -> Result<Json<RecoveryBackup>, ApiError> {
+    let user_id_ = user_id.clone();
+    let stored = state
+        .db
+        .read(move |conn| recovery::get(conn, &user_id_))
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(RecoveryBackup {
+        user_id,
+        backup: STANDARD.encode(stored.backup),
+        updated_at: stored.updated_at,
+    }))
 }
