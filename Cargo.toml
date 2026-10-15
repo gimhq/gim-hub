@@ -38,7 +38,6 @@ axum = { version = "=0.8.9", default-features = false, features = [
     "ws",
 ] }
 base64 = "=0.23.1"
-bs58 = "=0.5.1"
 ciborium = "=0.2.2"
 data-encoding = "=2.11.1"
 ed25519-dalek = "=2.2.0"

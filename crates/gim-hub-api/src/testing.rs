@@ -27,13 +27,26 @@ pub struct TestHub {
 }
 
 impl TestHub {
+    /// A hub with a random root key.
     pub fn new() -> Self {
+        Self::with_key(None)
+    }
+
+    /// A hub whose root key has the Ed25519 seed `seed`.
+    pub fn with_hub_seed(seed: [u8; 32]) -> Self {
+        Self::with_key(Some(seed))
+    }
+
+    fn with_key(seed: Option<[u8; 32]>) -> Self {
         let data_dir = tempfile::tempdir().expect("create temp data dir");
         let config = Config::from_vars([(
             "GIM_HUB_DATA_DIR".to_owned(),
             data_dir.path().display().to_string(),
         )])
         .expect("test config");
+        if let Some(seed) = seed {
+            std::fs::write(config.hub_key_path(), seed).expect("write hub key");
+        }
         let hub = HubIdentity::load_or_create(&config.hub_key_path()).expect("hub key");
         let state = AppState {
             db: Db::open_in_memory().expect("in-memory db"),

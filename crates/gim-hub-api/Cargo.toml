@@ -17,7 +17,6 @@ testing = ["dep:tempfile"]
 [dependencies]
 axum = { workspace = true }
 base64 = { workspace = true }
-bs58 = { workspace = true }
 ed25519-dalek = { workspace = true }
 futures-util = { workspace = true }
 getrandom = { workspace = true }

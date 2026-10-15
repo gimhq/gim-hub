@@ -79,6 +79,13 @@ pub struct AuthenticatedDevice {
     pub nonce: [u8; 32],
 }
 
+/// The `user_id` claimed by `AuthResponse` bytes (step 1 shape checks only),
+/// so the hub can load that user's DeviceList for [`verify_auth_response`].
+pub fn auth_response_user_id(response: &[u8]) -> Result<UserId, IdentityError> {
+    let [_version, _challenge, user_id, _device_id, _sig] = cbor::decode_body(response)?;
+    UserId::parse(&cbor::text(user_id)?)
+}
+
 /// Verifies `AuthResponse` bytes for the hub `expected_audience` at `now`
 /// (Unix milliseconds), against the user's verified `device_list`,
 /// following the spec's steps 1-5 in order.
@@ -199,6 +206,11 @@ mod tests {
             DeviceId::from_device_pubkey(&key(2).verifying_key())
         );
         assert_eq!(device.nonce, NONCE);
+        assert_eq!(auth_response_user_id(&response).unwrap(), *list.user_id());
+        assert!(matches!(
+            auth_response_user_id(&response[1..]),
+            Err(IdentityError::Malformed(_))
+        ));
     }
 
     #[test]
