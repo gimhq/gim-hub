@@ -103,6 +103,39 @@ not run in CI): hub-a, hub-b and hub-c share a pnet key generated for the run an
 hub-x has no key. It first checks that a hub with the key and a QUIC listen address refuses to
 start, then runs the same scenarios; hub-x must never get a `Hello` to hub-a.
 
+### Multi-homing
+
+A user is multi-homed when their hosting record lists several hubs
+([`multihoming.md`](multihoming.md)). It needs nothing beyond federation
+(`GIM_HUB_FEDERATION=true`): every listed hub must allow the others, and the owning hubs of the
+user's groups must allow all of them. Two variables apply (table above):
+
+- `GIM_HUB_UNHOSTED_GRACE_HOURS` (default 168): after a user removes this hub, their devices may
+  still sign in and read (drain their cursor) for this long; every other write is 403
+  `hosting_record_required`. The hourly retention task then purges the user's data and keeps
+  the record as a tombstone.
+- `GIM_HUB_PUSH_FAILOVER_SECONDS` (default 30): only the user's primary hub pushes; a fallback
+  hub starts pushing once every hub before it has been unreachable for this long and stops when
+  it sees the primary again. Lower it for faster failover at the cost of double pushes during
+  short blips (devices collapse them on `collapse_id`).
+
+Known limits: a group whose owning hub is down cannot sequence (503 `peer_unavailable` through
+every hub; owning-hub migration is out of scope); blobs stay on the hub they were uploaded to;
+an added hub serves no history before its replica seed; pushes for messages that arrive in the
+failover window after the primary stops are not sent late; the client must `PUT` a new record
+to the added hub before the other hubs, or an owner that only caches the user's record may seed
+the added hub too early and the seed is dropped (§4.3).
+
+`GIM_FED_SUITE=mh bash scripts/fed-test.sh` runs the multi-homing acceptance suite
+(multihoming.md §11, MH1-MH9; driver `crates/gim-hub/tests/multihoming_compose.rs`; CI job
+`federation`) with the same harness: it starts only `hub-a`, `hub-b` and `hub-c` with the
+override `deploy/federation/compose.mh.yaml` (`GIM_HUB_UNHOSTED_GRACE_HOURS=1`,
+`GIM_HUB_PUSH_FAILOVER_SECONDS=5`, `GIM_HUB_PUSH_LOG_ENDPOINT=true`) and observes pushes through
+`GET /v2/debug/push-log`. `GIM_FED_SUITE=all` runs the federation suite and then the
+multi-homing suite on a fresh stack with the same image. The run cannot advance the hubs'
+clocks, so the purge after the grace period is covered by the in-process test
+`crates/gim-hub-api/tests/multihoming_records.rs`, not by the compose suite.
+
 ### Push
 
 Push design and payload: [`push.md`](push.md). The `log` provider is always available. Each other

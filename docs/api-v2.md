@@ -354,15 +354,21 @@ ranges.
 Implemented: `/healthz`, `/v2/hub`, sign-in (`/v2/auth/*`), DeviceLists and users (`/v2/users/*`, `/v2/me`),
 recovery backups, device linking (`/v2/link-bundles*`), handles, KeyPackages, groups and commits,
 messages, pending Welcomes, events (long-poll and `/v2/stream`), blobs, hosting records,
-federation (remote users and KeyPackage claims, groups across hubs) and push (registration and
-delivery for local and federated events; log provider, APNs, FCM and UnifiedPush when
-configured; payload v1 without `sender_user_id`, optional minimal wake-up mode
+federation (remote users and KeyPackage claims, groups across hubs), multi-homing (H4,
+[`multihoming.md`](multihoming.md): fan-out to every listed hub, record propagation and
+`hosting_record.updated`, replica seeding and Welcome copies for an added hub, claim routing
+across a user's hubs, removal with a grace period, primary-only push with failover) and push
+(registration and delivery for local and federated events; log provider, APNs, FCM and
+UnifiedPush when configured; payload v1 without `sender_user_id`, optional minimal wake-up mode
 `GIM_HUB_PUSH_MINIMAL`, UnifiedPush bodies encrypted per RFC 8291 `aes128gcm`).
 
 Pending:
 
-- Multi-homing (H4): replica seeding and Welcome copies for an added hub
-  ([`multihoming.md`](multihoming.md) §4.3, §4.4) and primary-only push (§8).
+- Multi-homing known limits ([`multihoming.md`](multihoming.md) §13): a group whose owning hub is
+  down cannot sequence (503 `peer_unavailable`); blobs are not replicated; an added hub serves no
+  history before its replica seed; pushes in the failover window after the primary stops are
+  not sent late; pending Welcome acknowledgements are per hub; `message` events carry no
+  `message_id`, so clients merge the streams of several hubs by `(gid, seq)`.
 - Push: no real APNs/FCM credentials have been exercised yet.
 - Validation of an added member's MLS credential (type `0xF001`) against their DeviceList is not
   enforced yet: the hub accepts every added member until gim-core identity part 3 defines the

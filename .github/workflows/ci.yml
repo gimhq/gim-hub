@@ -41,11 +41,18 @@ jobs:
 
   federation:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: 3-hub compose acceptance
         env:
           GIM_FED_CARGO_HOME: ${{ runner.temp }}/cargo
           GIM_FED_TIMEOUT: "900"
+        run: bash scripts/fed-test.sh
+      - name: Multi-homing compose acceptance
+        env:
+          GIM_FED_CARGO_HOME: ${{ runner.temp }}/cargo
+          GIM_FED_TIMEOUT: "900"
+          GIM_FED_SUITE: mh
+          GIM_FED_SKIP_BUILD: "1"
         run: bash scripts/fed-test.sh
