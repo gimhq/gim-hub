@@ -68,7 +68,7 @@ async fn call(
         .unwrap();
     let status = response.status();
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    (status, serde_json::from_slice(&body).unwrap())
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
 #[tokio::test]
@@ -107,9 +107,17 @@ async fn every_documented_operation_is_routed() {
                 assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {template}");
                 assert_eq!(value["error"]["code"], "unauthorized");
             }
+            // Routed: the router's own 404/405 fallbacks have no JSON body.
             let (status, value) = call(&hub, &method, &uri, Some(&token)).await;
-            assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {template}");
-            assert_eq!(value["error"]["code"], "not_implemented");
+            assert_ne!(
+                status,
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{method} {template}"
+            );
+            assert!(
+                status != StatusCode::NOT_FOUND || value["error"]["code"] == "not_found",
+                "{method} {template}"
+            );
         }
     }
     assert_eq!(operations, 31);
