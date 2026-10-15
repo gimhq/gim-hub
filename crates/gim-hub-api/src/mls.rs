@@ -121,7 +121,8 @@ pub fn parse_commit(bytes: &[u8]) -> Result<ParsedCommit, ApiError> {
 /// ```
 fn commit_proposals(mut bytes: &[u8]) -> Result<Vec<ProposalOrRefIn>, ApiError> {
     let reader = &mut bytes;
-    let malformed = |err: openmls::prelude::tls_codec::Error| invalid(format!("malformed Commit: {err}"));
+    let malformed =
+        |err: openmls::prelude::tls_codec::Error| invalid(format!("malformed Commit: {err}"));
     let _version = u16::tls_deserialize(reader).map_err(malformed)?;
     let wire_format = u16::tls_deserialize(reader).map_err(malformed)?;
     if wire_format != WIRE_FORMAT_PUBLIC_MESSAGE {

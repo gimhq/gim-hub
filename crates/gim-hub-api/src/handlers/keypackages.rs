@@ -6,7 +6,7 @@ use axum::{extract::rejection::JsonRejection, extract::State, Json};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use gim_hub_db::{events, keypackages};
 
-use super::groups::json_body;
+use super::identity::json_body;
 use crate::{
     auth::AuthDevice,
     dto::{

@@ -56,6 +56,14 @@ Handshake messages (Commit, Proposal) are sent as MLS `PublicMessage`; applicati
 anyway (arch §7.3, MIMI hub model). Clients do not declare roster changes: a client-declared
 roster delta cannot be verified by the hub and is not part of the API.
 
+Group IDs: `POST /v2/groups` assigns `gid = <owner hub_id>/<random_128>`, where `hub_id` is the
+gim-core `HubId` of the owning hub's root key (`"h" || base32(...)`, not a libp2p PeerID) and
+`random_128` is 16 random bytes in lowercase unpadded base32 (26 characters). The gid is stable
+across runtime-key rotation (arch §4.1); the hub's current PeerID is resolved from its runtime
+certificate / hosting records. Clients use the UTF-8 bytes of the gid as the MLS `group_id`; the
+hub rejects a Commit whose framing carries any other group ID. Percent-encode the gid in paths
+(`/` as `%2F`).
+
 On `POST /v2/groups/{gid}/commits` the owning hub:
 
 1. parses the `PublicMessage` and reads the epoch from its framing;
@@ -115,7 +123,7 @@ learned of it from a `welcome` event or from the pending list. Recovery after 41
 | New | - | recovery backups, link-bundle relay, push registration (`PUT`/`DELETE /v2/push/registration`) |
 | KeyPackage upload | `last_resort` is a separate package field | `last_resort: true` flag; the request then holds exactly one package |
 | KeyPackage claim | `{device_ids}` | `{targets: [{user_id, device_id?}]}`, one package per active device; results carry `user_id` |
-| Group ID | `group_id`, opaque | `gid = <owner_peer_id>/<random_128 base32>`, assigned by the hub; percent-encode it in paths (`/` as `%2F`) |
+| Group ID | `group_id`, opaque | `gid = <owner hub_id>/<random_128 base32>`, assigned by the hub (MLS group ID = gid bytes); percent-encode it in paths (`/` as `%2F`) |
 | Group create | `{kind, member_device_ids}` | `{kind}`; members are added by Commits |
 | Membership | `POST /members`, `DELETE /members/{device_id}` | removed; driven by `POST /v2/groups/{gid}/commits {client_id, mls_message, welcome?, welcome_recipients?, ratchet_tree?}` returning `{seq, epoch, duplicate}` |
 | Epoch | client `epoch` field | read by the hub from the MLS framing |

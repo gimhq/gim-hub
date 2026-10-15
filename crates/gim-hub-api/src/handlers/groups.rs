@@ -13,6 +13,7 @@ use gim_hub_identity::HubId;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use super::identity::json_body;
 use crate::{
     auth::AuthDevice,
     dto::{
@@ -26,12 +27,6 @@ use crate::{
 
 const MAX_CLIENT_ID_CHARS: usize = 64;
 const MAX_WELCOME_RECIPIENTS: usize = 500;
-
-/// The request body, with JSON errors reported as `validation_failed`.
-pub(super) fn json_body<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
-    body.map(|Json(body)| body)
-        .map_err(|err| ApiError::ValidationFailed(err.body_text()))
-}
 
 /// RFC 4648 base32, lowercase, unpadded.
 fn base32(bytes: &[u8]) -> String {
@@ -133,7 +128,10 @@ pub async fn create_group(
         created_at: state.clock.now_ms(),
     };
     let stored = group.clone();
-    state.db.write(move |tx| groups::create(tx, &stored)).await?;
+    state
+        .db
+        .write(move |tx| groups::create(tx, &stored))
+        .await?;
     let members = vec![groups::Member {
         user_id: group.created_by_user_id.clone(),
         device_id: group.created_by_device_id.clone(),
@@ -289,7 +287,11 @@ struct WelcomeInput {
 }
 
 impl CommitInput {
-    fn validate(state: &AppState, gid: String, body: SubmitCommitRequest) -> Result<Self, ApiError> {
+    fn validate(
+        state: &AppState,
+        gid: String,
+        body: SubmitCommitRequest,
+    ) -> Result<Self, ApiError> {
         let invalid = |message: &str| ApiError::ValidationFailed(message.to_owned());
         let decode = |field: &str, value: &str| {
             STANDARD
@@ -437,7 +439,10 @@ fn apply_commit(
     }
     let remaining: Vec<&groups::Member> = members
         .iter()
-        .filter(|m| m.leaf_index.is_none_or(|leaf| !removed_leaves.contains(&leaf)))
+        .filter(|m| {
+            m.leaf_index
+                .is_none_or(|leaf| !removed_leaves.contains(&leaf))
+        })
         .collect();
 
     let mut added = Vec::new();
@@ -449,7 +454,9 @@ fn apply_commit(
             .any(|m| m.user_id == user_id && m.device_id == device_id)
             || added.contains(&(user_id.clone(), device_id.clone()))
         {
-            return Err(invalid("Add proposal for a device that is already a member"));
+            return Err(invalid(
+                "Add proposal for a device that is already a member",
+            ));
         }
         AcceptAllCredentials
             .check_added_member(&AddedMember {

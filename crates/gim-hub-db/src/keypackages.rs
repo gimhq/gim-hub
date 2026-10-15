@@ -212,7 +212,10 @@ mod tests {
             .unwrap();
         let packages: Vec<_> = claimed
             .iter()
-            .map(|c| c.as_ref().map(|c| (c.key_package.as_slice(), c.last_resort)))
+            .map(|c| {
+                c.as_ref()
+                    .map(|c| (c.key_package.as_slice(), c.last_resort))
+            })
             .collect();
         assert_eq!(
             packages,

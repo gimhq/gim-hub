@@ -28,8 +28,11 @@ PeerID before any operation is processed.
 ## Identifiers
 
 - `user_id`, `device_id`: opaque strings; format owned by gim-core.
-- `gid`: `<owner_peer_id>/<random_128 base32>`. The owning hub is the hub whose PeerID prefixes
-  the gid; it runs the group's sequencer.
+- `gid`: `<owner hub_id>/<random_128 base32>` (gim-core `HubId` of the owning hub's root key; 128
+  random bits, lowercase unpadded base32). The owning hub is the hub whose `hub_id` prefixes the
+  gid; it runs the group's sequencer. The gid is stable across runtime-key rotation (arch §4.1);
+  the owning hub's current PeerID is resolved from its runtime certificate / hosting records. The
+  MLS `group_id` is the UTF-8 bytes of the gid.
 - `client_id`: client-chosen idempotency key, unique per sender device.
 - `message_id`: globally unique id assigned by the owning hub to every sequenced message and
   Welcome.
