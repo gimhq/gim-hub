@@ -943,4 +943,17 @@ pub struct PushRegistration {
     #[serde(default)]
     #[schema(default = false)]
     pub sandbox: bool,
+    /// UnifiedPush only (required there, ignored otherwise): the device's
+    /// RFC 8291 Web Push public key, base64url of the 65-byte uncompressed
+    /// P-256 point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+    )]
+    pub p256dh: Option<String>,
+    /// UnifiedPush only (required there, ignored otherwise): the RFC 8291
+    /// authentication secret, base64url of 16 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "BTBZMqHH6r4Tts7J_aSIgg")]
+    pub auth: Option<String>,
 }

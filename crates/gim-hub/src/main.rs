@@ -36,10 +36,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             return Ok(());
         }
+        Some("version" | "--version") => {
+            println!(
+                "gim-hub {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                option_env!("GIM_HUB_BUILD_REV").unwrap_or("unknown")
+            );
+            return Ok(());
+        }
         Some(other) => {
-            return Err(
-                format!("unknown command {other:?}; usage: gim-hub [healthcheck|hub-id]").into(),
+            return Err(format!(
+                "unknown command {other:?}; usage: gim-hub [healthcheck|hub-id|version]"
             )
+            .into())
         }
     }
 
@@ -71,9 +80,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(listen = %state.config.listen, "gim-hub listening");
 
     let pruning = tokio::spawn(prune_periodically(state.clone()));
-    axum::serve(listener, gim_hub_api::router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        gim_hub_api::router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     pruning.abort();
     for task in push {
         task.abort();

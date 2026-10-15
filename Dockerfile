@@ -3,9 +3,14 @@
 FROM rust:1.99-bookworm AS builder
 WORKDIR /src
 COPY . .
+# Embedded in the binary and printed by `gim-hub version`; scripts/docker-build.sh
+# passes the checkout's revision and verifies it after the build.
+ARG GIM_HUB_BUILD_REV=unknown
+# No cache mount for /src/target: the BuildKit cache is shared by every checkout
+# built on the daemon and cargo judges freshness by mtime, so artifacts from
+# another checkout could be reused. The build always starts from a clean target.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/src/target \
     cargo build --release --locked -p gim-hub \
     && install -D target/release/gim-hub /out/gim-hub
 

@@ -40,6 +40,8 @@ pub struct FcmConfig {
 pub struct PushConfig {
     /// Also push `group.member_added` / `group.member_removed` events.
     pub member_events: bool,
+    /// Send minimal wake-up payloads only (`GIM_HUB_PUSH_MINIMAL`).
+    pub minimal: bool,
     /// Most devices with a queued push; more are dropped.
     pub queue_capacity: usize,
     /// Serve the test-only `GET /v2/debug/push-log`.
@@ -56,6 +58,7 @@ impl Default for PushConfig {
     fn default() -> Self {
         Self {
             member_events: false,
+            minimal: false,
             queue_capacity: 10_000,
             log_endpoint: false,
             apns: None,
