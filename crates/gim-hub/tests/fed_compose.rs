@@ -27,7 +27,8 @@ use openmls::prelude::{
 use serde_json::{json, Value};
 
 use compose_support::{
-    application, commit_body, eventually, leaf_of, sorted, with_welcome, Hub, User, CONVERGE,
+    application, commit_body, eventually, http_bytes, leaf_of, sorted, with_welcome, Hub, User,
+    CONVERGE,
 };
 use mls_support::{b64, code, device_list, group_path, unb64};
 
@@ -74,6 +75,7 @@ async fn compose_federation() {
     ok("sign-up, hosting records resolved across hubs", start);
 
     cross_hub_dm(&alice, &bob).await;
+    cross_hub_blobs(&a, &alice, &bob).await;
     revoked_device(&b, &alice, &bob).await;
     let (gid, mut groups) = three_hub_group(&alice, &bob, &carol, &dave).await;
     concurrent_commits(&gid, &alice, &bob, &dave, &mut groups).await;
@@ -134,6 +136,99 @@ async fn cross_hub_dm(alice: &User, bob: &User) {
     assert_eq!(alice.message_seqs(&gid).await, [2, 3, 4]);
     assert_eq!(bob.message_seqs(&gid).await, [5, 6, 7]);
     ok("cross-hub DM (B owns, A member)", start);
+}
+
+/// Uploads `data` as `user` on their hub; returns the blob id.
+async fn upload_blob(user: &User, data: &[u8]) -> String {
+    let (status, _, body) = http_bytes(
+        &user.hub.base,
+        Method::POST,
+        "/v2/blobs",
+        Some(&user.token),
+        &[],
+        data.to_vec(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, StatusCode::CREATED);
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["size"], data.len());
+    body["blob_id"].as_str().unwrap().to_owned()
+}
+
+/// `GET /v2/blobs/{blob_id}` as `user` on their hub, with an optional Range.
+async fn download_blob(
+    user: &User,
+    blob_id: &str,
+    range: Option<&str>,
+) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
+    let headers: Vec<_> = range
+        .map(|range| (hyper::header::RANGE, range.to_owned()))
+        .into_iter()
+        .collect();
+    let path = format!("/v2/blobs/{}", blob_id.replace('/', "%2F"));
+    let (status, headers, body) = http_bytes(
+        &user.hub.base,
+        Method::GET,
+        &path,
+        Some(&user.token),
+        &headers,
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    (status, headers, body.to_vec())
+}
+
+/// H5-B1: alice@A uploads attachments of the DM with bob@B; hub-b fetches
+/// them from the origin hub-a (FetchBlob, more than one chunk) and serves
+/// later reads from its cache, also while hub-a is down. A blob hub-b never
+/// fetched is 503 during the outage and served after the restart.
+async fn cross_hub_blobs(a: &Hub, alice: &User, bob: &User) {
+    let start = Instant::now();
+    let big: Vec<u8> = (0..5 * 1024 * 1024 + 7).map(|i| (i % 251) as u8).collect();
+    let cached = upload_blob(alice, &big).await;
+    assert!(cached.contains('/'), "{cached}");
+    let fresh = upload_blob(alice, b"fetched after the outage").await;
+
+    let (status, _, body) = download_blob(bob, &cached, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body == big, "blob bytes differ");
+    let (status, headers, body) = download_blob(bob, &cached, Some("bytes=10-19")).await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body, big[10..20]);
+    assert_eq!(
+        headers[hyper::header::CONTENT_RANGE],
+        format!("bytes 10-19/{}", big.len())
+    );
+
+    a.stop();
+    let (status, _, body) = download_blob(bob, &cached, None).await;
+    assert_eq!(status, StatusCode::OK, "cached copy while hub-a is down");
+    assert!(body == big);
+    let (status, headers, body) = download_blob(bob, &fresh, None).await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert!(headers.contains_key(hyper::header::RETRY_AFTER));
+    a.start().await;
+    let deadline = Instant::now() + CONVERGE;
+    let (status, _, body) = loop {
+        let result = download_blob(bob, &fresh, None).await;
+        if result.0 != StatusCode::SERVICE_UNAVAILABLE || Instant::now() > deadline {
+            break result;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"fetched after the outage");
+    ok(
+        "cross-hub blobs: fetched from the origin, cached, 503 while it is down",
+        start,
+    );
 }
 
 /// T6: alice@A certifies a second device, which uploads a KeyPackage that

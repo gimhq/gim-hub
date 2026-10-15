@@ -58,6 +58,9 @@ pub struct FederationConfig {
     /// or S2S exchange for this long is down for the push rule
     /// (docs/multihoming.md §8, §10).
     pub push_failover_seconds: u32,
+    /// `GIM_HUB_FETCH_BLOB_PER_MINUTE`: `FetchBlob` requests served per
+    /// caller hub and minute.
+    pub fetch_blob_per_minute: u32,
 }
 
 /// Invalid configuration value.
@@ -149,6 +152,12 @@ impl FederationConfig {
         config.outbox_backoff_max_seconds =
             parse(get, "GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS", 300, 1)?;
         config.push_failover_seconds = parse(get, "GIM_HUB_PUSH_FAILOVER_SECONDS", 30, 1)?;
+        config.fetch_blob_per_minute = parse(
+            get,
+            "GIM_HUB_FETCH_BLOB_PER_MINUTE",
+            crate::policy::FETCH_BLOB_LIMIT,
+            1,
+        )?;
         Ok(config)
     }
 
@@ -172,6 +181,7 @@ impl FederationConfig {
             outbox_max_bytes_per_peer: 1_073_741_824,
             outbox_backoff_max_seconds: 300,
             push_failover_seconds: 30,
+            fetch_blob_per_minute: crate::policy::FETCH_BLOB_LIMIT,
         }
     }
 
@@ -314,6 +324,7 @@ mod tests {
         assert_eq!(config.outbox_max_bytes_per_peer, 1_073_741_824);
         assert_eq!(config.outbox_backoff_max_seconds, 300);
         assert_eq!(config.push_failover_seconds, 30);
+        assert_eq!(config.fetch_blob_per_minute, 600);
         assert_eq!(
             config.runtime_key_path(),
             PathBuf::from("/data/runtime_key")
@@ -336,6 +347,7 @@ mod tests {
             ("GIM_HUB_S2S_TIMEOUT_SECONDS", "3"),
             ("GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS", "5"),
             ("GIM_HUB_PUSH_FAILOVER_SECONDS", "2"),
+            ("GIM_HUB_FETCH_BLOB_PER_MINUTE", "7"),
         ])
         .unwrap();
         assert_eq!(config.listen.len(), 2);
@@ -346,6 +358,7 @@ mod tests {
         assert_eq!(config.s2s_timeout, Duration::from_secs(3));
         assert_eq!(config.outbox_backoff_max_seconds, 5);
         assert_eq!(config.push_failover_seconds, 2);
+        assert_eq!(config.fetch_blob_per_minute, 7);
     }
 
     #[test]
@@ -360,6 +373,7 @@ mod tests {
             ("GIM_HUB_DHT_REPUBLISH_HOURS", "-1"),
             ("GIM_HUB_OUTBOX_MAX_BYTES_PER_PEER", "big"),
             ("GIM_HUB_PUSH_FAILOVER_SECONDS", "0"),
+            ("GIM_HUB_FETCH_BLOB_PER_MINUTE", "0"),
             ("GIM_HUB_P2P_PSK_FILE", "/nonexistent/swarm.key"),
         ];
         for (name, value) in cases {
