@@ -592,7 +592,7 @@ async fn federated_events_push_to_local_devices() {
     assert_eq!(pushes[0].payload["type"], "welcome");
     assert_eq!(pushes[0].payload["gid"], json!(gid));
     assert_eq!(pushes[0].payload["seq"], 1);
-    assert_eq!(pushes[0].payload["sender_user_id"], json!(bob.user_id));
+    assert!(pushes[0].payload.get("sender_user_id").is_none());
     assert_eq!(
         pushes[0].payload["message_id"],
         json!(message_id(&b.hub, &gid, 1).await)
@@ -615,7 +615,6 @@ async fn federated_events_push_to_local_devices() {
             "gid": gid,
             "seq": 2,
             "message_id": owner_id,
-            "sender_user_id": bob.user_id,
             "collapse_id": owner_id,
             "mls_message": message["mls_message"],
         })

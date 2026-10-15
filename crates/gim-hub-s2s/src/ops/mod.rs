@@ -5,11 +5,19 @@
 //! - [`claim`]: cross-hub KeyPackage claims (§5.2, §6.1).
 //! - [`submit`], [`deliver`], [`welcome`], [`fetch_log`]: group federation
 //!   (§5.3, §5.4, §6.2-§6.6), served by [`GroupService`].
+//!
+//! - [`hosting_record`]: `NotifyHostingRecord` (multihoming.md §4.2).
+//!
+//! The multi-homing ops `SeedReplica` and `CopyPendingWelcomes`
+//! (multihoming.md §4.3, §4.4) have no handler yet: [`MULTIHOMING_OPS`] fall
+//! through to the dispatcher's `INTERNAL` "not implemented" answer until
+//! their subtask registers one.
 
 pub mod claim;
 pub mod deliver;
 pub mod device_list;
 pub mod fetch_log;
+pub mod hosting_record;
 pub mod submit;
 pub mod welcome;
 
@@ -28,6 +36,9 @@ use crate::{
     hosting::{Hosting, HostingError, Purpose},
     policy::OpKind,
 };
+
+/// Multi-homing ops without a registered handler (stubs).
+pub const MULTIHOMING_OPS: [OpKind; 2] = [OpKind::SeedReplica, OpKind::CopyPendingWelcomes];
 
 fn request_id() -> String {
     let mut bytes = [0u8; 16];
