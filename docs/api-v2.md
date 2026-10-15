@@ -241,13 +241,26 @@ client keeps one connection and cursor per listed hub and merges by `message_id`
   32-byte Ed25519 root public key (standard base64, as in `hosting-entry`) and the hub version. A
   client checks that a URL belongs to the `hub_id` in its record before signing in. Live.
 
-The rest of this section is multi-homing (H4), implementation in progress: not live yet.
-
-- New event `hosting_record.updated`, payload
+- Event `hosting_record.updated`, payload
   `{user_id, seq, expires_at, hosted, hubs: [{hub_id, priority}]}` (`hosted` = the record lists
   this hub). Emitted to the user's active devices on this hub when a stored record changes the
   listed hubs or their priorities; renewals with the same entries emit nothing. Devices dedup by
-  `seq` across hubs ([`multihoming.md`](multihoming.md) §4.5).
+  `seq` across hubs ([`multihoming.md`](multihoming.md) §4.5). Live with federation.
+- Record propagation: a hub that stores a record changing the listed hubs or priorities (client
+  `PUT` or from another hub) passes it on to the user's other hubs, the hubs it removed, and the
+  hubs sharing groups with the user, so a `PUT` to one reachable hub is enough for the others to
+  learn it (§4.2). DeviceList uploads also reach the user's other listed hubs (§3.2). Live with
+  federation.
+- Removed users: when a stored record stops listing this hub, the user is removed here. During
+  `GIM_HUB_UNHOSTED_GRACE_HOURS` (default 168) sign-in, reads, `GET /v2/stream`,
+  `GET /v2/events`, pending Welcomes and their acks, `POST .../hosting-entry`, and `PUT` of the
+  DeviceList and hosting record keep working; every other write fails with 403
+  `hosting_record_required`. The unclaimed KeyPackages are deleted at once; after the grace
+  period the user's data is purged, keeping the hosting record. A later record that lists this
+  hub again ends the removal (§7.3). Live with federation.
+
+The rest of this section is multi-homing (H4), implementation in progress: not live yet.
+
 - `POST /v2/keypackages`: a KeyPackage is uploaded to at most one hub, ever. An upload containing
   a KeyPackage this hub already claimed from another hub on a client's behalf is rejected as a
   whole with 409 `duplicate_key_package` (§5.3).
@@ -259,11 +272,6 @@ The rest of this section is multi-homing (H4), implementation in progress: not l
   failing with 400 `validation_failed`, with the message
   `key package not claimed through this hub (kp_not_claimed)`; re-claim through this hub and
   commit again (§5.4).
-- Removed users: when a stored record no longer lists this hub, the user is removed here. During
-  `GIM_HUB_UNHOSTED_GRACE_HOURS` (default 168) sign-in, reads, `GET /v2/stream`,
-  `GET /v2/events`, pending Welcomes and their acks, and `PUT` of the DeviceList and hosting record
-  keep working; every other write fails with 403 `hosting_record_required`, message
-  `user is not hosted on this hub`. Afterwards the user's data is purged (§7.3).
 
 ## Push
 
@@ -313,7 +321,7 @@ configured).
 
 Pending:
 
-- Multi-homing (H4): the behaviour of [Multi-homing](#multi-homing) other than `GET /v2/hub`.
+- Multi-homing (H4): the behaviour of [Multi-homing](#multi-homing) marked in progress there.
 - Push: no real APNs/FCM credentials have been exercised yet; UnifiedPush bodies are not Web Push
   encrypted (RFC 8291).
 - Validation of an added member's MLS credential (type `0xF001`) against their DeviceList is not

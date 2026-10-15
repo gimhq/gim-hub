@@ -447,8 +447,9 @@ mod tests {
     #[tokio::test]
     async fn multihoming_ops_are_not_implemented_yet() {
         let handlers = Handlers::default();
+        // NotifyHostingRecord has a handler (ops::hosting_record).
+        assert!(!crate::ops::MULTIHOMING_OPS.contains(&OpKind::NotifyHostingRecord));
         for op in [
-            Op::NotifyHostingRecord(Default::default()),
             Op::SeedReplica(Default::default()),
             Op::CopyPendingWelcomes(Default::default()),
         ] {

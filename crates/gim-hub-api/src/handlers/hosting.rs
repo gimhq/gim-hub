@@ -7,19 +7,32 @@ use axum::{
     Json,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
-use gim_hub_db::{events, hosting as store, users};
-use gim_hub_identity::{HostingEntry, IdentityError, UserId};
-use gim_hub_s2s::hosting::{self as hosting, MAX_RECORD_BYTES};
+use std::{collections::BTreeSet, sync::Arc};
+
+use gim_hub_db::{
+    events, hosting as store, outbox, remote_identity, users, DbError, Transaction,
+};
+use gim_hub_identity::{HostingEntry, HostingRecord, HubId, IdentityError, UserId};
+use gim_hub_s2s::{
+    hosting::{self as hosting, MAX_RECORD_BYTES},
+    ops::hosting_record::{HostingRecordService, LocalHostingRecords},
+    outbox::NewEntry,
+    BoxFuture, FederationService, Hosting, OutboxSender,
+};
 
 use super::identity::{decode_base64, json_body};
 use crate::{
     auth::AuthDevice,
-    dto::{self, CreateHostingEntryRequest, Error, HostingRecordExpiring, PutHostingRecordRequest},
+    dto::{
+        self, CreateHostingEntryRequest, Error, HostingRecordExpiring, HostingRecordHub,
+        HostingRecordUpdated, PutHostingRecordRequest,
+    },
     error::ApiError,
     state::AppState,
 };
 
 const HOSTING_RECORD_EXPIRING: &str = "hosting_record.expiring";
+const HOSTING_RECORD_UPDATED: &str = "hosting_record.updated";
 const HOUR_MS: i64 = 60 * 60 * 1000;
 /// Accepted record lifetimes at upload (`expires_at - now`).
 const MIN_LIFETIME_MS: i64 = HOUR_MS;
@@ -90,6 +103,179 @@ enum Upload {
     Unchanged,
 }
 
+/// Stores verified `record` of a local user (client `PUT` or
+/// `NotifyHostingRecord`): the seq rules, then, when it supersedes the stored
+/// record, in the same transaction, the hub-set hook (multihoming.md §4.3),
+/// `hosting_record.updated` (§4.5), the removal or re-adding of this hub
+/// (§7.3) and the `NotifyHostingRecord` queue (§4.2). Publishes a record
+/// listing this hub to the DHT afterwards. `check_lifetime` applies the
+/// upload lifetime bounds (client uploads only).
+async fn store_local_record(
+    state: &AppState,
+    record: &HostingRecord,
+    check_lifetime: bool,
+) -> Result<Upload, ApiError> {
+    let now = state.clock.now_ms();
+    let hub_id = state.hub.hub_id().clone();
+    let hosted = record.entry(&hub_id).is_some();
+    let stored = hosting::stored_record(record, hosted, now)
+        .map_err(|reason| ApiError::InvalidHostingRecord(reason.into()))?;
+    let lifetime = stored.expires_at.saturating_sub(now);
+    let received = record.clone();
+    let (hosting, outbox) = (state.hosting.clone(), state.outbox.clone());
+    let federation = state.federation.is_enabled();
+
+    let (upload, notify) = state
+        .db
+        .write(move |tx| {
+            // 2. A user of this hub.
+            if !store::is_local(tx, &stored.user_id)? {
+                return Err(ApiError::NotFound);
+            }
+            // 3. Lifetime.
+            if check_lifetime && !(MIN_LIFETIME_MS..=MAX_LIFETIME_MS).contains(&lifetime) {
+                return Err(ApiError::InvalidHostingRecord(
+                    "invalid hosting record (lifetime_out_of_range)".into(),
+                ));
+            }
+            // 4. Seq rules; the stored record was verified when stored.
+            let current = store::get(tx, &stored.user_id)?;
+            let previous = current
+                .as_ref()
+                .and_then(|current| hosting::decode_stored(&current.record).ok());
+            let upload = match (&current, &previous) {
+                (None, _) => Upload::Created,
+                (Some(_), Some(previous)) => match received.supersedes(previous) {
+                    Ok(true) => Upload::Replaced,
+                    Ok(false) => return Ok((Upload::Unchanged, Vec::new())),
+                    Err(_) => return Err(ApiError::StaleHostingRecord),
+                },
+                (Some(_), None) => Upload::Replaced,
+            };
+            store::put(tx, &stored)?;
+            let notify = match &previous {
+                Some(previous) => superseded(
+                    tx,
+                    &Superseded {
+                        hub_id: &hub_id,
+                        hosting: &hosting,
+                        outbox: outbox.as_ref(),
+                        federation,
+                        now,
+                    },
+                    previous,
+                    &received,
+                )?,
+                None => Vec::new(),
+            };
+            Ok::<_, ApiError>((upload, notify))
+        })
+        .await?;
+    for device_id in &notify {
+        state
+            .notifier
+            .notify(record.user_id().as_str(), device_id);
+    }
+    if hosted && !matches!(upload, Upload::Unchanged) {
+        state.hosting.publish(record.clone());
+    }
+    Ok(upload)
+}
+
+/// Context of [`superseded`].
+struct Superseded<'a> {
+    hub_id: &'a HubId,
+    hosting: &'a Hosting,
+    outbox: &'a dyn OutboxSender,
+    federation: bool,
+    now: i64,
+}
+
+/// Effects of storing `record` of a local user over `previous`, in the
+/// record-store transaction. Returns the devices to wake.
+fn superseded(
+    tx: &Transaction<'_>,
+    ctx: &Superseded<'_>,
+    previous: &HostingRecord,
+    record: &HostingRecord,
+) -> Result<Vec<String>, ApiError> {
+    let user_id = record.user_id().as_str();
+    ctx.hosting.superseded(tx, previous, record, true, ctx.now)?;
+    let was_hosted = previous.entry(ctx.hub_id).is_some();
+    let hosted = record.entry(ctx.hub_id).is_some();
+    if hosted {
+        // Listed again: the removal ends (§7.3).
+        store::set_removed_at(tx, user_id, None)?;
+    } else if was_hosted && ctx.federation {
+        // §7.3: this hub was removed by the user.
+        store::set_removed_at(tx, user_id, Some(ctx.now))?;
+        let (key_packages, replicas) = store::remove_local_user(tx, user_id)?;
+        outbox::delete_user_entries(tx, outbox::Kind::DeviceList, user_id)?;
+        tracing::info!(
+            %user_id,
+            key_packages,
+            replicas,
+            "user removed this hub from their hosting record"
+        );
+    }
+    if hosting::entries(previous) == hosting::entries(record) {
+        return Ok(Vec::new());
+    }
+    // §4.5: the user's devices learn about the new hub list.
+    let payload = serde_json::to_string(&HostingRecordUpdated {
+        user_id: user_id.to_owned(),
+        seq: record.seq(),
+        expires_at: record.expires_at(),
+        hosted,
+        hubs: record
+            .hubs()
+            .iter()
+            .map(|entry| HostingRecordHub {
+                hub_id: entry.hub_id().to_string(),
+                priority: entry.priority(),
+            })
+            .collect(),
+    })
+    .map_err(|err| ApiError::Internal(err.to_string()))?;
+    let devices = users::active_device_ids(tx, user_id)?;
+    for device_id in &devices {
+        events::append(
+            tx,
+            user_id,
+            device_id,
+            HOSTING_RECORD_UPDATED,
+            &payload,
+            ctx.now,
+        )?;
+    }
+    // §4.2: hubs listed before or now, owners and member hubs; sent only by
+    // a hub that hosts the user under either record.
+    if was_hosted || hosted {
+        let mut peers: BTreeSet<String> = previous
+            .hubs()
+            .iter()
+            .chain(record.hubs())
+            .map(|entry| entry.hub_id().to_string())
+            .collect();
+        peers.extend(remote_identity::device_list_peer_hubs(
+            tx,
+            user_id,
+            ctx.hub_id.as_str(),
+        )?);
+        peers.remove(ctx.hub_id.as_str());
+        for peer in peers {
+            match HubId::parse(&peer) {
+                Ok(peer) => {
+                    ctx.outbox
+                        .enqueue_in_tx(tx, &peer, NewEntry::HostingRecord { user_id })?
+                }
+                Err(err) => tracing::warn!(%peer, %err, "skipping an invalid peer hub_id"),
+            }
+        }
+    }
+    Ok(devices)
+}
+
 #[utoipa::path(
     put,
     path = "/v2/users/{user_id}/hosting-record",
@@ -102,7 +288,12 @@ naming the gim-core error code); `user_id` is a user of this hub (404); the life
 `lifetime_out_of_range`); the seq rules against the stored record: a lower `seq`, or the same \
 `seq` with a different body, is 409 `stale_hosting_record`, the identical record is 200 \
 unchanged. A record listing this hub is published to the federation DHT. A record that does not \
-list this hub is stored too; the hub then stops acting for the user in federation.",
+list this hub is stored too; the hub then stops acting for the user in federation. With \
+federation, a record that changes the listed hubs or priorities emits `hosting_record.updated` \
+to the user's devices and is propagated to the user's other hubs, removed hubs and the hubs \
+sharing groups with the user; a record that stops listing this hub removes the user here (writes \
+refused with 403 `hosting_record_required`, data purged after `GIM_HUB_UNHOSTED_GRACE_HOURS`) \
+until a later record lists it again.",
     params(("user_id" = String, Path, description = "Opaque user ID (format owned by gim-core)", example = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa")),
     request_body = PutHostingRecordRequest,
     responses(
@@ -130,53 +321,14 @@ pub async fn put_hosting_record(
     if bytes.len() > MAX_RECORD_BYTES {
         return Err(ApiError::PayloadTooLarge);
     }
-    let now = state.clock.now_ms();
     // 1. Verification.
-    let record = hosting::verify(&bytes, &expected, now).map_err(invalid)?;
+    let record = hosting::verify(&bytes, &expected, state.clock.now_ms()).map_err(invalid)?;
     let hosted = record.entry(state.hub.hub_id()).is_some();
-    let stored = hosting::stored_record(&record, hosted, now)
-        .map_err(|reason| ApiError::InvalidHostingRecord(reason.into()))?;
-    let lifetime = stored.expires_at.saturating_sub(now);
-    let received = record.clone();
-
-    let upload = state
-        .db
-        .write(move |tx| {
-            // 2. A user of this hub.
-            if !store::is_local(tx, &stored.user_id)? {
-                return Err(ApiError::NotFound);
-            }
-            // 3. Lifetime.
-            if !(MIN_LIFETIME_MS..=MAX_LIFETIME_MS).contains(&lifetime) {
-                return Err(ApiError::InvalidHostingRecord(
-                    "invalid hosting record (lifetime_out_of_range)".into(),
-                ));
-            }
-            // 4. Seq rules; the stored record was verified when stored.
-            let current = store::get(tx, &stored.user_id)?;
-            let upload = match &current {
-                None => Upload::Created,
-                Some(current) => match hosting::decode_stored(&current.record) {
-                    Ok(current) => match received.supersedes(&current) {
-                        Ok(true) => Upload::Replaced,
-                        Ok(false) => return Ok(Upload::Unchanged),
-                        Err(_) => return Err(ApiError::StaleHostingRecord),
-                    },
-                    Err(_) => Upload::Replaced,
-                },
-            };
-            store::put(tx, &stored)?;
-            Ok(upload)
-        })
-        .await?;
-
+    let upload = store_local_record(&state, &record, true).await?;
     let status = match upload {
         Upload::Created => StatusCode::CREATED,
         Upload::Replaced | Upload::Unchanged => StatusCode::OK,
     };
-    if hosted && !matches!(upload, Upload::Unchanged) {
-        state.hosting.publish(record.clone());
-    }
     Ok((status, Json(record_dto(&record, hosted))))
 }
 
@@ -255,4 +407,51 @@ pub async fn check_hosting_records(state: &AppState) -> Result<(usize, usize), A
         state.notifier.notify(user_id, device_id);
     }
     Ok((expired, users))
+}
+
+/// Applies records pushed with `NotifyHostingRecord` to local users.
+struct StateHostingRecords(AppState);
+
+impl LocalHostingRecords for StateHostingRecords {
+    fn apply_local(&self, record: HostingRecord) -> BoxFuture<'_, Result<(), DbError>> {
+        Box::pin(async move {
+            match store_local_record(&self.0, &record, false).await {
+                // Stale, or the user is gone: nothing to apply.
+                Ok(_) | Err(ApiError::StaleHostingRecord | ApiError::NotFound) => Ok(()),
+                Err(err) => Err(DbError::Task(err.to_string())),
+            }
+        })
+    }
+}
+
+/// Registers the `NotifyHostingRecord` op handler (multihoming.md §4.2).
+/// The returned service must be kept alive.
+pub fn register_hosting_record_op(
+    state: &AppState,
+    service: &FederationService,
+) -> Arc<HostingRecordService> {
+    let records = HostingRecordService::new(
+        state.db.clone(),
+        state.hosting.clone(),
+        Arc::new(StateHostingRecords(state.clone())),
+        state.clock.as_now(),
+    );
+    records.register(service);
+    records
+}
+
+/// Purges the data of users who removed this hub more than
+/// `GIM_HUB_UNHOSTED_GRACE_HOURS` ago (multihoming.md §7.3), keeping their
+/// hosting records as tombstones. Returns how many users were purged.
+pub async fn purge_removed_users(state: &AppState) -> Result<usize, DbError> {
+    let grace = i64::from(state.config.unhosted_grace_hours) * HOUR_MS;
+    let cutoff = state.clock.now_ms().saturating_sub(grace);
+    let purged = state
+        .db
+        .write(move |tx| store::purge_removed(tx, cutoff))
+        .await?;
+    for user_id in &purged {
+        tracing::info!(%user_id, "removed user purged");
+    }
+    Ok(purged.len())
 }

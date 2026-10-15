@@ -29,6 +29,10 @@ pub struct Config {
     pub session_ttl_days: u32,
     /// `GIM_HUB_PUSH_*`: push gateway.
     pub push: PushConfig,
+    /// `GIM_HUB_UNHOSTED_GRACE_HOURS`: how long the data of a user who
+    /// removed this hub from their hosting record is kept before the purge
+    /// (docs/multihoming.md §7.3). Only used with federation.
+    pub unhosted_grace_hours: u32,
 }
 
 /// Invalid configuration value.
@@ -74,6 +78,7 @@ impl Config {
             longpoll_max_wait_seconds: parse(get, "GIM_HUB_LONGPOLL_MAX_WAIT_SECONDS", 30, None)?,
             session_ttl_days: parse(get, "GIM_HUB_SESSION_TTL_DAYS", 30, Some(1))?,
             push: push_config(get)?,
+            unhosted_grace_hours: parse(get, "GIM_HUB_UNHOSTED_GRACE_HOURS", 168, Some(1))?,
             data_dir,
             database_path,
         })
@@ -184,6 +189,7 @@ mod tests {
         assert_eq!(config.max_blob_bytes, 104_857_600);
         assert_eq!(config.longpoll_max_wait_seconds, 30);
         assert_eq!(config.session_ttl_days, 30);
+        assert_eq!(config.unhosted_grace_hours, 168);
         assert_eq!(config.hub_key_path(), PathBuf::from("./data/hub_key"));
         assert_eq!(config.blobs_dir(), PathBuf::from("./data/blobs"));
         assert_eq!(config.push, PushConfig::default());
@@ -228,8 +234,10 @@ mod tests {
             ("GIM_HUB_DATA_DIR", "/var/lib/gim"),
             ("GIM_HUB_EVENT_RETENTION_DAYS", "30"),
             ("GIM_HUB_MAX_BLOB_BYTES", "1024"),
+            ("GIM_HUB_UNHOSTED_GRACE_HOURS", "1"),
         ]))
         .unwrap();
+        assert_eq!(config.unhosted_grace_hours, 1);
         assert_eq!(config.listen, "127.0.0.1:9000".parse().unwrap());
         assert_eq!(config.database_path, PathBuf::from("/var/lib/gim/hub.db"));
         assert_eq!(config.event_retention_days, 30);
@@ -246,5 +254,6 @@ mod tests {
         assert!(Config::from_vars(vars(&[("GIM_HUB_MAX_MESSAGE_BYTES", "big")])).is_err());
         assert!(Config::from_vars(vars(&[("GIM_HUB_LISTEN", "nowhere")])).is_err());
         assert!(Config::from_vars(vars(&[("GIM_HUB_SESSION_TTL_DAYS", "0")])).is_err());
+        assert!(Config::from_vars(vars(&[("GIM_HUB_UNHOSTED_GRACE_HOURS", "0")])).is_err());
     }
 }

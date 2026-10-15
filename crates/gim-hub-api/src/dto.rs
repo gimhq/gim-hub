@@ -884,8 +884,7 @@ pub struct HostingRecordUpdated {
 
 /// Emitted to the user's active devices on this hub when a stored record
 /// changes the listed hubs or their priorities (renewals with the same
-/// entries emit nothing). Multi-homing (H4), implementation in progress:
-/// not emitted yet.
+/// entries emit nothing). Multi-homing (H4), emitted with federation.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct HostingRecordUpdatedEvent {
     pub cursor: u64,

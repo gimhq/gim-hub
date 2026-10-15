@@ -4,7 +4,10 @@
 //! Entries are FIFO per peer by `id`. `deliver` entries carry `(gid, seq)`
 //! only (the message is rebuilt at send time), `device_list` entries carry
 //! the user (the latest list is read at send time) and `deliver_welcome`
-//! entries carry the encoded request.
+//! entries carry the encoded request. Multi-homing (docs/multihoming.md
+//! §9.3): `hosting_record` and `pending_welcomes` entries carry the user
+//! (built at send time, coalesced per peer and user), `seed_replica` entries
+//! carry the encoded request.
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
@@ -16,6 +19,9 @@ pub enum Kind {
     Deliver,
     DeliverWelcome,
     DeviceList,
+    HostingRecord,
+    SeedReplica,
+    PendingWelcomes,
 }
 
 impl Kind {
@@ -24,6 +30,9 @@ impl Kind {
             Self::Deliver => "deliver",
             Self::DeliverWelcome => "deliver_welcome",
             Self::DeviceList => "device_list",
+            Self::HostingRecord => "hosting_record",
+            Self::SeedReplica => "seed_replica",
+            Self::PendingWelcomes => "pending_welcomes",
         }
     }
 
@@ -32,6 +41,9 @@ impl Kind {
             "deliver" => Ok(Self::Deliver),
             "deliver_welcome" => Ok(Self::DeliverWelcome),
             "device_list" => Ok(Self::DeviceList),
+            "hosting_record" => Ok(Self::HostingRecord),
+            "seed_replica" => Ok(Self::SeedReplica),
+            "pending_welcomes" => Ok(Self::PendingWelcomes),
             other => Err(rusqlite::Error::InvalidColumnType(
                 0,
                 format!("kind {other:?}"),
@@ -51,6 +63,12 @@ pub enum NewEntry<'a> {
     DeliverWelcome { gid: &'a str, payload: &'a [u8] },
     /// The current DeviceList of `user_id`; coalesced per peer.
     DeviceList { user_id: &'a str },
+    /// The current hosting record of `user_id`; coalesced per peer.
+    HostingRecord { user_id: &'a str },
+    /// An encoded `SeedReplicaRequest` for `gid`.
+    SeedReplica { gid: &'a str, payload: &'a [u8] },
+    /// The unacknowledged pending Welcomes of `user_id`; coalesced per peer.
+    PendingWelcomes { user_id: &'a str },
 }
 
 /// Entry lifetime and per-peer backlog cap (§7.5).
@@ -115,8 +133,8 @@ pub struct Expired {
 
 /// Queues `entry` for `peer_hub_id`, then enforces the backlog cap by
 /// deleting the peer's oldest `deliver` entries (marking it `needs_resync`).
-/// `deliver_welcome` and `device_list` entries are never evicted, so they
-/// are queued even when only they exceed the cap.
+/// Entries of other kinds are never evicted, so they are queued even when
+/// only they exceed the cap.
 pub fn enqueue(
     tx: &Transaction<'_>,
     peer_hub_id: &str,
@@ -138,6 +156,30 @@ pub fn enqueue(
         ),
         NewEntry::DeviceList { user_id } => (
             Kind::DeviceList,
+            None,
+            None,
+            Some(user_id),
+            None,
+            user_id.len() as i64,
+        ),
+        NewEntry::HostingRecord { user_id } => (
+            Kind::HostingRecord,
+            None,
+            None,
+            Some(user_id),
+            None,
+            user_id.len() as i64,
+        ),
+        NewEntry::SeedReplica { gid, payload } => (
+            Kind::SeedReplica,
+            Some(gid),
+            None,
+            None,
+            Some(payload),
+            payload.len() as i64,
+        ),
+        NewEntry::PendingWelcomes { user_id } => (
+            Kind::PendingWelcomes,
             None,
             None,
             Some(user_id),
@@ -242,6 +284,19 @@ pub fn delete(tx: &Transaction<'_>, ids: &[i64]) -> Result<usize, DbError> {
         deleted += stmt.execute([id])?;
     }
     Ok(deleted)
+}
+
+/// Deletes the queued entries of `kind` for `user_id`, for every peer;
+/// returns how many.
+pub fn delete_user_entries(
+    tx: &Transaction<'_>,
+    kind: Kind,
+    user_id: &str,
+) -> Result<usize, DbError> {
+    Ok(tx.execute(
+        "DELETE FROM s2s_outbox WHERE kind = ?1 AND user_id = ?2",
+        params![kind.as_str(), user_id],
+    )?)
 }
 
 /// Counts one send attempt of each entry in `ids`.
@@ -476,6 +531,58 @@ mod tests {
             .collect();
         assert_eq!(kinds, [Kind::DeliverWelcome, Kind::DeviceList]);
         assert!(db.read(|conn| peer(conn, "h1")).await.unwrap().needs_resync);
+    }
+
+    #[tokio::test]
+    async fn multihoming_entries_coalesce_and_are_never_evicted() {
+        let db = Db::open_in_memory().unwrap();
+        db.write(|tx| {
+            let seed = NewEntry::SeedReplica {
+                gid: "g",
+                payload: &[0; 60],
+            };
+            assert!(enqueue(tx, "h1", seed, &LIMITS, 0)?.queued);
+            // A second seed of the same gid is a distinct request.
+            assert!(enqueue(tx, "h1", seed, &LIMITS, 0)?.queued);
+            for user_id in ["u1", "u2", "u1"] {
+                enqueue(tx, "h1", NewEntry::HostingRecord { user_id }, &LIMITS, 0)?;
+                enqueue(tx, "h1", NewEntry::PendingWelcomes { user_id }, &LIMITS, 0)?;
+            }
+            enqueue(tx, "h2", NewEntry::HostingRecord { user_id: "u1" }, &LIMITS, 0)?;
+            enqueue(tx, "h1", NewEntry::DeviceList { user_id: "u1" }, &LIMITS, 0)?;
+            enqueue(tx, "h2", NewEntry::DeviceList { user_id: "u1" }, &LIMITS, 0)?;
+            // Over both caps, nothing was evicted.
+            let full = enqueue(tx, "h1", deliver("g", 1, 10), &LIMITS, 0)?;
+            assert_eq!((full.queued, full.evicted), (false, 1));
+            assert_eq!(
+                delete_user_entries(tx, Kind::DeviceList, "u1")?,
+                2,
+                "every peer's device_list entry of u1"
+            );
+            Ok::<_, DbError>(())
+        })
+        .await
+        .unwrap();
+        let kinds: Vec<_> = db
+            .read(|conn| head(conn, "h1", 0, 20))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entry| (entry.kind, entry.user_id))
+            .collect();
+        let u = |id: &str| Some(id.to_owned());
+        assert_eq!(
+            kinds,
+            [
+                (Kind::SeedReplica, None),
+                (Kind::SeedReplica, None),
+                (Kind::HostingRecord, u("u1")),
+                (Kind::PendingWelcomes, u("u1")),
+                (Kind::HostingRecord, u("u2")),
+                (Kind::PendingWelcomes, u("u2")),
+            ]
+        );
+        assert_eq!(ids(&db, "h2").await.len(), 1);
     }
 
     #[tokio::test]

@@ -11,8 +11,8 @@ use gim_hub_api::{AppState, Clock, Config, HubIdentity};
 use gim_hub_db::Db;
 use gim_hub_push::{Dispatcher, DispatcherSettings, PushLog};
 use gim_hub_s2s::{
-    FederationConfig, FederationService, GroupService, GroupSource, Hosting, HostingSettings,
-    Outbox, OutboxConfig,
+    ops::hosting_record::HostingRecordService, FederationConfig, FederationService, GroupService,
+    GroupSource, Hosting, HostingSettings, Outbox, OutboxConfig,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -169,17 +169,23 @@ fn enable_federation(
 }
 
 /// Registers the remote identity ops (`GetDeviceList`, `NotifyDeviceList`,
-/// `ClaimKeyPackage`) and the group ops (`SubmitCommit`, `SubmitMessage`,
-/// `Deliver`, `DeliverWelcome`, `FetchLog`) with handlers on `state`.
-/// Returns the claim and group handlers, which must be kept alive.
+/// `ClaimKeyPackage`), the group ops (`SubmitCommit`, `SubmitMessage`,
+/// `Deliver`, `DeliverWelcome`, `FetchLog`) and `NotifyHostingRecord` with
+/// handlers on `state`. Returns the claim, group and hosting record
+/// handlers, which must be kept alive.
 fn register_ops(
     state: &AppState,
     service: &FederationService,
-) -> (Arc<gim_hub_s2s::ClaimService>, Arc<GroupService>) {
+) -> (
+    Arc<gim_hub_s2s::ClaimService>,
+    Arc<GroupService>,
+    Arc<HostingRecordService>,
+) {
     gim_hub_api::handlers::register_device_list_ops(state, service);
     (
         gim_hub_api::handlers::register_claim_op(state, service),
         gim_hub_api::handlers::register_group_ops(state, service),
+        gim_hub_api::handlers::register_hosting_record_op(state, service),
     )
 }
 
@@ -201,8 +207,9 @@ fn start_outbox(
 }
 
 /// Deletes events older than the retention window and expired link bundles,
-/// expires hosting records and emits `hosting_record.expiring`, now and then
-/// hourly.
+/// expires hosting records and emits `hosting_record.expiring`, and purges
+/// users removed longer than `GIM_HUB_UNHOSTED_GRACE_HOURS` ago, now and
+/// then hourly.
 async fn prune_periodically(state: AppState) {
     let mut interval = tokio::time::interval(PRUNE_INTERVAL);
     loop {
@@ -223,6 +230,11 @@ async fn prune_periodically(state: AppState) {
                 tracing::info!(expired, notified, "hosting records checked")
             }
             Err(err) => tracing::error!(%err, "hosting record check failed"),
+        }
+        match gim_hub_api::handlers::purge_removed_users(&state).await {
+            Ok(0) => {}
+            Ok(users) => tracing::info!(users, "removed users purged"),
+            Err(err) => tracing::error!(%err, "purging removed users failed"),
         }
     }
 }

@@ -1993,7 +1993,7 @@
           "hosting"
         ],
         "summary": "Upload the user's signed hosting record",
-        "description": "No authentication: the record is self-certifying. Checks, in order: the record verifies for `user_id` (gim-core \"Hosting record\" verification; 400 `invalid_hosting_record` naming the gim-core error code); `user_id` is a user of this hub (404); the lifetime `expires_at - now` is between 1 hour and 30 days (400 `invalid_hosting_record`, `lifetime_out_of_range`); the seq rules against the stored record: a lower `seq`, or the same `seq` with a different body, is 409 `stale_hosting_record`, the identical record is 200 unchanged. A record listing this hub is published to the federation DHT. A record that does not list this hub is stored too; the hub then stops acting for the user in federation.",
+        "description": "No authentication: the record is self-certifying. Checks, in order: the record verifies for `user_id` (gim-core \"Hosting record\" verification; 400 `invalid_hosting_record` naming the gim-core error code); `user_id` is a user of this hub (404); the lifetime `expires_at - now` is between 1 hour and 30 days (400 `invalid_hosting_record`, `lifetime_out_of_range`); the seq rules against the stored record: a lower `seq`, or the same `seq` with a different body, is 409 `stale_hosting_record`, the identical record is 200 unchanged. A record listing this hub is published to the federation DHT. A record that does not list this hub is stored too; the hub then stops acting for the user in federation. With federation, a record that changes the listed hubs or priorities emits `hosting_record.updated` to the user's devices and is propagated to the user's other hubs, removed hubs and the hubs sharing groups with the user; a record that stops listing this hub removes the user here (writes refused with 403 `hosting_record_required`, data purged after `GIM_HUB_UNHOSTED_GRACE_HOURS`) until a later record lists it again.",
         "operationId": "put_hosting_record",
         "parameters": [
           {
@@ -3100,7 +3100,7 @@
       },
       "HostingRecordUpdatedEvent": {
         "type": "object",
-        "description": "Emitted to the user's active devices on this hub when a stored record\nchanges the listed hubs or their priorities (renewals with the same\nentries emit nothing). Multi-homing (H4), implementation in progress:\nnot emitted yet.",
+        "description": "Emitted to the user's active devices on this hub when a stored record\nchanges the listed hubs or their priorities (renewals with the same\nentries emit nothing). Multi-homing (H4), emitted with federation.",
         "required": [
           "cursor",
           "created_at",
