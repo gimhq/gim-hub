@@ -22,7 +22,9 @@ use gim_hub_proto::s2s::{self, ErrorCode};
 use gim_hub_s2s::{
     ops::{
         deliver::{sequenced_message, to_sequenced},
-        fetch_log, submit,
+        fetch_log,
+        seed::Bootstrap,
+        submit,
     },
     outbox::NewEntry,
     owner_of, BoxFuture, FederationService, GroupService, Groups, HostingError, OutboxSender,
@@ -1471,11 +1473,75 @@ impl Groups for StateGroups {
                 .map_err(|err| DbError::Task(err.to_string()))
         })
     }
+
+    fn seed_replica(&self, request: s2s::SeedReplicaRequest) -> BoxFuture<'_, Result<(), DbError>> {
+        Box::pin(seed_replica(&self.0, request))
+    }
+
+    fn copy_pending_welcomes(
+        &self,
+        request: s2s::CopyPendingWelcomesRequest,
+    ) -> BoxFuture<'_, Result<(), DbError>> {
+        Box::pin(async move {
+            welcome_handlers::copy_pending_welcomes(&self.0, request)
+                .await
+                .map_err(|err| DbError::Task(err.to_string()))
+        })
+    }
+}
+
+/// Creates or replaces the replica of `gid` on a hub newly listed for a
+/// member (multihoming.md §4.3): when there is none, it is detached or it
+/// has no local members, the replica starts after the snapshot
+/// (`last_seq = seq`, `replica_from_seq = seq + 1`). A live replica is kept.
+/// No events: the member's devices joined through another hub.
+async fn seed_replica(state: &AppState, request: s2s::SeedReplicaRequest) -> Result<(), DbError> {
+    let Some(snapshot) = request.group else {
+        return Ok(());
+    };
+    let gid = request.gid;
+    let now = state.clock.now_ms();
+    state
+        .db
+        .write(move |tx| {
+            let live = groups::get(tx, &gid)?.is_some()
+                && !groups::replica(tx, &gid)?.is_some_and(|replica| replica.detached)
+                && !groups::local_member_devices(tx, &gid)?.is_empty();
+            if live {
+                return Ok(());
+            }
+            let members: Vec<(String, String)> = snapshot
+                .members
+                .into_iter()
+                .map(|m| (m.user_id, m.device_id))
+                .collect();
+            groups::create_replica(
+                tx,
+                &groups::Group {
+                    gid: gid.clone(),
+                    kind: if snapshot.kind == "direct" {
+                        "direct".into()
+                    } else {
+                        "group".into()
+                    },
+                    epoch: snapshot.epoch,
+                    last_seq: snapshot.seq,
+                    created_by_user_id: snapshot.created_by_user_id,
+                    created_by_device_id: snapshot.created_by_device_id,
+                    created_at: i64::try_from(snapshot.created_at).unwrap_or(i64::MAX),
+                },
+                &members,
+                now,
+            )
+        })
+        .await
 }
 
 /// Registers the group ops (`SubmitCommit`, `SubmitMessage`, `Deliver`,
-/// `DeliverWelcome`, `FetchLog`) with handlers on `state`. Returns the
-/// service, which the caller keeps alive.
+/// `DeliverWelcome`, `FetchLog`, `SeedReplica`, `CopyPendingWelcomes`) with
+/// handlers on `state` and installs the replica bootstrap hub-set hook
+/// (multihoming.md §4.3, §4.4) on `state.hosting`, queueing to
+/// `state.outbox`. Returns the service, which the caller keeps alive.
 pub fn register_group_ops(state: &AppState, service: &FederationService) -> Arc<GroupService> {
     let groups = GroupService::new(
         state.db.clone(),
@@ -1483,6 +1549,10 @@ pub fn register_group_ops(state: &AppState, service: &FederationService) -> Arc<
         Arc::new(StateGroups(state.clone())),
     );
     groups.register(service);
+    state.hosting.set_hub_set_hook(Bootstrap::new(
+        state.hub.hub_id().clone(),
+        state.outbox.clone(),
+    ));
     groups
 }
 

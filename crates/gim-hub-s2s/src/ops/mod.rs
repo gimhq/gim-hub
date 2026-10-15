@@ -7,17 +7,16 @@
 //!   (§5.3, §5.4, §6.2-§6.6), served by [`GroupService`].
 //!
 //! - [`hosting_record`]: `NotifyHostingRecord` (multihoming.md §4.2).
-//!
-//! The multi-homing ops `SeedReplica` and `CopyPendingWelcomes`
-//! (multihoming.md §4.3, §4.4) have no handler yet: [`MULTIHOMING_OPS`] fall
-//! through to the dispatcher's `INTERNAL` "not implemented" answer until
-//! their subtask registers one.
+//! - [`seed`], [`welcome`]: the bootstrap of a newly listed hub,
+//!   `SeedReplica` and `CopyPendingWelcomes` (multihoming.md §4.3, §4.4),
+//!   also served by [`GroupService`].
 
 pub mod claim;
 pub mod deliver;
 pub mod device_list;
 pub mod fetch_log;
 pub mod hosting_record;
+pub mod seed;
 pub mod submit;
 pub mod welcome;
 
@@ -26,9 +25,9 @@ use std::sync::Arc;
 use gim_hub_db::{Db, DbError};
 use gim_hub_identity::HubId;
 use gim_hub_proto::s2s::{
-    s2s_request::Op, DeliverWelcomeRequest, Error as S2sError, ErrorCode, GroupAck,
-    SequencedMessage, SubmitCommitRequest, SubmitCommitResponse, SubmitMessageRequest,
-    SubmitMessageResponse,
+    s2s_request::Op, CopyPendingWelcomesRequest, DeliverWelcomeRequest, Error as S2sError,
+    ErrorCode, GroupAck, SeedReplicaRequest, SequencedMessage, SubmitCommitRequest,
+    SubmitCommitResponse, SubmitMessageRequest, SubmitMessageResponse,
 };
 
 use crate::{
@@ -37,8 +36,16 @@ use crate::{
     policy::OpKind,
 };
 
-/// Multi-homing ops without a registered handler (stubs).
-pub const MULTIHOMING_OPS: [OpKind; 2] = [OpKind::SeedReplica, OpKind::CopyPendingWelcomes];
+/// The ops [`GroupService::register`] registers.
+pub const GROUP_OPS: [OpKind; 7] = [
+    OpKind::SubmitCommit,
+    OpKind::SubmitMessage,
+    OpKind::Deliver,
+    OpKind::DeliverWelcome,
+    OpKind::FetchLog,
+    OpKind::SeedReplica,
+    OpKind::CopyPendingWelcomes,
+];
 
 fn request_id() -> String {
     let mut bytes = [0u8; 16];
@@ -79,11 +86,24 @@ pub trait Groups: Send + Sync + 'static {
     /// (§5.4, §6.6).
     fn deliver_welcome(&self, request: DeliverWelcomeRequest)
         -> BoxFuture<'_, Result<(), DbError>>;
+
+    /// Creates or replaces the replica of a hub newly listed for a member
+    /// from the owner's snapshot (multihoming.md §4.3), unless a replica
+    /// with local members exists. The request carries a group snapshot.
+    fn seed_replica(&self, request: SeedReplicaRequest) -> BoxFuture<'_, Result<(), DbError>>;
+
+    /// Stores the pending Welcomes copied by a co-host of a hosted user,
+    /// deduplicated by `message_id` (multihoming.md §4.4).
+    fn copy_pending_welcomes(
+        &self,
+        request: CopyPendingWelcomesRequest,
+    ) -> BoxFuture<'_, Result<(), DbError>>;
 }
 
 /// The group ops `SubmitCommit`, `SubmitMessage`, `Deliver`,
-/// `DeliverWelcome` and `FetchLog`: authorization (§3.7), then [`Groups`]
-/// or the owner's log.
+/// `DeliverWelcome`, `FetchLog`, `SeedReplica` and `CopyPendingWelcomes`:
+/// authorization (§3.7, multihoming.md §9.1), then [`Groups`] or the
+/// owner's log.
 pub struct GroupService {
     db: Db,
     hosting: Hosting,
@@ -102,13 +122,7 @@ impl GroupService {
     /// Registers the group op handlers on `service`. The handlers hold a
     /// weak reference: the caller keeps the returned service alive.
     pub fn register(self: &Arc<Self>, service: &FederationService) {
-        for op in [
-            OpKind::SubmitCommit,
-            OpKind::SubmitMessage,
-            OpKind::Deliver,
-            OpKind::DeliverWelcome,
-            OpKind::FetchLog,
-        ] {
+        for op in GROUP_OPS {
             let weak = Arc::downgrade(self);
             service.register(
                 op,
@@ -135,6 +149,8 @@ impl GroupService {
             Op::Deliver(request) => deliver::handle(self, caller, request).await,
             Op::DeliverWelcome(request) => welcome::handle(self, &caller, request).await,
             Op::FetchLog(request) => fetch_log::handle(self, &caller, request).await,
+            Op::SeedReplica(request) => seed::handle(self, &caller, request).await,
+            Op::CopyPendingWelcomes(request) => welcome::handle_copy(self, &caller, request).await,
             _ => Err(error(ErrorCode::Invalid, "unexpected op")),
         }
     }
