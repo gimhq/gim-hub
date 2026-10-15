@@ -27,6 +27,15 @@ pub struct Config {
     pub longpoll_max_wait_seconds: u32,
     /// `GIM_HUB_SESSION_TTL_DAYS`: lifetime of device bearer tokens.
     pub session_ttl_days: u32,
+    /// `GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN`: unauthenticated user reads per
+    /// client IP per minute.
+    pub public_read_per_ip_per_min: u32,
+    /// `GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN`: unauthenticated reads of one
+    /// user per minute.
+    pub public_read_per_user_per_min: u32,
+    /// `GIM_HUB_TRUST_FORWARDED_FOR`: key client limits by the left-most
+    /// `X-Forwarded-For` address instead of the peer address.
+    pub trust_forwarded_for: bool,
     /// `GIM_HUB_PUSH_*`: push gateway.
     pub push: PushConfig,
 }
@@ -73,6 +82,19 @@ impl Config {
             max_blob_bytes: parse(get, "GIM_HUB_MAX_BLOB_BYTES", 104_857_600, Some(1))?,
             longpoll_max_wait_seconds: parse(get, "GIM_HUB_LONGPOLL_MAX_WAIT_SECONDS", 30, None)?,
             session_ttl_days: parse(get, "GIM_HUB_SESSION_TTL_DAYS", 30, Some(1))?,
+            public_read_per_ip_per_min: parse(
+                get,
+                "GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN",
+                120,
+                Some(1),
+            )?,
+            public_read_per_user_per_min: parse(
+                get,
+                "GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN",
+                60,
+                Some(1),
+            )?,
+            trust_forwarded_for: parse(get, "GIM_HUB_TRUST_FORWARDED_FOR", false, None)?,
             push: push_config(get)?,
             data_dir,
             database_path,
@@ -184,6 +206,9 @@ mod tests {
         assert_eq!(config.max_blob_bytes, 104_857_600);
         assert_eq!(config.longpoll_max_wait_seconds, 30);
         assert_eq!(config.session_ttl_days, 30);
+        assert_eq!(config.public_read_per_ip_per_min, 120);
+        assert_eq!(config.public_read_per_user_per_min, 60);
+        assert!(!config.trust_forwarded_for);
         assert_eq!(config.hub_key_path(), PathBuf::from("./data/hub_key"));
         assert_eq!(config.blobs_dir(), PathBuf::from("./data/blobs"));
         assert_eq!(config.push, PushConfig::default());
@@ -228,8 +253,14 @@ mod tests {
             ("GIM_HUB_DATA_DIR", "/var/lib/gim"),
             ("GIM_HUB_EVENT_RETENTION_DAYS", "30"),
             ("GIM_HUB_MAX_BLOB_BYTES", "1024"),
+            ("GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN", "5"),
+            ("GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN", "3"),
+            ("GIM_HUB_TRUST_FORWARDED_FOR", "true"),
         ]))
         .unwrap();
+        assert_eq!(config.public_read_per_ip_per_min, 5);
+        assert_eq!(config.public_read_per_user_per_min, 3);
+        assert!(config.trust_forwarded_for);
         assert_eq!(config.listen, "127.0.0.1:9000".parse().unwrap());
         assert_eq!(config.database_path, PathBuf::from("/var/lib/gim/hub.db"));
         assert_eq!(config.event_retention_days, 30);
@@ -246,5 +277,7 @@ mod tests {
         assert!(Config::from_vars(vars(&[("GIM_HUB_MAX_MESSAGE_BYTES", "big")])).is_err());
         assert!(Config::from_vars(vars(&[("GIM_HUB_LISTEN", "nowhere")])).is_err());
         assert!(Config::from_vars(vars(&[("GIM_HUB_SESSION_TTL_DAYS", "0")])).is_err());
+        assert!(Config::from_vars(vars(&[("GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN", "0")])).is_err());
+        assert!(Config::from_vars(vars(&[("GIM_HUB_TRUST_FORWARDED_FOR", "1")])).is_err());
     }
 }

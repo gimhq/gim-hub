@@ -11,6 +11,7 @@ pub mod handlers;
 pub mod hub;
 pub mod mls;
 pub mod notifier;
+pub mod ratelimit;
 pub mod state;
 #[cfg(feature = "testing")]
 pub mod testing;

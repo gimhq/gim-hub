@@ -19,6 +19,7 @@ use crate::{
     dto::{DeviceList, Error, Me, PutDeviceListRequest, User},
     error::ApiError,
     notifier::Notifier,
+    ratelimit::ClientIp,
     state::{AppState, Clock},
 };
 
@@ -320,24 +321,29 @@ pub fn register_device_list_ops(state: &AppState, service: &FederationService) {
     path = "/v2/users/{user_id}/device-list",
     tag = "identity",
     summary = "Get a user's DeviceList",
-    description = "For a user of another hub, the hub answers from its cache of remote \
+    description = "No authentication (a bearer token, if sent, is ignored): the DeviceList is \
+self-certifying public data, and a device restoring from a recovery code reads it before it can \
+sign in. Rate limited per client IP and per `user_id`, shared with `GET /v2/users/{user_id}`. \
+For a user of another hub, the hub answers from its cache of remote \
 DeviceLists, fetching the list from the user's hub when it is not cached or older than \
 `GIM_HUB_DEVICE_LIST_CACHE_HOURS`. A stale cached copy is returned if the user's hub cannot be \
 reached.",
     params(("user_id" = String, Path, description = "Opaque user ID (format owned by gim-core)", example = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa")),
-    security(("bearerAuth" = [])),
     responses(
         (status = 200, description = "Current DeviceList", body = DeviceList),
-        (status = 401, description = "Missing or invalid bearer token (`unauthorized`)", body = Error),
         (status = 404, description = "Not found (`not_found`)", body = Error),
+        (status = 429, description = "Over the per-client-IP or per-user limit of unauthenticated reads (`rate_limited`); retry after `Retry-After` seconds", body = Error),
         (status = 503, description = "The user's hub is unreachable and no cached copy exists (`peer_unavailable`); retry after `Retry-After` seconds", body = Error),
     ),
 )]
 pub async fn get_device_list(
-    _auth: AuthDevice,
+    client: ClientIp,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> Result<Json<DeviceList>, ApiError> {
+    state
+        .public_reads
+        .check(client, &user_id, state.clock.now_ms())?;
     let device_list = state.device_lists.device_list_for(&user_id).await?;
     Ok(Json(DeviceList {
         user_id,
@@ -350,22 +356,27 @@ pub async fn get_device_list(
     path = "/v2/users/{user_id}",
     tag = "identity",
     summary = "Get a user",
-    description = "For a user of another hub, the DeviceList comes from the cache of remote \
+    description = "No authentication (a bearer token, if sent, is ignored); returns only public \
+data: the self-certifying DeviceList and the handle. Rate limited per client IP and per \
+`user_id`, shared with `GET /v2/users/{user_id}/device-list`. For a user of another hub, the \
+DeviceList comes from the cache of remote \
 DeviceLists (fetched from the user's hub when missing or stale) and `handle` is absent.",
     params(("user_id" = String, Path, description = "Opaque user ID (format owned by gim-core)", example = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa")),
-    security(("bearerAuth" = [])),
     responses(
         (status = 200, description = "User", body = User),
-        (status = 401, description = "Missing or invalid bearer token (`unauthorized`)", body = Error),
         (status = 404, description = "Not found (`not_found`)", body = Error),
+        (status = 429, description = "Over the per-client-IP or per-user limit of unauthenticated reads (`rate_limited`); retry after `Retry-After` seconds", body = Error),
         (status = 503, description = "The user's hub is unreachable and no cached copy exists (`peer_unavailable`); retry after `Retry-After` seconds", body = Error),
     ),
 )]
 pub async fn get_user(
-    _auth: AuthDevice,
+    client: ClientIp,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> Result<Json<User>, ApiError> {
+    state
+        .public_reads
+        .check(client, &user_id, state.clock.now_ms())?;
     let device_list = state.device_lists.device_list_for(&user_id).await?;
     let key = user_id.clone();
     let handle = state
