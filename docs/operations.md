@@ -19,6 +19,95 @@ the variable.
 | `GIM_HUB_SESSION_TTL_DAYS` | `30` | Lifetime of device bearer tokens (minimum 1) |
 | `RUST_LOG` | `info` | Log filter (`tracing_subscriber` `EnvFilter` syntax, e.g. `gim_hub_api=debug,info`) |
 
+### Federation
+
+Federation is off unless `GIM_HUB_FEDERATION=true`; every other variable in this table is ignored
+while it is off. Design: [`federation.md`](federation.md).
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GIM_HUB_FEDERATION` | `false` | `true` starts the libp2p host and federation |
+| `GIM_HUB_P2P_LISTEN` | `/ip4/0.0.0.0/udp/4001/quic-v1,/ip4/0.0.0.0/tcp/4001` | Comma-separated listen multiaddrs (TCP only when a PSK is set) |
+| `GIM_HUB_P2P_EXTERNAL_ADDRS` | unset | Comma-separated multiaddrs advertised to peers (default: the actual listen addresses that are not unspecified) |
+| `GIM_HUB_P2P_BOOTSTRAP` | unset | Comma-separated bootstrap multiaddrs, `/p2p/<PeerId>` optional |
+| `GIM_HUB_FEDERATION_ALLOWLIST` | `$GIM_HUB_DATA_DIR/allowlist` | Allowlist file, reloaded on SIGHUP |
+| `GIM_HUB_P2P_PSK_FILE` | unset | libp2p `swarm.key` file; set = private network (pnet), TCP only |
+| `GIM_HUB_RUNTIME_CERT_DAYS` | `30` | Runtime certificate lifetime (minimum 2) |
+| `GIM_HUB_S2S_TIMEOUT_SECONDS` | `10` | Timeout of one hub-to-hub request (minimum 1) |
+| `GIM_HUB_DHT_REPUBLISH_HOURS` | `12` | Republish cadence of hosted users' hosting records (minimum 1) |
+| `GIM_HUB_HOSTING_CACHE_SECONDS` | `600` | Freshness of cached remote hosting records |
+| `GIM_HUB_DEVICE_LIST_CACHE_HOURS` | `24` | Freshness of cached remote DeviceLists |
+| `GIM_HUB_OUTBOX_TTL_HOURS` | `168` | Lifetime of queued outbound hub-to-hub entries (minimum 1) |
+| `GIM_HUB_OUTBOX_MAX_ENTRIES_PER_PEER` | `100000` | Outbound backlog cap per peer hub, entries (minimum 1) |
+| `GIM_HUB_OUTBOX_MAX_BYTES_PER_PEER` | `1073741824` | Outbound backlog cap per peer hub, bytes (minimum 1) |
+| `GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS` | `300` | Maximum retry backoff per peer hub (minimum 1) |
+
+The allowlist lists one peer `hub_id` per line, optionally followed by static multiaddrs without
+`/p2p/`; `#` starts a comment and the hub's own `hub_id` is ignored:
+
+```
+# hub_id                                                  [multiaddr ...]
+hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq  /ip4/10.0.0.12/tcp/4001 /ip4/10.0.0.12/udp/4001/quic-v1
+```
+
+The libp2p host has no DNS resolver: allowlist, bootstrap and external addresses must be `/ip4/` or
+`/ip6/` multiaddrs. A `/dns4/` address parses but can never be dialed.
+
+A missing or empty allowlist, an invalid line, or a QUIC address together with
+`GIM_HUB_P2P_PSK_FILE` stops startup. On SIGHUP the file is re-read; an invalid file is logged and
+the previous allowlist stays in force; hubs no longer listed are disconnected. With federation
+enabled the data directory also holds `runtime_key` (32-byte Ed25519 seed of the libp2p host key,
+mode 0600) and `runtime_cert` (its certificate, signed by `hub_key` and renewed automatically when
+less than a third of its lifetime remains). Deleting both while the hub is stopped rotates the
+PeerId; allowlists are unaffected because they name `hub_id`s. `gim-hub hub-id` prints the
+`hub_id` (creating `hub_key` if missing), which peers need for their allowlists.
+
+### Federation acceptance test
+
+`scripts/fed-test.sh` is the closed-federation acceptance test (CI job `federation`). It needs
+only Docker:
+
+1. builds the hub image from the `Dockerfile` (`GIM_FED_SKIP_BUILD=1` reuses `GIM_FED_IMAGE`);
+2. generates fresh hub root keys in the hubs' volumes with `gim-hub hub-id` and writes the
+   allowlists into `.tmp/fed-<pid>/` (nothing key-related is committed);
+3. starts `deploy/federation/compose.yaml`: `hub-a`, `hub-b`, `hub-c` allowing each other and
+   `hub-x`, which is on nobody's allowlist, on an isolated network with fixed IPs
+   (`GIM_FED_SUBNET`, default `10.231.64`; change it if that /24 is taken);
+4. runs the driver `crates/gim-hub/tests/fed_compose.rs` (`cargo test -p gim-hub --test
+   fed_compose -- --ignored`) in a `rust:1.99-bookworm` container attached to that network. The
+   driver speaks the client API to every hub with openmls clients and stops and starts hubs
+   through the mounted Docker socket. Scenarios: hosting-record resolution, a cross-hub direct
+   message, a group across three hubs with add and remove from a non-owning hub, a concurrent
+   Commit conflict (one 201, one 409 `stale_epoch`), a member-hub outage (50 messages, no loss,
+   no duplicates), an owner-hub outage (503 `peer_unavailable`, then delivery) and the refusal of
+   `hub-x`;
+5. prints the hub logs on failure and always removes the containers, network and volumes.
+
+All containers, the network and the volumes carry the label `ai-agent=true`. Other variables:
+`GIM_FED_PROJECT` (compose project, default `gim-fed`), `GIM_FED_CARGO_HOME` (cargo home of the
+driver container) and `GIM_FED_TIMEOUT` (driver timeout in seconds).
+
+### Push
+
+Push design and payload: [`push.md`](push.md). The `log` provider is always available. Each other
+provider is inert until configured: registrations for it are accepted and its sends are logged as
+skipped. Unreadable or invalid credentials stop startup. Keep credentials out of the image (mount
+them, e.g. under `/run/secrets`).
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GIM_HUB_PUSH_MEMBER_EVENTS` | `false` | Also push `group.member_added` / `group.member_removed` (silent) |
+| `GIM_HUB_PUSH_QUEUE_CAPACITY` | `10000` | Most devices with a queued push; further pushes are dropped (minimum 1) |
+| `GIM_HUB_PUSH_LOG_ENDPOINT` | `false` | Serve the unauthenticated, test-only `GET /v2/debug/push-log`; never enable in production |
+| `GIM_HUB_PUSH_APNS_TEAM_ID` | unset | APNs team ID; the four `APNS` variables below enable APNs together |
+| `GIM_HUB_PUSH_APNS_KEY_ID` | unset | ID of the APNs auth key |
+| `GIM_HUB_PUSH_APNS_KEY_PATH` | unset | Path of the APNs auth key (`.p8`) |
+| `GIM_HUB_PUSH_APNS_TOPIC` | unset | Default APNs topic (bundle ID) for registrations without `app_id` |
+| `GIM_HUB_PUSH_APNS_SANDBOX` | `false` | Send every APNs push through the sandbox |
+| `GIM_HUB_PUSH_FCM_SERVICE_ACCOUNT_PATH` | unset | Service account JSON key; enables FCM |
+| `GIM_HUB_PUSH_FCM_PROJECT_ID` | service account's `project_id` | Firebase project ID |
+| `GIM_HUB_PUSH_UNIFIEDPUSH` | `false` | `true` delivers to UnifiedPush endpoints |
+
 ## Data directory
 
 ```
@@ -58,6 +147,7 @@ The `Dockerfile` builds a release binary in `rust:1.99-bookworm` and runs it on
   image; port 8080 is exposed and `/data` is a volume. Mount a named volume or
   a host directory writable by uid 10001 there, and back it up as described
   above (it holds `hub_key`).
+- Port 4001 (TCP and UDP) is exposed for federation (`GIM_HUB_P2P_LISTEN` default).
 - The container `HEALTHCHECK` runs `gim-hub healthcheck`, which sends
   `GET /healthz` to the `GIM_HUB_LISTEN` port (loopback if the address is
   unspecified) and exits non-zero unless it gets 200. No HTTP client is

@@ -185,14 +185,14 @@ async fn upload_requires_the_callers_gim_credential() {
     let stranger = Client::signed_in(&hub, 2, 23).await;
     assert_rejected(
         upload(&hub, &stranger, &[stranger.key_package()]).await,
-        "unknown_device",
+        "device_not_in_list",
     );
 
     // No DeviceList stored: fail closed.
     let nolist = Client::signed_in(&hub, 6, 61).await;
     assert_rejected(
         upload(&hub, &nolist, &[nolist.key_package()]).await,
-        "no_device_list",
+        "device_list_unknown",
     );
     assert_eq!(
         send(&hub, Method::GET, "/v2/keypackages/count", &bob.token, None)

@@ -1,7 +1,7 @@
 //! API errors and their JSON bodies (`{"error":{"code","message"}}`).
 
 use axum::{
-    http::StatusCode,
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -34,6 +34,10 @@ pub enum ApiError {
     HandleTaken,
     #[error("{0}")]
     Conflict(String),
+    /// A KeyPackage of the upload was already claimed from another hub
+    /// through this hub (multi-homing).
+    #[error("key package was already claimed from another hub")]
+    DuplicateKeyPackage,
     #[error("stale DeviceList")]
     StaleDeviceList,
     #[error("message is not for the current epoch {current_epoch}")]
@@ -46,6 +50,19 @@ pub enum ApiError {
     RangeNotSatisfiable,
     #[error("rate limited")]
     RateLimited,
+    #[error("{0}")]
+    InvalidHostingRecord(String),
+    #[error("stale hosting record")]
+    StaleHostingRecord,
+    #[error("no valid hosting record lists this hub")]
+    HostingRecordRequired,
+    /// A peer hub needed for the request refused it.
+    #[error("{0}")]
+    PeerRefused(String),
+    /// A peer hub needed for the request did not answer; retry after
+    /// `retry_after` seconds.
+    #[error("peer hub unavailable")]
+    PeerUnavailable { retry_after: u64 },
     #[error("endpoint not implemented yet")]
     NotImplemented,
     /// Unexpected failure; details are logged, not returned.
@@ -57,21 +74,29 @@ impl ApiError {
     /// HTTP status of this error.
     pub fn status(&self) -> StatusCode {
         match self {
-            Self::ValidationFailed(_) | Self::InvalidDeviceList(_) => StatusCode::BAD_REQUEST,
+            Self::ValidationFailed(_)
+            | Self::InvalidDeviceList(_)
+            | Self::InvalidHostingRecord(_) => StatusCode::BAD_REQUEST,
             Self::Unauthorized
             | Self::InvalidChallenge
             | Self::InvalidSignature
             | Self::DeviceNotActive => StatusCode::UNAUTHORIZED,
-            Self::Forbidden(_) | Self::NotMember => StatusCode::FORBIDDEN,
+            Self::Forbidden(_) | Self::NotMember | Self::HostingRecordRequired => {
+                StatusCode::FORBIDDEN
+            }
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::HandleTaken
             | Self::Conflict(_)
+            | Self::DuplicateKeyPackage
             | Self::StaleDeviceList
+            | Self::StaleHostingRecord
             | Self::StaleEpoch { .. } => StatusCode::CONFLICT,
             Self::CursorExpired { .. } => StatusCode::GONE,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::RangeNotSatisfiable => StatusCode::RANGE_NOT_SATISFIABLE,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            Self::PeerRefused(_) => StatusCode::BAD_GATEWAY,
+            Self::PeerUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
             Self::NotImplemented => StatusCode::NOT_IMPLEMENTED,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -91,12 +116,18 @@ impl ApiError {
             Self::NotFound => "not_found",
             Self::HandleTaken => "handle_taken",
             Self::Conflict(_) => "conflict",
+            Self::DuplicateKeyPackage => "duplicate_key_package",
             Self::StaleDeviceList => "stale_device_list",
             Self::StaleEpoch { .. } => "stale_epoch",
             Self::CursorExpired { .. } => "cursor_expired",
             Self::PayloadTooLarge => "payload_too_large",
             Self::RangeNotSatisfiable => "range_not_satisfiable",
             Self::RateLimited => "rate_limited",
+            Self::InvalidHostingRecord(_) => "invalid_hosting_record",
+            Self::StaleHostingRecord => "stale_hosting_record",
+            Self::HostingRecordRequired => "hosting_record_required",
+            Self::PeerRefused(_) => "peer_refused",
+            Self::PeerUnavailable { .. } => "peer_unavailable",
             Self::NotImplemented => "not_implemented",
             Self::Internal(_) => "internal",
         }
@@ -127,7 +158,33 @@ impl IntoResponse for ApiError {
                 }),
             )
                 .into_response(),
+            Self::PeerUnavailable { retry_after } => (
+                status,
+                [(header::RETRY_AFTER, retry_after.to_string())],
+                Json(body),
+            )
+                .into_response(),
             _ => (status, Json(body)).into_response(),
+        }
+    }
+}
+
+/// Seconds a client waits before retrying after 503 `peer_unavailable`.
+pub const PEER_UNAVAILABLE_RETRY_AFTER: u64 = 5;
+
+impl From<gim_hub_s2s::HostingError> for ApiError {
+    fn from(err: gim_hub_s2s::HostingError) -> Self {
+        use gim_hub_s2s::HostingError;
+        match err {
+            HostingError::NotFound => Self::NotFound,
+            HostingError::Required => Self::HostingRecordRequired,
+            HostingError::Unavailable(reason) => {
+                tracing::info!(%reason, "hosting record resolution failed");
+                Self::PeerUnavailable {
+                    retry_after: PEER_UNAVAILABLE_RETRY_AFTER,
+                }
+            }
+            HostingError::Db(err) => err.into(),
         }
     }
 }
@@ -173,6 +230,26 @@ mod tests {
         assert_eq!(status, StatusCode::GONE);
         assert_eq!(body["error"]["code"], "cursor_expired");
         assert_eq!(body["cursor"], 42);
+    }
+
+    #[tokio::test]
+    async fn peer_unavailable_sets_retry_after() {
+        let response = ApiError::PeerUnavailable { retry_after: 5 }.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "5");
+        let (status, body) = render(ApiError::PeerRefused("not allowlisted".into())).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body["error"]["code"], "peer_refused");
+        let (status, body) = render(gim_hub_s2s::HostingError::Required.into()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "hosting_record_required");
+    }
+
+    #[tokio::test]
+    async fn duplicate_key_package_is_409() {
+        let (status, body) = render(ApiError::DuplicateKeyPackage).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "duplicate_key_package");
     }
 
     #[tokio::test]
