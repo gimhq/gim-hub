@@ -8,6 +8,7 @@ use crate::DbError;
 /// released migration; append a new one.
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_hosting.sql"),
     include_str!("../migrations/0004_outbox.sql"),
 ];
 
@@ -66,6 +67,7 @@ mod tests {
                 "group_members",
                 "groups",
                 "handles",
+                "hosting_records",
                 "key_packages",
                 "link_bundles",
                 "messages",

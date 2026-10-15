@@ -10,9 +10,14 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Test helpers (`gim_hub_s2s::hosting::testing`); enabled only through dev-dependencies.
+testing = ["dep:ed25519-dalek"]
+
 [dependencies]
 async-trait = { workspace = true }
 ciborium = { workspace = true }
+ed25519-dalek = { workspace = true, optional = true }
 futures = { workspace = true }
 getrandom = { workspace = true }
 gim-hub-db = { workspace = true }
@@ -26,4 +31,5 @@ tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "sign
 tracing = { workspace = true }
 
 [dev-dependencies]
+gim-hub-s2s = { workspace = true, features = ["testing"] }
 tempfile = { workspace = true }

@@ -151,7 +151,38 @@ learned of it from a `welcome` event or from the pending list. Recovery after 41
    (for a newly joined group, from the Welcome's `seq + 1`), DeviceLists.
 4. Continue `GET /v2/events` / `GET /v2/stream` from the head cursor.
 
-## Changes from v1
+## Hosting records
+
+A user's hosting record (gim-core `SignedHostingRecord`, signed with the user root key) lists the
+hubs that host the user; federation acts only for users whose current record lists the hub
+([`federation.md`](federation.md) §4). The client builds, signs and renews the record; the hub
+never holds the user root key.
+
+1. `POST /v2/users/{user_id}/hosting-entry {priority}` (bearer, own user; `priority` 0..=255,
+   default 0) returns `{hub_id, hub_root_pubkey, priority, entry}`: this hub's `HostingEntry`
+   (CBOR, base64) co-signed with its root key. Signing is deterministic.
+2. The client puts the entries into a record (`seq`, `expires_at`, entries in canonical order),
+   signs it and uploads it with `PUT /v2/users/{user_id}/hosting-record {hosting_record}` (no
+   token; at most 8192 decoded bytes). Checks, in order: the record verifies for `user_id` (400
+   `invalid_hosting_record`, the message names the gim-core error code); the user is local to this
+   hub (404 `not_found`); `expires_at - now` is between 1 hour and 30 days (400
+   `invalid_hosting_record`, `lifetime_out_of_range`); a lower `seq`, or the same `seq` with a
+   different body, is 409 `stale_hosting_record`, the identical record is 200 unchanged. The first
+   record is 201. The response is `{user_id, hosting_record, seq, expires_at, hosted}`; `hosted`
+   says whether the record lists this hub. A hosted record is published to the federation DHT.
+3. Records should live 7 days and be renewed (new `seq`) when less than 3 days remain. When less
+   than 48 hours remain, the hub emits `hosting_record.expiring` (payload
+   `{user_id, expires_at, seq}`) to the user's active devices, once per record `seq` and at most
+   once per 24 hours.
+
+`GET /v2/users/{user_id}/hosting-record` (no token) returns the stored record of a local user, or
+the newest valid record of a remote user resolved through federation (cache, the user's hubs, the
+DHT): 404 `not_found` if none is known or it expired, 503 `peer_unavailable` (with `Retry-After`
+seconds) if a needed peer hub did not answer and nothing else is known.
+
+Federated actions of a user without a valid record listing their hub fail with 403
+`hosting_record_required`.
+
 
 | Area | v1 (gim-server) | v2 (gim-hub) |
 |---|---|---|
@@ -184,7 +215,7 @@ ranges.
 
 Implemented: `/healthz`, sign-in (`/v2/auth/*`), DeviceLists and users (`/v2/users/*`, `/v2/me`),
 recovery backups, device linking (`/v2/link-bundles*`), handles, KeyPackages, groups and commits,
-messages, pending Welcomes, events (long-poll and `/v2/stream`) and blobs.
+messages, pending Welcomes, events (long-poll and `/v2/stream`), blobs and hosting records.
 
 Pending:
 
