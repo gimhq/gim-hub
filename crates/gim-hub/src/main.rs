@@ -19,11 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::from_env()?;
     let state = open_state(config)?;
-    tracing::info!(
-        hub_id = %state.hub.hub_id(),
-        peer_id = state.hub.peer_id(),
-        "hub identity loaded"
-    );
+    tracing::info!(hub_id = %state.hub.hub_id(), "hub identity loaded");
 
     let listener = tokio::net::TcpListener::bind(state.config.listen).await?;
     tracing::info!(listen = %state.config.listen, "gim-hub listening");
@@ -146,8 +142,8 @@ mod tests {
         assert!(dir.join("data/hub.db").is_file());
         assert!(dir.join("data/hub_key").is_file());
         assert!(dir.join("data/blobs").is_dir());
-        let peer_id = first.hub.peer_id().to_owned();
+        let hub_id = first.hub.hub_id().clone();
         drop(first);
-        assert_eq!(open_state(config()).unwrap().hub.peer_id(), peer_id);
+        assert_eq!(open_state(config()).unwrap().hub.hub_id(), &hub_id);
     }
 }

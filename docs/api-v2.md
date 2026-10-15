@@ -121,7 +121,7 @@ learned of it from a `welcome` event or from the pending list. Recovery after 41
 | New | - | recovery backups, link-bundle relay, push registration (`PUT`/`DELETE /v2/push/registration`) |
 | KeyPackage upload | `last_resort` is a separate package field | `last_resort: true` flag; the request then holds exactly one package |
 | KeyPackage claim | `{device_ids}` | `{targets: [{user_id, device_id?}]}`, one package per active device; results carry `user_id` |
-| Group ID | `group_id`, opaque | `gid = <owner_peer_id>/<random_128 base32>`, assigned by the hub; percent-encode it in paths (`/` as `%2F`) |
+| Group ID | `group_id`, opaque | `gid = <owner hub_id>/<random_128 base32lower>`, assigned by the hub; percent-encode it in paths (`/` as `%2F`) |
 | Group create | `{kind, member_device_ids}` | `{kind}`; members are added by Commits |
 | Membership | `POST /members`, `DELETE /members/{device_id}` | removed; driven by `POST /v2/groups/{gid}/commits {client_id, mls_message, welcome?, welcome_recipients?, ratchet_tree?}` returning `{seq, epoch, duplicate}` |
 | Epoch | client `epoch` field | read by the hub from the MLS framing |

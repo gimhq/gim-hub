@@ -33,11 +33,10 @@ $GIM_HUB_DATA_DIR/
   refuses to open a database written by a newer schema version.
 - `hub_key` is generated on first start. It is the hub ROOT key and
   determines the hub's `hub_id` (gim-core identity spec): the audience of
-  sign-in challenges and the hub named in users' hosting records. Replacing it
-  changes `hub_id`, so it must be kept secret, backed up with the database and
-  never replaced on a running deployment. Until runtime keys certified by the root key are implemented,
-  the root key's libp2p PeerId is still the owner prefix of group IDs. Both
-  `hub_id` and PeerId are logged at startup.
+  sign-in challenges, the owner prefix of group IDs and the hub named in
+  users' hosting records. Replacing it changes `hub_id`, so it must be kept
+  secret, backed up with the database and never replaced on a running
+  deployment. The `hub_id` is logged at startup.
 - Back up `hub.db` with SQLite's online backup (`sqlite3 hub.db ".backup
   out.db"`) or while the hub is stopped; copying the file alone while running
   can miss the WAL.

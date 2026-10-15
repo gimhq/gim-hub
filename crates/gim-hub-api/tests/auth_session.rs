@@ -4,7 +4,6 @@
 
 use axum::{
     body::{to_bytes, Body},
-    extract::FromRequestParts,
     http::{header, Request, StatusCode},
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -12,7 +11,6 @@ use ed25519_dalek::{Signer, SigningKey};
 use gim_hub_api::{
     handlers::CHALLENGE_TTL_MS,
     testing::{TestHub, TEST_NOW},
-    AuthDevice,
 };
 use gim_hub_db::{
     auth::{self, Challenge},
@@ -209,16 +207,17 @@ fn error(code: &str) -> Value {
     Value::from(code)
 }
 
-/// Authenticates a bearer token through the `AuthDevice` extractor.
-async fn authenticate(hub: &TestHub, token: &str) -> Option<AuthDevice> {
-    let (mut parts, ()) = Request::get("/")
+/// GET /v2/me with a bearer token: `(user_id, device_id)` of the caller.
+async fn get_me(hub: &TestHub, token: &str) -> (String, String) {
+    let request = Request::get("/v2/me")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .body(())
-        .unwrap()
-        .into_parts();
-    AuthDevice::from_request_parts(&mut parts, &hub.state)
-        .await
-        .ok()
+        .body(Body::empty())
+        .unwrap();
+    let response = hub.router().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let me: Value = serde_json::from_slice(&body).unwrap();
+    (text(&me["user_id"]), text(&me["device_id"]))
 }
 
 #[test]
@@ -248,11 +247,8 @@ async fn vector_response_creates_session_once() {
     let token = text(&body["token"]);
     assert_eq!(token.len(), 43);
     assert_eq!(
-        authenticate(&hub, &token).await,
-        Some(AuthDevice {
-            user_id: text(&v["user_id"]),
-            device_id: text(&v["device_id"]),
-        })
+        get_me(&hub, &token).await,
+        (text(&v["user_id"]), text(&v["device_id"]))
     );
 
     let (status, body) = create_session(&hub, &response).await;
@@ -281,8 +277,7 @@ async fn fresh_challenge_and_response_sign_in() {
     let (status, body) = create_session(&hub, &response).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let token = text(&body["token"]);
-    let device = authenticate(&hub, &token).await.unwrap();
-    assert_eq!((device.user_id, device.device_id), (user_id, device_id));
+    assert_eq!(get_me(&hub, &token).await, (user_id, device_id));
 
     let (status, body) = create_session(&hub, &response).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

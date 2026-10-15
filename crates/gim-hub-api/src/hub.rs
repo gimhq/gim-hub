@@ -10,7 +10,7 @@ use std::{
     sync::Arc,
 };
 
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::SigningKey;
 use gim_hub_identity::HubId;
 
 /// The hub's root signing key and the ids derived from it.
@@ -18,14 +18,12 @@ use gim_hub_identity::HubId;
 pub struct HubIdentity {
     key: Arc<SigningKey>,
     hub_id: HubId,
-    peer_id: Arc<str>,
 }
 
 impl std::fmt::Debug for HubIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HubIdentity")
             .field("hub_id", &self.hub_id)
-            .field("peer_id", &self.peer_id)
             .finish_non_exhaustive()
     }
 }
@@ -51,11 +49,9 @@ impl HubIdentity {
     pub fn from_seed(seed: &[u8; 32]) -> Self {
         let key = SigningKey::from_bytes(seed);
         let hub_id = HubId::from_root_pubkey(&key.verifying_key());
-        let peer_id = peer_id(&key.verifying_key()).into();
         Self {
             key: Arc::new(key),
             hub_id,
-            peer_id,
         }
     }
 
@@ -68,27 +64,6 @@ impl HubIdentity {
     pub fn hub_id(&self) -> &HubId {
         &self.hub_id
     }
-
-    /// PeerId of the root key, still the owner prefix of group IDs. Will be
-    /// replaced by the PeerId of the certified runtime key.
-    pub fn peer_id(&self) -> &str {
-        &self.peer_id
-    }
-}
-
-/// libp2p-style PeerId of an Ed25519 public key: base58btc of the identity
-/// multihash of the protobuf-encoded `PublicKey { Type = Ed25519, Data }`.
-///
-pub fn peer_id(key: &VerifyingKey) -> String {
-    // PublicKey protobuf: field 1 (KeyType) = 1 (Ed25519), field 2 (bytes) = key.
-    const PROTOBUF_PREFIX: [u8; 4] = [0x08, 0x01, 0x12, 0x20];
-    // Multihash: code 0x00 (identity), length 36.
-    const MULTIHASH_PREFIX: [u8; 2] = [0x00, 0x24];
-    let mut bytes = Vec::with_capacity(38);
-    bytes.extend_from_slice(&MULTIHASH_PREFIX);
-    bytes.extend_from_slice(&PROTOBUF_PREFIX);
-    bytes.extend_from_slice(key.as_bytes());
-    bs58::encode(bytes).into_string()
 }
 
 fn create_seed(path: &Path) -> io::Result<[u8; 32]> {
@@ -125,7 +100,6 @@ mod tests {
         }
         let second = HubIdentity::load_or_create(&path).unwrap();
         assert_eq!(first.hub_id(), second.hub_id());
-        assert_eq!(first.peer_id(), second.peer_id());
         assert_eq!(
             first.signing_key().to_bytes(),
             second.signing_key().to_bytes()
@@ -150,15 +124,5 @@ mod tests {
             hub.hub_id().as_str(),
             "hciqgrcknldyy6lbu2splf5frcdqeftipgfikjxbzeq6x6y55lggapay"
         );
-    }
-
-    #[test]
-    fn peer_id_has_libp2p_ed25519_shape() {
-        let hub = HubIdentity::from_seed(&[0u8; 32]);
-        assert!(hub.peer_id().starts_with("12D3KooW"), "{}", hub.peer_id());
-        assert_eq!(hub.peer_id().len(), 52);
-        let decoded = bs58::decode(hub.peer_id()).into_vec().unwrap();
-        assert_eq!(&decoded[..6], &[0x00, 0x24, 0x08, 0x01, 0x12, 0x20]);
-        assert_eq!(&decoded[6..], hub.signing_key().verifying_key().as_bytes());
     }
 }
