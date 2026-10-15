@@ -9,8 +9,9 @@ use std::{
 };
 
 use gim_hub_db::Db;
+use gim_hub_s2s::{DeviceLists, Disabled, Federation, Hosting, OutboxSender};
 
-use crate::{config::Config, hub::HubIdentity, notifier::Notifier};
+use crate::{config::Config, handlers::IdentityEvents, hub::HubIdentity, notifier::Notifier};
 
 /// State shared by all handlers (cheap to clone).
 #[derive(Clone)]
@@ -20,6 +21,44 @@ pub struct AppState {
     pub hub: HubIdentity,
     pub notifier: Notifier,
     pub clock: Clock,
+    /// Hub-to-hub federation; [`Disabled`] unless `GIM_HUB_FEDERATION=true`.
+    pub federation: Arc<dyn Federation>,
+    /// Durable S2S outbound queue; [`Disabled`] (a no-op) unless federation
+    /// is enabled.
+    pub outbox: Arc<dyn OutboxSender>,
+    /// Hosting records: local records, the remote cache and resolution.
+    pub hosting: Hosting,
+    /// DeviceLists of local users and the cache of remote users' lists.
+    pub device_lists: DeviceLists,
+}
+
+impl AppState {
+    /// State with federation disabled.
+    pub fn new(db: Db, config: Config, hub: HubIdentity, clock: Clock) -> Self {
+        let hosting = Hosting::local(db.clone(), hub.hub_id().clone(), clock.as_now());
+        let notifier = Notifier::default();
+        let device_lists = DeviceLists::local(
+            db.clone(),
+            hosting.clone(),
+            clock.as_now(),
+            Arc::new(IdentityEvents::new(
+                db.clone(),
+                clock.clone(),
+                notifier.clone(),
+            )),
+        );
+        Self {
+            db,
+            config: Arc::new(config),
+            hub,
+            notifier,
+            clock,
+            federation: Arc::new(Disabled),
+            outbox: Arc::new(Disabled),
+            hosting,
+            device_lists,
+        }
+    }
 }
 
 /// Source of the current time in milliseconds since the Unix epoch. Tests
@@ -50,6 +89,12 @@ impl Clock {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
         }
+    }
+
+    /// This clock as a hosting-record time source.
+    pub fn as_now(&self) -> gim_hub_s2s::hosting::Now {
+        let clock = self.clone();
+        Arc::new(move || clock.now_ms())
     }
 
     /// Moves a manual clock forward by `ms`.
