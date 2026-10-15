@@ -428,7 +428,7 @@
           "groups"
         ],
         "summary": "Create a group",
-        "description": "Assigns a new `gid = <owner_peer_id>/<random_128 base32>` (this hub's PeerID) at epoch 0 with the calling device as the only member. Further members are added by Commits.",
+        "description": "Assigns a new `gid = <owner hub_id>/<random_128 base32lower>` (this hub's `hub_id`, stable across runtime-key rotation) at epoch 0 with the calling device as the only member. Further members are added by Commits.",
         "operationId": "create_group",
         "requestBody": {
           "content": {
@@ -495,7 +495,7 @@
             "schema": {
               "type": "string"
             },
-            "example": "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA%2Fhf4caruf7nbxzmwh5wvgefz6pa"
+            "example": "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq%2Fhf4caruf7nbxzmwh5wvgefz6pa"
           }
         ],
         "responses": {
@@ -564,7 +564,7 @@
             "schema": {
               "type": "string"
             },
-            "example": "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA%2Fhf4caruf7nbxzmwh5wvgefz6pa"
+            "example": "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq%2Fhf4caruf7nbxzmwh5wvgefz6pa"
           }
         ],
         "requestBody": {
@@ -683,7 +683,7 @@
             "schema": {
               "type": "string"
             },
-            "example": "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA%2Fhf4caruf7nbxzmwh5wvgefz6pa"
+            "example": "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq%2Fhf4caruf7nbxzmwh5wvgefz6pa"
           },
           {
             "name": "from_seq",
@@ -785,7 +785,7 @@
             "schema": {
               "type": "string"
             },
-            "example": "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA%2Fhf4caruf7nbxzmwh5wvgefz6pa"
+            "example": "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq%2Fhf4caruf7nbxzmwh5wvgefz6pa"
           }
         ],
         "requestBody": {
@@ -1972,7 +1972,7 @@
             "schema": {
               "type": "string"
             },
-            "example": "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA%2Fhf4caruf7nbxzmwh5wvgefz6pa"
+            "example": "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq%2Fhf4caruf7nbxzmwh5wvgefz6pa"
           }
         ],
         "responses": {
@@ -2443,8 +2443,8 @@
           },
           "gid": {
             "type": "string",
-            "description": "Group ID `<owner_peer_id>/<random_128 base32>`, assigned by the hub.",
-            "example": "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA/hf4caruf7nbxzmwh5wvgefz6pa"
+            "description": "Group ID `<owner hub_id>/<random_128 base32lower>`, assigned by the hub. Clients use its\nUTF-8 bytes as the MLS group ID.",
+            "example": "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq/hf4caruf7nbxzmwh5wvgefz6pa"
           },
           "kind": {
             "$ref": "#/components/schemas/GroupKind"
@@ -2776,7 +2776,7 @@
           },
           "gid": {
             "type": "string",
-            "example": "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA/hf4caruf7nbxzmwh5wvgefz6pa"
+            "example": "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq/hf4caruf7nbxzmwh5wvgefz6pa"
           },
           "seq": {
             "type": "integer",
@@ -2824,7 +2824,7 @@
           },
           "gid": {
             "type": "string",
-            "example": "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA/hf4caruf7nbxzmwh5wvgefz6pa"
+            "example": "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq/hf4caruf7nbxzmwh5wvgefz6pa"
           },
           "kind": {
             "$ref": "#/components/schemas/MessageKind"
@@ -3226,7 +3226,7 @@
           },
           "gid": {
             "type": "string",
-            "example": "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA/hf4caruf7nbxzmwh5wvgefz6pa"
+            "example": "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq/hf4caruf7nbxzmwh5wvgefz6pa"
           },
           "ratchet_tree": {
             "type": [

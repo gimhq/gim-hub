@@ -153,22 +153,43 @@ pub fn set_epoch(tx: &Transaction<'_>, gid: &str, epoch: u64) -> Result<(), DbEr
     Ok(())
 }
 
-/// Stores a Welcome for one device until it is acknowledged. `payload` is the
-/// `welcome` event data as JSON.
-pub fn insert_pending_welcome(
-    tx: &Transaction<'_>,
+/// Current epoch of a group, or `None` if the group does not exist.
+pub fn group_epoch(conn: &Connection, gid: &str) -> Result<Option<i64>, DbError> {
+    let epoch = conn
+        .query_row("SELECT epoch FROM groups WHERE gid = ?1", [gid], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    Ok(epoch)
+}
+
+/// Whether a device is a member of a group.
+pub fn is_member(
+    conn: &Connection,
+    gid: &str,
     user_id: &str,
     device_id: &str,
-    gid: &str,
-    payload: &str,
-    now: i64,
-) -> Result<(), DbError> {
-    tx.execute(
-        "INSERT INTO pending_welcomes (user_id, device_id, gid, payload, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![user_id, device_id, gid, payload, now],
+) -> Result<bool, DbError> {
+    let found = conn
+        .query_row(
+            "SELECT 1 FROM group_members WHERE gid = ?1 AND user_id = ?2 AND device_id = ?3",
+            params![gid, user_id, device_id],
+            |_| Ok(()),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
+/// Member devices of a group as `(user_id, device_id)`, ordered.
+pub fn member_devices(conn: &Connection, gid: &str) -> Result<Vec<(String, String)>, DbError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT user_id, device_id FROM group_members WHERE gid = ?1 \
+         ORDER BY user_id, device_id",
     )?;
-    Ok(())
+    let members = stmt
+        .query_map([gid], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(members)
 }
 
 #[cfg(test)]
