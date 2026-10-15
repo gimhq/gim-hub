@@ -205,6 +205,15 @@ own hub:
   target is on another hub, the caller needs a valid hosting record listing this hub (403
   `hosting_record_required`); no package is claimed then.
 
+## Push
+
+`PUT /v2/push/registration` stores the calling device's push registration (one per device,
+replacing the previous one) and `DELETE` removes it; both return 204. Tokens are validated per
+provider (400 `validation_failed`). The hub then pushes `message` and `welcome` events to the
+device's provider (never to the sender's own device). Payload, provider mapping and the test-only
+`GET /v2/debug/push-log` (off by default): [`push.md`](push.md).
+
+## Differences from v1
 
 | Area | v1 (gim-server) | v2 (gim-hub) |
 |---|---|---|
@@ -237,11 +246,13 @@ ranges.
 
 Implemented: `/healthz`, sign-in (`/v2/auth/*`), DeviceLists and users (`/v2/users/*`, `/v2/me`),
 recovery backups, device linking (`/v2/link-bundles*`), handles, KeyPackages, groups and commits,
-messages, pending Welcomes, events (long-poll and `/v2/stream`), blobs and hosting records.
+messages, pending Welcomes, events (long-poll and `/v2/stream`), blobs, hosting records and push
+registration (log provider; APNs, FCM and UnifiedPush when configured).
 
 Pending:
 
-- `PUT`/`DELETE /v2/push/registration` return 501 `not_implemented`.
+- Push: no real APNs/FCM credentials have been exercised yet; UnifiedPush bodies are not Web Push
+  encrypted (RFC 8291).
 - Validation of an added member's MLS credential (type `0xF001`) against their DeviceList is not
   enforced yet: the hub accepts every added member until gim-core identity part 3 defines the
   credential format. The 400 `validation_failed` rejection for credentials in the commit table

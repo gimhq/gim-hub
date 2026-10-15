@@ -9,6 +9,7 @@ use std::{
 
 use gim_hub_api::{AppState, Clock, Config, HubIdentity};
 use gim_hub_db::Db;
+use gim_hub_push::{Dispatcher, DispatcherSettings, PushLog};
 use gim_hub_s2s::{
     outbox::NoSource, FederationConfig, FederationService, Hosting, HostingSettings, Outbox,
     OutboxConfig,
@@ -52,6 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let federation_config = FederationConfig::from_env(&config.data_dir)?;
     let mut state = open_state(config)?;
     tracing::info!(hub_id = %state.hub.hub_id(), "hub identity loaded");
+    let push = start_push(&mut state).await?;
     let federation = start_federation(&federation_config, &state).await?;
     let (republish, outbox) = match &federation {
         Some(service) => {
@@ -73,6 +75,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     pruning.abort();
+    for task in push {
+        task.abort();
+    }
     if let Some(republish) = republish {
         republish.abort();
     }
@@ -94,6 +99,26 @@ fn open_state(config: Config) -> Result<AppState, Box<dyn std::error::Error>> {
     let db = Db::open(&config.database_path)?;
     let hub = HubIdentity::load_or_create(&config.hub_key_path())?;
     Ok(AppState::new(db, config, hub, Clock::system()))
+}
+
+/// Replaces the default push dispatcher with one on the configured providers,
+/// tailing events from the current head, and starts it.
+async fn start_push(
+    state: &mut AppState,
+) -> Result<Vec<tokio::task::JoinHandle<()>>, Box<dyn std::error::Error>> {
+    let log = PushLog::default();
+    let providers = gim_hub_push::build_providers(&state.config.push, log.clone())?;
+    let names: Vec<&str> = providers.iter().map(|p| p.name()).collect();
+    let head = state.db.read(gim_hub_db::events::head_cursor).await?;
+    state.push = Dispatcher::new(
+        state.db.clone(),
+        providers,
+        log,
+        DispatcherSettings::from(&state.config.push),
+        head,
+    );
+    tracing::info!(providers = ?names, "push dispatcher started");
+    Ok(state.push.start())
 }
 
 /// Starts the federation service when `GIM_HUB_FEDERATION=true`.
@@ -363,6 +388,17 @@ mod tests {
             .unwrap();
         assert_eq!(prune(&hub.state).await.unwrap(), (0, 1));
         assert_eq!(prune(&hub.state).await.unwrap(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn push_starts_with_log_provider_only_by_default() {
+        let mut state = TestHub::new().state.clone();
+        let tasks = start_push(&mut state).await.unwrap();
+        assert!(!tasks.is_empty());
+        for task in tasks {
+            task.abort();
+        }
+        assert_eq!(state.push.metrics(), Default::default());
     }
 
     #[tokio::test]

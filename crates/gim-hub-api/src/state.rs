@@ -9,6 +9,7 @@ use std::{
 };
 
 use gim_hub_db::Db;
+use gim_hub_push::{Dispatcher, DispatcherSettings, LogProvider, PushLog};
 use gim_hub_s2s::{DeviceLists, Disabled, Federation, Hosting, OutboxSender};
 
 use crate::{config::Config, handlers::IdentityEvents, hub::HubIdentity, notifier::Notifier};
@@ -30,6 +31,10 @@ pub struct AppState {
     pub hosting: Hosting,
     /// DeviceLists of local users and the cache of remote users' lists.
     pub device_lists: DeviceLists,
+    /// Push dispatcher. [`AppState::new`] installs one with only the `log`
+    /// provider that is not started; the binary replaces it with the
+    /// configured providers and starts it.
+    pub push: Dispatcher,
 }
 
 impl AppState {
@@ -47,6 +52,14 @@ impl AppState {
                 notifier.clone(),
             )),
         );
+        let push_log = PushLog::default();
+        let push = Dispatcher::new(
+            db.clone(),
+            vec![Arc::new(LogProvider::new(push_log.clone()))],
+            push_log,
+            DispatcherSettings::from(&config.push),
+            0,
+        );
         Self {
             db,
             config: Arc::new(config),
@@ -57,6 +70,7 @@ impl AppState {
             outbox: Arc::new(Disabled),
             hosting,
             device_lists,
+            push,
         }
     }
 }
