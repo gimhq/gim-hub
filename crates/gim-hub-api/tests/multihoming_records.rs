@@ -295,7 +295,9 @@ async fn wait_seq(node: &Node, user_id: &str, seq: i64) {
 /// Hub-set changes seen by a [`HubSetHook`]: `(user_id, added, removed,
 /// local, hosted)`.
 #[derive(Default)]
-struct Recorder(Mutex<Vec<(String, Vec<String>, Vec<String>, bool, bool)>>);
+struct Recorder(Mutex<Vec<Change>>);
+
+type Change = (String, Vec<String>, Vec<String>, bool, bool);
 
 impl HubSetHook for Recorder {
     fn hub_set_changed(
