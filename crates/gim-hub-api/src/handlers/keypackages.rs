@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use axum::{extract::rejection::JsonRejection, extract::State, Json};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use gim_hub_db::{events, keypackages};
+use gim_hub_db::{events, keypackages, users};
 
 use super::identity::json_body;
 use crate::{
@@ -35,12 +35,14 @@ fn count_of(stock: keypackages::Stock) -> KeyPackageCount {
     summary = "Upload KeyPackages for the calling device",
     description = "Adds one-time KeyPackages, or with `last_resort: true` replaces the device's \
 last-resort KeyPackage (exactly one package). Each hub of a multi-homed user holds its own \
-disjoint set.",
+disjoint set. Every leaf must carry the calling device's gim-core credential (type 0xF001), \
+valid against the caller's stored DeviceList, with the certified device key as its signature \
+key; otherwise the whole upload is rejected.",
     request_body = UploadKeyPackagesRequest,
     security(("bearerAuth" = [])),
     responses(
         (status = 200, description = "Stock after the upload", body = KeyPackageCount),
-        (status = 400, description = "Validation failed (`validation_failed`)", body = Error),
+        (status = 400, description = "Malformed or invalid KeyPackage, or invalid credential (`validation_failed`)", body = Error),
         (status = 401, description = "Missing or invalid bearer token (`unauthorized`)", body = Error),
         (status = 413, description = "Payload too large (`payload_too_large`)", body = Error),
     ),
@@ -69,8 +71,8 @@ pub async fn upload_key_packages(
         if bytes.len() > state.config.max_message_bytes {
             return Err(ApiError::PayloadTooLarge);
         }
-        let hash = mls::parse_key_package(&bytes)?;
-        packages.push((bytes, hash));
+        let (hash, leaf) = mls::parse_key_package(&bytes)?;
+        packages.push((bytes, hash, leaf));
     }
 
     let now = state.clock.now_ms();
@@ -78,7 +80,12 @@ pub async fn upload_key_packages(
     let stock = state
         .db
         .write(move |tx| {
-            for (bytes, hash) in &packages {
+            let device_list = users::get_device_list(tx, &auth.user_id)?;
+            let device_list = device_list.as_ref().map(|list| list.device_list.as_slice());
+            for (_, _, leaf) in &packages {
+                mls::check_leaf_credential(leaf, device_list, &auth.user_id, &auth.device_id)?;
+            }
+            for (bytes, hash, _) in &packages {
                 if last_resort {
                     keypackages::replace_last_resort(
                         tx,
@@ -99,10 +106,9 @@ pub async fn upload_key_packages(
                     )?;
                 }
             }
-            keypackages::stock(tx, &auth.user_id, &auth.device_id)
+            Ok::<_, ApiError>(keypackages::stock(tx, &auth.user_id, &auth.device_id)?)
         })
-        .await
-        .map_err(ApiError::from)?;
+        .await?;
     Ok(Json(count_of(stock)))
 }
 

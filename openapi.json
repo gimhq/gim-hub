@@ -1080,7 +1080,7 @@
           "keypackages"
         ],
         "summary": "Upload KeyPackages for the calling device",
-        "description": "Adds one-time KeyPackages, or with `last_resort: true` replaces the device's last-resort KeyPackage (exactly one package). Each hub of a multi-homed user holds its own disjoint set.",
+        "description": "Adds one-time KeyPackages, or with `last_resort: true` replaces the device's last-resort KeyPackage (exactly one package). Each hub of a multi-homed user holds its own disjoint set. Every leaf must carry the calling device's gim-core credential (type 0xF001), valid against the caller's stored DeviceList, with the certified device key as its signature key; otherwise the whole upload is rejected.",
         "operationId": "upload_key_packages",
         "requestBody": {
           "content": {
@@ -1104,7 +1104,7 @@
             }
           },
           "400": {
-            "description": "Validation failed (`validation_failed`)",
+            "description": "Malformed or invalid KeyPackage, or invalid credential (`validation_failed`)",
             "content": {
               "application/json": {
                 "schema": {

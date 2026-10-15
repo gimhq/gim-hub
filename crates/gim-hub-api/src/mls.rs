@@ -8,10 +8,11 @@
 
 use std::collections::BTreeSet;
 
+use gim_hub_identity::{CredentialError, DeviceList, GimCredential, UserId};
 use openmls::prelude::{
     tls_codec::{Deserialize, Serialize, VLBytes},
-    ContentType, KeyPackageIn, MlsMessageBodyIn, MlsMessageIn, ProposalIn, ProposalOrRefIn,
-    ProtocolVersion, Sender,
+    ContentType, Credential, KeyPackageIn, MlsMessageBodyIn, MlsMessageIn, ProposalIn,
+    ProposalOrRefIn, ProtocolVersion, Sender,
 };
 use openmls_rust_crypto::RustCrypto;
 use sha2::{Digest, Sha256};
@@ -35,15 +36,16 @@ pub fn key_package_hash(key_package: &KeyPackageIn) -> Result<[u8; 32], ApiError
 }
 
 /// Parses and verifies (signatures, version, lifetime) a serialized MLS
-/// KeyPackage; returns its [`key_package_hash`].
-pub fn parse_key_package(bytes: &[u8]) -> Result<[u8; 32], ApiError> {
+/// KeyPackage; returns its [`key_package_hash`] and leaf credential.
+pub fn parse_key_package(bytes: &[u8]) -> Result<([u8; 32], LeafCredential), ApiError> {
     let key_package = KeyPackageIn::tls_deserialize_exact(bytes)
         .map_err(|err| invalid(format!("malformed KeyPackage: {err}")))?;
     let hash = key_package_hash(&key_package)?;
+    let leaf = LeafCredential::of_key_package(&key_package);
     key_package
         .validate(&RustCrypto::default(), ProtocolVersion::Mls10)
         .map_err(|err| invalid(format!("invalid KeyPackage: {err}")))?;
-    Ok(hash)
+    Ok((hash, leaf))
 }
 
 /// The parts of a PublicMessage Commit the hub acts on.
@@ -55,10 +57,14 @@ pub struct ParsedCommit {
     pub epoch: u64,
     /// Leaf index of the committer.
     pub sender_leaf: u32,
-    /// [`key_package_hash`] of each added KeyPackage, in proposal order.
-    pub added: Vec<[u8; 32]>,
+    /// [`key_package_hash`] and leaf credential of each added KeyPackage,
+    /// in proposal order.
+    pub added: Vec<([u8; 32], LeafCredential)>,
     /// Leaf indexes removed, in proposal order.
     pub removed: Vec<u32>,
+    /// Leaves the committer sets for itself: those of Update proposals and
+    /// of the UpdatePath, if any.
+    pub own_leaves: Vec<LeafCredential>,
 }
 
 /// Parses an `MLSMessage` that must be a PublicMessage Commit from a member,
@@ -82,23 +88,39 @@ pub fn parse_commit(bytes: &[u8]) -> Result<ParsedCommit, ApiError> {
         sender_leaf: sender.u32(),
         added: Vec::new(),
         removed: Vec::new(),
+        own_leaves: Vec::new(),
     };
-    for proposal in commit_proposals(bytes)? {
+    let (proposals, path_leaf) = commit_body(bytes)?;
+    parsed.own_leaves.extend(path_leaf);
+    for proposal in proposals {
         let ProposalOrRefIn::Proposal(proposal) = proposal else {
             return Err(invalid("proposals by reference are not supported"));
         };
         match *proposal {
             ProposalIn::Add(add) => {
                 // An Add proposal encodes exactly its KeyPackage.
-                let key_package = add
+                let bytes = add
                     .tls_serialize_detached()
                     .map_err(|err| ApiError::Internal(format!("re-encode Add proposal: {err}")))?;
-                parsed.added.push(Sha256::digest(key_package).into());
+                let key_package = KeyPackageIn::tls_deserialize_exact(&bytes)
+                    .map_err(|err| invalid(format!("malformed Add proposal: {err}")))?;
+                parsed.added.push((
+                    Sha256::digest(&bytes).into(),
+                    LeafCredential::of_key_package(&key_package),
+                ));
             }
             ProposalIn::Remove(remove) => parsed.removed.push(remove.removed().u32()),
+            // An Update proposal encodes exactly its LeafNode.
+            ProposalIn::Update(update) => {
+                let bytes = update.tls_serialize_detached().map_err(|err| {
+                    ApiError::Internal(format!("re-encode Update proposal: {err}"))
+                })?;
+                parsed
+                    .own_leaves
+                    .push(LeafCredential::read(&mut bytes.as_slice())?);
+            }
             // Roster-neutral proposals.
-            ProposalIn::Update(_)
-            | ProposalIn::PreSharedKey(_)
+            ProposalIn::PreSharedKey(_)
             | ProposalIn::ReInit(_)
             | ProposalIn::GroupContextExtensions(_)
             | ProposalIn::Custom(_) => {}
@@ -110,16 +132,21 @@ pub fn parse_commit(bytes: &[u8]) -> Result<ParsedCommit, ApiError> {
     Ok(parsed)
 }
 
-/// Reads the proposal list of a PublicMessage Commit. openmls does not
-/// expose the Commit body of a received message, so this walks the framing
-/// (RFC 9420 §6) of a message already validated by [`MlsMessageIn`]:
+/// Reads the proposal list and the UpdatePath leaf node (if any) of a
+/// PublicMessage Commit. openmls does not expose the Commit body of a
+/// received message, so this walks the framing (RFC 9420 §6, §12.4) of a
+/// message already validated by [`MlsMessageIn`]:
 ///
 /// ```text
 /// MLSMessage: version u16, wire_format u16, PublicMessage
 /// FramedContent: group_id<V>, epoch u64, sender, authenticated_data<V>,
-///                content_type u8, Commit { ProposalOrRef proposals<V>; ... }
+///                content_type u8,
+///                Commit { ProposalOrRef proposals<V>;
+///                         optional<UpdatePath { LeafNode leaf_node; ... }> path; }
 /// ```
-fn commit_proposals(mut bytes: &[u8]) -> Result<Vec<ProposalOrRefIn>, ApiError> {
+fn commit_body(
+    mut bytes: &[u8],
+) -> Result<(Vec<ProposalOrRefIn>, Option<LeafCredential>), ApiError> {
     let reader = &mut bytes;
     let malformed =
         |err: openmls::prelude::tls_codec::Error| invalid(format!("malformed Commit: {err}"));
@@ -133,7 +160,12 @@ fn commit_proposals(mut bytes: &[u8]) -> Result<Vec<ProposalOrRefIn>, ApiError> 
     let _sender = Sender::tls_deserialize(reader).map_err(malformed)?;
     let _authenticated_data = VLBytes::tls_deserialize(reader).map_err(malformed)?;
     let _content_type = u8::tls_deserialize(reader).map_err(malformed)?;
-    Vec::<ProposalOrRefIn>::tls_deserialize(reader).map_err(malformed)
+    let proposals = Vec::<ProposalOrRefIn>::tls_deserialize(reader).map_err(malformed)?;
+    let path_leaf = match u8::tls_deserialize(reader).map_err(malformed)? {
+        0 => None,
+        _ => Some(LeafCredential::read(reader)?),
+    };
+    Ok((proposals, path_leaf))
 }
 
 /// Leaf indexes for `count` new members per RFC 9420 §12.1.1: each Add takes
@@ -146,32 +178,78 @@ pub fn assign_leaves(occupied: &BTreeSet<u32>, count: usize) -> Vec<u32> {
         .collect()
 }
 
-/// A device added by a Commit, as identified from its claimed KeyPackage.
+/// The credential and MLS signature key of a leaf node, not yet validated
+/// (see [`check_leaf_credential`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AddedMember<'a> {
-    pub gid: &'a str,
-    pub user_id: &'a str,
-    pub device_id: &'a str,
+pub struct LeafCredential {
+    pub credential_type: u16,
+    pub content: Vec<u8>,
+    pub signature_key: Vec<u8>,
 }
 
-/// Validation of the MLS credential of a member added by a Commit.
-pub trait CredentialPolicy {
-    /// Rejects the Add with a `validation_failed` reason.
-    fn check_added_member(&self, member: &AddedMember<'_>) -> Result<(), String>;
-}
-
-/// Accepts every added member.
-///
-/// TODO: replace with validation of the gim-core credential (type 0xF001)
-/// against the member's DeviceList once gim-core identity part 2 defines the
-/// credential format.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct AcceptAllCredentials;
-
-impl CredentialPolicy for AcceptAllCredentials {
-    fn check_added_member(&self, _member: &AddedMember<'_>) -> Result<(), String> {
-        Ok(())
+impl LeafCredential {
+    fn new(credential: &Credential, signature_key: &[u8]) -> Self {
+        Self {
+            credential_type: credential.credential_type().into(),
+            content: credential.serialized_content().to_vec(),
+            signature_key: signature_key.to_vec(),
+        }
     }
+
+    /// Reads the start of a `LeafNode` (RFC 9420 §7.2):
+    /// `encryption_key<V>, signature_key<V>, Credential credential, ...`.
+    /// openmls does not expose the leaf nodes of received proposals and
+    /// UpdatePaths.
+    fn read(reader: &mut &[u8]) -> Result<Self, ApiError> {
+        let malformed =
+            |err: openmls::prelude::tls_codec::Error| invalid(format!("malformed LeafNode: {err}"));
+        let _encryption_key = VLBytes::tls_deserialize(reader).map_err(malformed)?;
+        let signature_key = VLBytes::tls_deserialize(reader).map_err(malformed)?;
+        let credential = Credential::tls_deserialize(reader).map_err(malformed)?;
+        Ok(Self::new(&credential, signature_key.as_slice()))
+    }
+
+    fn of_key_package(key_package: &KeyPackageIn) -> Self {
+        let credential = key_package.unverified_credential();
+        Self::new(&credential.credential, credential.signature_key.as_slice())
+    }
+}
+
+/// Validates the gim credential (type `0xF001`) of a leaf that must belong
+/// to the device `(user_id, device_id)`, against `device_list`, the stored
+/// `SignedDeviceList` of `user_id` on this hub. Fails closed: without a
+/// valid stored list, and for a device the list does not certify, the leaf
+/// is rejected. The `validation_failed` message carries the
+/// [`CredentialError::code`] or one of the hub's codes `no_device_list`,
+/// `unknown_device` and `identity_mismatch`.
+pub fn check_leaf_credential(
+    leaf: &LeafCredential,
+    device_list: Option<&[u8]>,
+    user_id: &str,
+    device_id: &str,
+) -> Result<(), ApiError> {
+    let reject = |code: &str| invalid(format!("invalid MLS credential ({code})"));
+    let credential = GimCredential::decode_typed(leaf.credential_type, &leaf.content)
+        .map_err(|err| reject(err.code()))?;
+    let list = UserId::parse(user_id)
+        .ok()
+        .zip(device_list)
+        .and_then(|(user, bytes)| DeviceList::verify(bytes, &user).ok())
+        .ok_or_else(|| reject("no_device_list"))?;
+    let (user, device) = credential
+        .verify(Some(&list), &leaf.signature_key)
+        .map_err(|err| match err {
+            // The credential certifies another user.
+            CredentialError::DeviceListUserMismatch { .. } => reject("identity_mismatch"),
+            err => reject(err.code()),
+        })?;
+    if user.as_str() != user_id || device.as_str() != device_id {
+        return Err(reject("identity_mismatch"));
+    }
+    if !list.is_active(&device) {
+        return Err(reject("unknown_device"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
