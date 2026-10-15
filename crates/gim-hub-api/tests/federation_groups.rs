@@ -606,11 +606,26 @@ async fn federated_events_push_to_local_devices() {
     let mls = application(&bob, &mut bob_group, b"hi");
     let (status, message) = post_message(&bob, &b.hub, &gid, "m1", &mls).await;
     assert_eq!(status, StatusCode::CREATED, "{message}");
-    wait_message(&alice, &a.hub, 2).await;
+    let event = wait_message(&alice, &a.hub, 2).await;
     assert_eq!(a.hub.deliver_pushes().await, 1);
     let push = a.hub.state.push.log().recent(None).pop().unwrap();
     let owner_id = message_id(&b.hub, &gid, 2).await;
     assert_eq!(owner_id, message_id(&a.hub, &gid, 2).await);
+    // The client Message carries the owner's ID on both hubs.
+    assert_eq!(message["message_id"], json!(owner_id));
+    assert_eq!(event["message_id"], json!(owner_id));
+    for (hub, client) in [(&b.hub, &bob), (&a.hub, &alice)] {
+        let (status, body) = send(
+            hub,
+            Method::GET,
+            &format!("{}/messages?from_seq=2", group_path(&gid)),
+            &client.token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["messages"][0]["message_id"], json!(owner_id));
+    }
     assert_eq!(
         push.payload,
         json!({
