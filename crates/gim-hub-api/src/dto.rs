@@ -420,7 +420,7 @@ pub struct SubmitCommitRequest {
     /// Sender-chosen idempotency key, unique per sending device and group (1-64 chars).
     #[schema(min_length = 1, max_length = 64, example = json!(CLIENT_ID_EXAMPLE))]
     pub client_id: String,
-    /// MLSMessage carrying the Commit (TLS encoding), base64.
+    /// MLSMessage carrying the Commit as a PublicMessage (TLS encoding), base64.
     #[schema(content_encoding = "base64")]
     pub mls_message: String,
     /// MLS Welcome for the devices added by this Commit, base64.
@@ -466,7 +466,7 @@ pub struct SendMessageRequest {
     /// Sender-chosen idempotency key, unique per sending device and group (1-64 chars).
     #[schema(min_length = 1, max_length = 64, example = json!(CLIENT_ID_EXAMPLE))]
     pub client_id: String,
-    /// MLSMessage (TLS encoding), base64. Content is never inspected; the
+    /// MLSMessage carrying a PrivateMessage (TLS encoding), base64. Content is never inspected; the
     /// epoch is read from the framing.
     #[schema(content_encoding = "base64")]
     pub mls_message: String,

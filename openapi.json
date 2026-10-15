@@ -563,7 +563,7 @@
           "groups"
         ],
         "summary": "Submit an MLS Commit",
-        "description": "The hub reads the epoch from the MLS framing (there is no client epoch field) and accepts the Commit only for the group's current epoch, advancing it by one. Membership changes are derived from the Commit; members are identified by user ID + device ID from their credentials, and `group.member_added` / `group.member_removed` events carry the `user_id`. The optional Welcome is delivered as a `welcome` event to `welcome_recipients`.\n\nResubmitting the same Commit (same hash) returns the original result with `duplicate: true` and emits nothing. Any other Commit for a past epoch fails with 409 `stale_epoch`.",
+        "description": "`mls_message` is an MLS PublicMessage (Commit or Proposal), so the hub can parse it. The hub reads the epoch from the MLS framing (there is no client epoch field) and accepts the Commit only for the group's current epoch, advancing it by one. Membership changes are derived from the Add/Remove/Update proposals; each added member's gim-core credential (type 0xF001) is validated against their DeviceList, members are identified by user ID + device ID from their credentials, and `group.member_added` / `group.member_removed` events carry the `user_id`. The optional Welcome is delivered as a `welcome` event to `welcome_recipients`.\n\nResubmitting the same Commit (same hash) returns the original result with `duplicate: true` and emits nothing. Any other Commit for a past epoch fails with 409 `stale_epoch`.",
         "operationId": "submit_commit",
         "parameters": [
           {
@@ -609,7 +609,7 @@
             }
           },
           "400": {
-            "description": "Not an MLS Commit for this group, or Welcome fields inconsistent (`validation_failed`)",
+            "description": "Not a PublicMessage Commit for this group, invalid credential of an added member, or Welcome fields inconsistent (`validation_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -629,7 +629,7 @@
             }
           },
           "403": {
-            "description": "Caller is not a member of the group (`not_member`)",
+            "description": "Caller is not a member of the group (`not_member`), or group policy forbids the change (`forbidden`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1684,7 +1684,7 @@
           "identity"
         ],
         "summary": "Upload a signed DeviceList",
-        "description": "No authentication: the DeviceList is self-certifying. The hub verifies the root key signature and that the list's user ID matches `user_id` (derived from the root key). The first upload creates the user on this hub. A later upload must have a higher `seq` than the stored list. Devices revoked by the new list lose their tokens; a `device_list.updated` event is emitted.",
+        "description": "No authentication: the DeviceList is self-certifying. The hub verifies the root key signature and that the list's user ID matches `user_id` (derived from the root key). The first upload creates the user on this hub. A later upload with a higher `seq` replaces the stored list; re-uploading the identical list (same `seq`, same bytes) is idempotent and returns 200. Devices revoked by the new list lose their tokens; a `device_list.updated` event is emitted.",
         "operationId": "put_device_list",
         "parameters": [
           {
@@ -1710,7 +1710,7 @@
         },
         "responses": {
           "200": {
-            "description": "DeviceList replaced",
+            "description": "DeviceList replaced, or identical to the stored one",
             "content": {
               "application/json": {
                 "schema": {
@@ -1740,7 +1740,7 @@
             }
           },
           "409": {
-            "description": "`seq` is not higher than the stored DeviceList (`stale_device_list`)",
+            "description": "`seq` is lower than the stored DeviceList, or equal with different bytes (`stale_device_list`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2927,7 +2927,7 @@
           },
           "mls_message": {
             "type": "string",
-            "description": "MLSMessage (TLS encoding), base64. Content is never inspected; the\nepoch is read from the framing.",
+            "description": "MLSMessage carrying a PrivateMessage (TLS encoding), base64. Content is never inspected; the\nepoch is read from the framing.",
             "contentEncoding": "base64"
           }
         }
@@ -2988,7 +2988,7 @@
           },
           "mls_message": {
             "type": "string",
-            "description": "MLSMessage carrying the Commit (TLS encoding), base64.",
+            "description": "MLSMessage carrying the Commit as a PublicMessage (TLS encoding), base64.",
             "contentEncoding": "base64"
           },
           "ratchet_tree": {
