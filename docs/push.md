@@ -60,11 +60,12 @@ removed with the device.
   lowercase hex.
 - `collapse_id`: always equal to `message_id`, so a device collapses duplicate pushes for the same
   message (e.g. from several hubs of a multi-homed user, arch §9.5).
-- `mls_message` (optional): standard base64 of the MLS message (`message`) or the MLS Welcome
-  (`welcome`, only when the Welcome has no separate ratchet tree). Present only if the encoded
-  provider payload stays within the provider limit (section 3); otherwise omitted and the client
-  fetches `GET /v2/groups/{gid}/messages?from_seq={seq}` (or `GET /v2/welcomes/pending`). Never
-  present for membership events.
+- `mls_message` (optional): standard base64 of the MLS message (`message`) or of the TLS-encoded
+  MLSMessage (wire_format = mls_welcome) carrying the Welcome (`welcome`, the same bytes as the
+  event's `welcome` field; only when the Welcome has no separate ratchet tree). Present only if
+  the encoded provider payload stays within the provider limit (section 3); otherwise omitted and
+  the client fetches `GET /v2/groups/{gid}/messages?from_seq={seq}` (or
+  `GET /v2/welcomes/pending`). Never present for membership events.
 
 The payload never names the sender: it is inside the MLS ciphertext. The hub never sees
 plaintext; `mls_message` is the same ciphertext the event stream carries. For APNs and FCM the

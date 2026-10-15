@@ -494,7 +494,8 @@ pub struct SubmitCommitRequest {
     /// MLSMessage carrying the Commit or Proposal as a PublicMessage (TLS encoding), base64.
     #[schema(content_encoding = "base64")]
     pub mls_message: String,
-    /// MLS Welcome for the devices added by this Commit, base64. Not allowed with a Proposal.
+    /// TLS-encoded MLSMessage (wire_format = mls_welcome) carrying the Welcome for the devices
+    /// added by this Commit, base64. Not allowed with a Proposal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(content_encoding = "base64")]
     pub welcome: Option<String>,
@@ -754,7 +755,7 @@ pub struct Welcome {
     /// Per-group sequence number of the Commit that produced the Welcome;
     /// fetch messages from `seq + 1` after joining.
     pub seq: u64,
-    /// MLS Welcome (TLS encoding), base64.
+    /// TLS-encoded MLSMessage (wire_format = mls_welcome) carrying a Welcome, base64.
     #[schema(content_encoding = "base64")]
     pub welcome: String,
     /// Ratchet tree (TLS encoding), base64, if the sender supplied one.

@@ -3778,7 +3778,7 @@
               "string",
               "null"
             ],
-            "description": "MLS Welcome for the devices added by this Commit, base64. Not allowed with a Proposal.",
+            "description": "TLS-encoded MLSMessage (wire_format = mls_welcome) carrying the Welcome for the devices\nadded by this Commit, base64. Not allowed with a Proposal.",
             "contentEncoding": "base64"
           },
           "welcome_recipients": {
@@ -3895,7 +3895,7 @@
           },
           "welcome": {
             "type": "string",
-            "description": "MLS Welcome (TLS encoding), base64.",
+            "description": "TLS-encoded MLSMessage (wire_format = mls_welcome) carrying a Welcome, base64.",
             "contentEncoding": "base64"
           }
         }

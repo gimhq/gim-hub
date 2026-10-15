@@ -152,7 +152,8 @@ message SubmitCommitRequest {
   string client_id = 4;
   // MLSMessage (Commit or Proposal), TLS-serialized.
   bytes mls_message = 5;
-  // MLS Welcome produced with the Commit, if it adds members.
+  // TLS-encoded MLSMessage (wire_format = mls_welcome) carrying the Welcome
+  // produced with the Commit, if it adds members.
   optional bytes welcome = 6;
   // Devices the Welcome is addressed to.
   repeated string welcome_recipient_device_ids = 7;
@@ -267,7 +268,7 @@ message DeliverWelcomeRequest {
   string sender_user_id = 2;
   string recipient_user_id = 3;
   repeated string recipient_device_ids = 4;
-  // MLS Welcome, TLS-serialized.
+  // TLS-encoded MLSMessage (wire_format = mls_welcome) carrying a Welcome.
   bytes welcome = 5;
   optional bytes ratchet_tree = 6;
   // Globally unique id assigned by the owning hub; receivers dedup on it.
