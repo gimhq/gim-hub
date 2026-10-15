@@ -173,6 +173,22 @@ pub fn list_from(
     Ok(messages)
 }
 
+/// `(seq, framing epoch)` of the Commit with `commit_hash` in `gid`.
+pub fn find_commit(
+    conn: &Connection,
+    gid: &str,
+    commit_hash: &[u8],
+) -> Result<Option<(u64, u64)>, DbError> {
+    let found = conn
+        .query_row(
+            "SELECT seq, epoch FROM messages WHERE gid = ?1 AND commit_hash = ?2",
+            params![gid, commit_hash],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

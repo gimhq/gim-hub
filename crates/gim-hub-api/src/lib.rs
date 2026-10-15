@@ -9,6 +9,7 @@ pub mod dto;
 pub mod error;
 pub mod handlers;
 pub mod hub;
+pub mod mls;
 pub mod notifier;
 pub mod state;
 #[cfg(feature = "testing")]
