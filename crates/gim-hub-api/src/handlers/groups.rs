@@ -9,7 +9,6 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use gim_hub_db::{events, groups, keypackages, messages, Transaction};
-use gim_hub_identity::HubId;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -52,13 +51,6 @@ fn random_id() -> Result<String, ApiError> {
     let mut raw = [0u8; 16];
     getrandom::fill(&mut raw).map_err(|err| ApiError::Internal(err.to_string()))?;
     Ok(base32(&raw))
-}
-
-/// This hub's ID (gim-core `HubId` of the hub key): the owner prefix of the
-/// group IDs it assigns. Unlike a PeerID it does not change when the runtime
-/// key rotates.
-fn hub_id(state: &AppState) -> HubId {
-    HubId::from_root_pubkey(&state.hub.signing_key().verifying_key())
 }
 
 fn kind_name(kind: GroupKind) -> &'static str {
@@ -119,7 +111,7 @@ pub async fn create_group(
 ) -> Result<(StatusCode, Json<Group>), ApiError> {
     let body = json_body(body)?;
     let group = groups::Group {
-        gid: format!("{}/{}", hub_id(&state).as_str(), random_id()?),
+        gid: format!("{}/{}", state.hub.hub_id().as_str(), random_id()?),
         kind: kind_name(body.kind).to_owned(),
         epoch: 0,
         last_seq: 0,

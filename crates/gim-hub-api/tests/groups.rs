@@ -33,6 +33,7 @@ async fn create_assigns_hub_id_gid() {
     let (gid, _) = alice.create_group(&hub).await;
 
     let hub_id = HubId::from_root_pubkey(&hub.state.hub.signing_key().verifying_key());
+    assert_eq!(&hub_id, hub.state.hub.hub_id());
     let (prefix, random) = gid.split_once('/').unwrap();
     assert_eq!(prefix, hub_id.as_str());
     assert_eq!(random.len(), 26);
