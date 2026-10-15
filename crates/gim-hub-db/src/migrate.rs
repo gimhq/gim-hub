@@ -12,6 +12,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0003_remote_identity.sql"),
     include_str!("../migrations/0004_outbox.sql"),
     include_str!("../migrations/0005_group_federation.sql"),
+    include_str!("../migrations/0006_push_webpush_keys.sql"),
 ];
 
 /// Schema version after all migrations.

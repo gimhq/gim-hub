@@ -293,6 +293,8 @@ mod tests {
             token: "fcm-token:APA91b".into(),
             app_id: None,
             sandbox: false,
+            p256dh: None,
+            auth: None,
             updated_at: 0,
         }
     }
