@@ -233,6 +233,7 @@ async fn forward_message(
     };
     let message = response
         .message
+        .filter(|message| message.gid == gid)
         .ok_or_else(|| ApiError::PeerRefused("owning hub answered without the message".into()))?;
     let dto = sequenced_dto(&message);
     if let Err(err) = apply_replica(state, &owner, vec![message], true).await {
