@@ -188,14 +188,18 @@ fn enable_federation(
 }
 
 /// Installs the multi-homing push gate (docs/multihoming.md §8) on the push
-/// dispatcher. Returns the task that keeps its view and co-host connections
-/// current.
+/// dispatcher. Stored records of local users update its view at once; the
+/// returned task reloads the view and keeps the co-host connections current.
 async fn install_push_gate(
     state: &AppState,
     service: &FederationService,
 ) -> tokio::task::JoinHandle<()> {
     let (gate, task) =
         PushGate::start(state.db.clone(), service.transport(), state.clock.as_now()).await;
+    let listener = gate.clone();
+    state
+        .hosting
+        .set_local_record_listener(Arc::new(move |record| listener.set_record(record)));
     state.push.set_gate(Arc::new(move |user_id, _device_id| {
         gate.should_push(user_id)
     }));

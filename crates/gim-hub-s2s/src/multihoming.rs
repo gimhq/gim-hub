@@ -173,8 +173,12 @@ impl PushGate {
             .all(|hub| self.inner.liveness.is_down(hub))
     }
 
-    /// Updates the view with `record` of a local user: hosted if it lists
-    /// this hub, else not.
+    /// Updates the view with `record` of a local user (hosted if it lists
+    /// this hub, else not) without waiting for the next refresh. Co-hosts
+    /// it adds get the full failover delay before they count as down.
+    /// Installed as the [`Hosting`] local record listener by the binary.
+    ///
+    /// [`Hosting`]: crate::hosting::Hosting
     pub fn set_record(&self, record: &HostingRecord) {
         let user_id = record.user_id().to_string();
         let mut users = self.inner.users.write().expect("push gate lock");
@@ -186,6 +190,9 @@ impl PushGate {
                 users.remove(&user_id);
             }
         }
+        self.inner
+            .liveness
+            .track(&co_hosts(&users, &self.inner.hub_id));
     }
 
     /// The other hubs listed for the hosted users, sorted.
@@ -246,7 +253,7 @@ mod tests {
     use gim_hub_identity::SigningKey;
 
     use super::*;
-    use crate::hosting::{stored_record, testing::sign_record};
+    use crate::hosting::{stored_record, testing::sign_record, Hosting};
 
     const FAILOVER: Duration = Duration::from_secs(30);
     const EXPIRES: u64 = 10_000_000;
@@ -394,6 +401,37 @@ mod tests {
         gate.set_record(&r);
         assert!(gate.co_hosts().is_empty());
         assert!(gate.should_push(r.user_id().as_str()));
+    }
+
+    #[tokio::test]
+    async fn stored_local_records_reach_the_gate_before_the_refresh() {
+        let clock = Clock::new();
+        let (gate, _) = gate(2, &clock);
+        let db = Db::open_in_memory().unwrap();
+        let hosting = Hosting::local(db.clone(), hub(2), clock.now());
+        let listener = gate.clone();
+        hosting.set_local_record_listener(Arc::new(move |record| listener.set_record(record)));
+
+        // A user's first record (no hub-set hook): pushed at once.
+        let single = record(101, 1, &[(2, 0)]);
+        hosting.publish(single.clone());
+        assert!(gate.should_push(single.user_id().as_str()));
+
+        // A fallback: the newly seen primary gets the full failover delay.
+        let first = record(100, 1, &[(1, 0), (2, 1)]);
+        let user = first.user_id().to_string();
+        hosting.publish(first.clone());
+        assert!(!gate.should_push(&user));
+        clock.advance(FAILOVER);
+        assert!(gate.should_push(&user), "primary down after the delay");
+
+        // A record removing this hub goes through `superseded` only.
+        let removed = record(100, 2, &[(1, 0)]);
+        db.write(move |tx| hosting.superseded(tx, &first, &removed, true, 1_000))
+            .await
+            .unwrap();
+        assert!(!gate.should_push(&user), "removed");
+        assert!(gate.co_hosts().is_empty());
     }
 
     #[tokio::test]
