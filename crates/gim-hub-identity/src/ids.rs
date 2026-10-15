@@ -31,6 +31,26 @@ fn unbase32(text: &str) -> Option<Vec<u8>> {
     (base32(&bytes) == text).then_some(bytes)
 }
 
+/// `prefix || base32(0x12 0x20 || SHA-256(pubkey))`.
+fn multihash_id(prefix: char, pubkey: &VerifyingKey) -> String {
+    let mut multihash = SHA256_MULTIHASH.to_vec();
+    multihash.extend_from_slice(&Sha256::digest(pubkey.as_bytes()));
+    format!("{prefix}{}", base32(&multihash))
+}
+
+/// Validates prefix, alphabet, canonical encoding and the SHA-256 multihash
+/// header and length of a [`multihash_id`].
+fn check_multihash_id(prefix: char, text: &str) -> Result<(), String> {
+    let body = text
+        .strip_prefix(prefix)
+        .ok_or_else(|| format!("missing '{prefix}' prefix"))?;
+    let bytes = unbase32(body).ok_or("not canonical lowercase base32")?;
+    if bytes.len() != SHA256_MULTIHASH.len() + 32 || bytes[..2] != SHA256_MULTIHASH {
+        return Err("not a sha2-256 multihash".to_owned());
+    }
+    Ok(())
+}
+
 /// `"u" || base32(0x12 0x20 || SHA-256(root_pubkey))`, 56 characters.
 ///
 /// A parsed id is only syntactically valid; bind it to a key with
@@ -41,22 +61,38 @@ pub struct UserId(String);
 impl UserId {
     /// Derives the user id of a root public key.
     pub fn from_root_pubkey(root_pubkey: &VerifyingKey) -> Self {
-        let mut multihash = SHA256_MULTIHASH.to_vec();
-        multihash.extend_from_slice(&Sha256::digest(root_pubkey.as_bytes()));
-        Self(format!("u{}", base32(&multihash)))
+        Self(multihash_id('u', root_pubkey))
     }
 
     /// Validates prefix, alphabet, canonical encoding and the SHA-256
     /// multihash header and length.
     pub fn parse(text: &str) -> Result<Self, IdentityError> {
-        let invalid = |reason: &str| IdentityError::InvalidUserId(reason.to_owned());
-        let body = text
-            .strip_prefix('u')
-            .ok_or_else(|| invalid("missing 'u' prefix"))?;
-        let bytes = unbase32(body).ok_or_else(|| invalid("not canonical lowercase base32"))?;
-        if bytes.len() != SHA256_MULTIHASH.len() + 32 || bytes[..2] != SHA256_MULTIHASH {
-            return Err(invalid("not a sha2-256 multihash"));
-        }
+        check_multihash_id('u', text).map_err(IdentityError::InvalidUserId)?;
+        Ok(Self(text.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// `"h" || base32(0x12 0x20 || SHA-256(hub_root_pubkey))`, 56 characters.
+///
+/// A parsed id is only syntactically valid; bind it to a key with
+/// [`HubId::from_root_pubkey`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct HubId(String);
+
+impl HubId {
+    /// Derives the hub id of a hub root public key.
+    pub fn from_root_pubkey(hub_root_pubkey: &VerifyingKey) -> Self {
+        Self(multihash_id('h', hub_root_pubkey))
+    }
+
+    /// Validates prefix, alphabet, canonical encoding and the SHA-256
+    /// multihash header and length.
+    pub fn parse(text: &str) -> Result<Self, IdentityError> {
+        check_multihash_id('h', text).map_err(IdentityError::InvalidHubId)?;
         Ok(Self(text.to_owned()))
     }
 
@@ -123,6 +159,7 @@ macro_rules! string_id {
 
 string_id!(UserId);
 string_id!(DeviceId);
+string_id!(HubId);
 
 #[cfg(test)]
 mod tests {
@@ -138,6 +175,32 @@ mod tests {
         assert_eq!(device.as_str().len(), 27);
         assert_eq!(DeviceId::parse(device.as_str()).unwrap(), device);
         assert_eq!(device.to_string(), device.as_str());
+        let hub = HubId::from_root_pubkey(&key(1).verifying_key());
+        assert_eq!(hub.as_str().len(), 56);
+        assert_eq!(hub.as_str()[1..], user.as_str()[1..]);
+        assert_eq!(HubId::parse(hub.as_str()).unwrap(), hub);
+    }
+
+    #[test]
+    fn rejects_malformed_hub_ids() {
+        let hub = HubId::from_root_pubkey(&key(1).verifying_key()).to_string();
+        let user = UserId::from_root_pubkey(&key(1).verifying_key()).to_string();
+        let head = &hub[..hub.len() - 1];
+        for bad in [
+            String::new(),
+            "h".to_owned(),
+            hub[1..].to_owned(),
+            hub.to_ascii_uppercase(),
+            format!("{hub}a"),
+            format!("{head}7"),
+            format!("h{}", base32(&[0u8; 34])),
+            user,
+        ] {
+            assert!(
+                matches!(HubId::parse(&bad), Err(IdentityError::InvalidHubId(_))),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

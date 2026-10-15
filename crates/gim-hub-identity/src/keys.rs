@@ -1,4 +1,4 @@
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 use crate::IdentityError;
 
@@ -16,6 +16,11 @@ pub fn parse_public_key(bytes: &[u8]) -> Result<VerifyingKey, IdentityError> {
 /// The message every signature covers: `context || 0x00 || tbs`.
 pub(crate) fn signing_input(context: &[u8], tbs: &[u8]) -> Vec<u8> {
     [context, &[0], tbs].concat()
+}
+
+/// Ed25519 signature over `context || 0x00 || tbs`.
+pub(crate) fn sign(key: &SigningKey, context: &[u8], tbs: &[u8]) -> [u8; 64] {
+    key.sign(&signing_input(context, tbs)).to_bytes()
 }
 
 /// Strict Ed25519 verification of `sig` over `context || 0x00 || tbs`.

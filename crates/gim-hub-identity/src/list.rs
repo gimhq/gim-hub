@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use ed25519_dalek::VerifyingKey;
 
-use crate::keys::{parse_public_key, verify};
+use crate::keys::verify;
 use crate::{cbor, DeviceCert, DeviceId, IdentityError, UserId};
 
 /// Signature context of a `SignedDeviceList`.
@@ -25,29 +25,36 @@ pub struct DeviceList {
 
 impl DeviceList {
     /// Decodes the `SignedDeviceList` bytes and verifies them for
-    /// `expected_user_id`, following the spec's verification steps in order.
+    /// `expected_user_id` in the spec's verification order: envelope; the
+    /// embedded `root_pubkey` (element 2) derives `expected_user_id`; the
+    /// signature; then the body (version, shape, body `user_id`, certs,
+    /// revoked ids, duplicates).
     pub fn verify(signed: &[u8], expected_user_id: &UserId) -> Result<Self, IdentityError> {
         let (tbs, sig) = cbor::decode_signed(signed)?;
-        let [_version, user_id, root_pubkey, seq, certs, revoked] = cbor::decode_body(&tbs)?;
-        let user_id = cbor::text(user_id)?;
-        let root_pubkey = parse_public_key(&cbor::byte_string(root_pubkey)?)?;
-        let seq = cbor::uint(seq)?;
-        let certs = cbor::list(certs)?;
-        let revoked = cbor::list(revoked)?;
-
+        let body = cbor::decode(&tbs)?;
+        let root_pubkey = cbor::public_key(cbor::item(&body, 2)?)?;
         let derived = UserId::from_root_pubkey(&root_pubkey);
-        if &derived != expected_user_id || user_id != derived.as_str() {
+        if &derived != expected_user_id {
             return Err(IdentityError::UserIdMismatch);
         }
         verify(&root_pubkey, DEVICE_LIST_CONTEXT, &tbs, &sig)?;
 
-        let certs = certs
+        let [_version, user_id, _root_pubkey, seq, certs, revoked] = cbor::body(body)?;
+        if cbor::text(user_id)? != derived.as_str() {
+            return Err(IdentityError::UserIdMismatch);
+        }
+        let seq = cbor::uint(seq)?;
+        let certs = cbor::list(certs)?
             .into_iter()
-            .map(|cert| DeviceCert::verify(&cbor::byte_string(cert)?, &root_pubkey))
+            .map(cbor::byte_string)
             .collect::<Result<Vec<_>, _>>()?;
-        let revoked = revoked
+        let revoked = cbor::list(revoked)?
             .into_iter()
             .map(|id| DeviceId::parse(&cbor::text(id)?))
+            .collect::<Result<Vec<_>, _>>()?;
+        let certs = certs
+            .iter()
+            .map(|cert| DeviceCert::verify(cert, &root_pubkey))
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut certified = HashSet::new();
@@ -58,11 +65,11 @@ impl DeviceList {
         }
         let mut seen = HashSet::new();
         for id in &revoked {
-            if !seen.insert(id) {
-                return Err(IdentityError::DuplicateDevice(id.clone()));
-            }
             if certified.contains(id) {
                 return Err(IdentityError::Revoked(id.clone()));
+            }
+            if !seen.insert(id) {
+                return Err(IdentityError::DuplicateDevice(id.clone()));
             }
         }
 
@@ -119,18 +126,19 @@ impl DeviceList {
         self.cert(device_id).map(DeviceCert::device_sig_pubkey)
     }
 
-    /// Whether `self` replaces `other`, per the spec's "Ordering and
-    /// updates": true iff `self.seq > other.seq`. Equal seq with identical
-    /// body bytes is not an update (`Ok(false)`); equal seq with different
-    /// body bytes is [`IdentityError::SeqConflict`]. Lists of different
-    /// users are [`IdentityError::UserIdMismatch`].
+    /// Whether `self` (received) replaces `other` (stored), per the spec's
+    /// "Update and seq rules": `Ok(true)` for a strictly higher seq;
+    /// `Ok(false)` (an idempotent no-op) for the same seq and identical body
+    /// bytes; [`IdentityError::SeqConflict`] for the same seq and different
+    /// body bytes; [`IdentityError::StaleSeq`] for a lower seq;
+    /// [`IdentityError::UserIdMismatch`] for another user.
     pub fn supersedes(&self, other: &DeviceList) -> Result<bool, IdentityError> {
         if self.user_id != other.user_id {
             return Err(IdentityError::UserIdMismatch);
         }
         match self.seq.cmp(&other.seq) {
             Ordering::Greater => Ok(true),
-            Ordering::Less => Ok(false),
+            Ordering::Less => Err(IdentityError::StaleSeq(self.seq)),
             Ordering::Equal if self.tbs == other.tbs => Ok(false),
             Ordering::Equal => Err(IdentityError::SeqConflict(self.seq)),
         }
@@ -230,10 +238,10 @@ mod tests {
     fn rejects_trailing_bytes() {
         let mut bytes = two_device_list(1);
         bytes.extend_from_slice(&[0x80]);
-        assert!(matches!(
+        assert_eq!(
             DeviceList::verify(&bytes, &user_of(1)),
-            Err(IdentityError::Malformed(_))
-        ));
+            Err(IdentityError::NonCanonical)
+        );
     }
 
     #[test]
@@ -292,7 +300,7 @@ mod tests {
         let v1 = DeviceList::verify(&two_device_list(1), &user_of(1)).unwrap();
         let v2 = DeviceList::verify(&two_device_list(2), &user_of(1)).unwrap();
         assert_eq!(v2.supersedes(&v1), Ok(true));
-        assert_eq!(v1.supersedes(&v2), Ok(false));
+        assert_eq!(v1.supersedes(&v2), Err(IdentityError::StaleSeq(1)));
         // Idempotent re-upload of the same list.
         assert_eq!(v2.supersedes(&v2.clone()), Ok(false));
 

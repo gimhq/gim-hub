@@ -191,10 +191,10 @@ fn device_list_negative() {
 
     let mut trailing = signed.clone();
     trailing.push(0);
-    assert!(matches!(
+    assert_eq!(
         DeviceList::verify(&trailing, &user_id),
-        Err(IdentityError::Malformed(_))
-    ));
+        Err(IdentityError::NonCanonical)
+    );
 
     let stranger = UserId::from_root_pubkey(&SigningKey::from_bytes(&[0xee; 32]).verifying_key());
     assert_eq!(

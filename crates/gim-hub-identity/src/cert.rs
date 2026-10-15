@@ -1,6 +1,6 @@
 use ed25519_dalek::VerifyingKey;
 
-use crate::keys::{parse_public_key, verify};
+use crate::keys::verify;
 use crate::{cbor, DeviceId, IdentityError, UserId};
 
 /// Signature context of a `SignedDeviceCert`.
@@ -20,19 +20,22 @@ pub struct DeviceCert {
 
 impl DeviceCert {
     /// Decodes the `SignedDeviceCert` bytes and verifies them against
-    /// `root_pubkey`: signature over `"gim/device-cert/v1" || 0x00 || tbs`,
-    /// body shape, `user_id` and `device_id` derivations.
+    /// `root_pubkey` in the spec's verification order: envelope, signature
+    /// over `"gim/device-cert/v1" || 0x00 || tbs`, then the body (version,
+    /// shape, `user_id` and `device_id` derivations).
     pub fn verify(signed: &[u8], root_pubkey: &VerifyingKey) -> Result<Self, IdentityError> {
         let (tbs, sig) = cbor::decode_signed(signed)?;
         verify(root_pubkey, DEVICE_CERT_CONTEXT, &tbs, &sig)?;
         let [_version, user_id, device_id, pubkey, created_at, seq] = cbor::decode_body(&tbs)?;
-        let device_sig_pubkey = parse_public_key(&cbor::byte_string(pubkey)?)?;
         let user_id = cbor::text(user_id)?;
+        let device_id = cbor::text(device_id)?;
+        let device_sig_pubkey = cbor::public_key(pubkey)?;
+        let created_at = cbor::uint(created_at)?;
+        let seq = cbor::uint(seq)?;
         let expected_user_id = UserId::from_root_pubkey(root_pubkey);
         if user_id != expected_user_id.as_str() {
             return Err(IdentityError::UserIdMismatch);
         }
-        let device_id = cbor::text(device_id)?;
         let expected_device_id = DeviceId::from_device_pubkey(&device_sig_pubkey);
         if device_id != expected_device_id.as_str() {
             return Err(IdentityError::DeviceIdMismatch);
@@ -41,8 +44,8 @@ impl DeviceCert {
             user_id: expected_user_id,
             device_id: expected_device_id,
             device_sig_pubkey,
-            created_at: cbor::uint(created_at)?,
-            seq: cbor::uint(seq)?,
+            created_at,
+            seq,
             signed: signed.to_vec(),
         })
     }
@@ -131,10 +134,10 @@ mod tests {
         let root = key(1);
         let mut bytes = cert(&root, &key(2).verifying_key(), 1000, 1);
         bytes.push(0);
-        assert!(matches!(
+        assert_eq!(
             DeviceCert::verify(&bytes, &root.verifying_key()),
-            Err(IdentityError::Malformed(_))
-        ));
+            Err(IdentityError::NonCanonical)
+        );
         // Trailing bytes inside the signed tbs.
         let mut tbs = cbor::encode(&cert_body(
             &root.verifying_key(),
@@ -144,10 +147,10 @@ mod tests {
         ));
         tbs.push(0);
         let bytes = sign_tbs(&root, DEVICE_CERT_CONTEXT, &tbs);
-        assert!(matches!(
+        assert_eq!(
             DeviceCert::verify(&bytes, &root.verifying_key()),
-            Err(IdentityError::Malformed(_))
-        ));
+            Err(IdentityError::NonCanonical)
+        );
     }
 
     #[test]
@@ -192,14 +195,18 @@ mod tests {
         negative_seq[5] = Value::Integer((-1).into());
         let mut short_key = base.clone();
         short_key[3] = Value::Bytes(vec![0; 31]);
-        for items in [extra, short, negative_seq] {
+        let mut weak_key = base.clone();
+        let mut identity = vec![0u8; 32];
+        identity[0] = 1;
+        weak_key[3] = Value::Bytes(identity);
+        for items in [extra, short, negative_seq, short_key] {
             assert!(matches!(
                 DeviceCert::verify(&resign(items), &root.verifying_key()),
                 Err(IdentityError::Malformed(_))
             ));
         }
         assert_eq!(
-            DeviceCert::verify(&resign(short_key), &root.verifying_key()),
+            DeviceCert::verify(&resign(weak_key), &root.verifying_key()),
             Err(IdentityError::InvalidKey)
         );
     }
