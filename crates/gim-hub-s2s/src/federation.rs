@@ -445,6 +445,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn multihoming_ops_are_not_implemented_yet() {
+        let handlers = Handlers::default();
+        for op in [
+            Op::NotifyHostingRecord(Default::default()),
+            Op::SeedReplica(Default::default()),
+            Op::CopyPendingWelcomes(Default::default()),
+        ] {
+            assert!(crate::ops::MULTIHOMING_OPS.contains(&OpKind::of(&op)));
+            let response = dispatch(caller(), request(op), &Limits, &handlers).await;
+            assert_eq!(response.result, None);
+            assert_eq!(code(&response), ErrorCode::Internal);
+            assert_eq!(response.error.unwrap().message, "not implemented");
+        }
+    }
+
+    #[tokio::test]
     async fn disabled_federation_refuses_to_send() {
         let federation: Arc<dyn Federation> = Arc::new(Disabled);
         assert!(!federation.is_enabled());

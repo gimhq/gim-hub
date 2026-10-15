@@ -38,3 +38,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build image and smoke test
         run: bash scripts/docker-smoke.sh
+
+  federation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: 3-hub compose acceptance
+        env:
+          GIM_FED_CARGO_HOME: ${{ runner.temp }}/cargo
+          GIM_FED_TIMEOUT: "900"
+        run: bash scripts/fed-test.sh

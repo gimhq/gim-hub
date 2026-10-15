@@ -1114,6 +1114,28 @@
         ]
       }
     },
+    "/v2/hub": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "This hub's identity",
+        "description": "Unauthenticated. Lets a client check that a URL belongs to the `hub_id` listed in its hosting record before signing in.",
+        "operationId": "get_hub",
+        "responses": {
+          "200": {
+            "description": "Hub identity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v2/keypackages": {
       "post": {
         "tags": [
@@ -2704,6 +2726,9 @@
           },
           {
             "$ref": "#/components/schemas/HostingRecordExpiringEvent"
+          },
+          {
+            "$ref": "#/components/schemas/HostingRecordUpdatedEvent"
           }
         ],
         "description": "An entry of the calling device's event stream, ordered by `cursor`.",
@@ -2714,6 +2739,7 @@
             "group.member_added": "#/components/schemas/MemberAddedEvent",
             "group.member_removed": "#/components/schemas/MemberRemovedEvent",
             "hosting_record.expiring": "#/components/schemas/HostingRecordExpiringEvent",
+            "hosting_record.updated": "#/components/schemas/HostingRecordUpdatedEvent",
             "keypackages.low": "#/components/schemas/KeyPackagesLowEvent",
             "message": "#/components/schemas/MessageEvent",
             "welcome": "#/components/schemas/WelcomeEvent"
@@ -3007,6 +3033,124 @@
             "enum": [
               "hosting_record.expiring"
             ]
+          }
+        }
+      },
+      "HostingRecordHub": {
+        "type": "object",
+        "description": "A hub entry of a hosting record.",
+        "required": [
+          "hub_id",
+          "priority"
+        ],
+        "properties": {
+          "hub_id": {
+            "type": "string",
+            "example": "hciqgrcknldyy6lbu2splf5frcdqeftipgfikjxbzeq6x6y55lggapay"
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lower is preferred.",
+            "maximum": 255,
+            "minimum": 0
+          }
+        }
+      },
+      "HostingRecordUpdated": {
+        "type": "object",
+        "description": "The receiving user's hosting record as stored by this hub.",
+        "required": [
+          "user_id",
+          "seq",
+          "expires_at",
+          "hosted",
+          "hubs"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the stored record expires (ms since the Unix epoch).",
+            "example": 1760479200000,
+            "minimum": 0
+          },
+          "hosted": {
+            "type": "boolean",
+            "description": "Whether the record lists this hub."
+          },
+          "hubs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostingRecordHub"
+            },
+            "description": "The listed hubs."
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`seq` of the stored record; dedup across hubs by it.",
+            "minimum": 0
+          },
+          "user_id": {
+            "type": "string",
+            "example": "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa"
+          }
+        }
+      },
+      "HostingRecordUpdatedEvent": {
+        "type": "object",
+        "description": "Emitted to the user's active devices on this hub when a stored record\nchanges the listed hubs or their priorities (renewals with the same\nentries emit nothing). Multi-homing (H4), implementation in progress:\nnot emitted yet.",
+        "required": [
+          "cursor",
+          "created_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1760479200000
+          },
+          "cursor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "data": {
+            "$ref": "#/components/schemas/HostingRecordUpdated"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "hosting_record.updated"
+            ]
+          }
+        }
+      },
+      "HubInfo": {
+        "type": "object",
+        "description": "This hub's identity, so a client can check that a URL belongs to the\n`hub_id` listed in its hosting record before signing in.",
+        "required": [
+          "hub_id",
+          "hub_root_pubkey",
+          "version"
+        ],
+        "properties": {
+          "hub_id": {
+            "type": "string",
+            "example": "hciqgrcknldyy6lbu2splf5frcdqeftipgfikjxbzeq6x6y55lggapay"
+          },
+          "hub_root_pubkey": {
+            "type": "string",
+            "description": "The hub's 32-byte Ed25519 root public key, base64; `hub_id` is\nderived from it.",
+            "contentEncoding": "base64"
+          },
+          "version": {
+            "type": "string",
+            "description": "Hub version.",
+            "example": "0.1.0"
           }
         }
       },
