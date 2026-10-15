@@ -48,7 +48,12 @@ fn device_list_dto(list: &StoredDeviceList) -> DeviceList {
 /// What a DeviceList upload did.
 enum Upload {
     Created,
-    Replaced { notify: Vec<String> },
+    /// `notify`: devices to notify of the update; `revoked`: devices
+    /// deactivated by it, woken so their open streams re-check the session.
+    Replaced {
+        notify: Vec<String>,
+        revoked: Vec<String>,
+    },
     Unchanged,
 }
 
@@ -122,7 +127,8 @@ pub async fn put_device_list(
                 }
             }
             let created = users::put_device_list(tx, &stored)?;
-            users::set_active_devices(tx, &stored.user_id, &active, stored.updated_at)?;
+            let revoked =
+                users::set_active_devices(tx, &stored.user_id, &active, stored.updated_at)?;
             if created {
                 return Ok(Upload::Created);
             }
@@ -137,14 +143,14 @@ pub async fn put_device_list(
                     stored.updated_at,
                 )?;
             }
-            Ok(Upload::Replaced { notify })
+            Ok(Upload::Replaced { notify, revoked })
         })
         .await?;
 
     let status = match upload {
         Upload::Created => StatusCode::CREATED,
-        Upload::Replaced { notify } => {
-            for device_id in &notify {
+        Upload::Replaced { notify, revoked } => {
+            for device_id in notify.iter().chain(&revoked) {
                 state.notifier.notify(&response.user_id, device_id);
             }
             StatusCode::OK

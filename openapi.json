@@ -297,7 +297,7 @@
           "events"
         ],
         "summary": "Fetch events (optionally long-polling)",
-        "description": "Returns events addressed to the calling device with `cursor` greater than the given one, ascending. With `wait > 0` and no pending events the request is held open up to `wait` seconds until an event arrives.\n\nIf events after `cursor` have been pruned the hub responds 410 `cursor_expired` with the current head `cursor`; the client must resync (GET /v2/groups, message history, DeviceLists) and continue from that cursor.",
+        "description": "Returns events addressed to the calling device with `cursor` greater than the given one, ascending. With `wait > 0` and no pending events the request is held open up to `wait` seconds until an event arrives.\n\nIf events after `cursor` have been pruned the hub responds 410 `cursor_expired` with the current head `cursor`; the client must resync (GET /v2/groups, message history, DeviceLists) and continue from that cursor.\n\nAfter a wait the session is checked again: if it was deleted, expired or its device was revoked in the meantime the hub responds 401 `unauthorized` instead of returning events.",
         "operationId": "list_events",
         "parameters": [
           {
@@ -1507,7 +1507,7 @@
           "events"
         ],
         "summary": "Event stream (WebSocket)",
-        "description": "WebSocket upgrade delivering the same events as GET /v2/events in real time. Authenticate with `Authorization: Bearer <token>` or, where headers cannot be set, `?token=`.\n\nAfter the upgrade the hub first replays every event after `cursor`, then pushes new ones. Server-to-client frames are JSON text frames:\n\n- `{\"type\":\"event\",\"event\":Event}` - one per event, ascending `cursor`.\n- `{\"type\":\"error\",\"error\":{\"code\":\"cursor_expired\",\"message\":\"...\"},\"cursor\":<head cursor>}` - sent when `cursor` is older than the retention window, followed by close code 4410. Resync, then reconnect with the given cursor.\n\nAn invalid or missing token closes the connection with code 4401. Client-to-server frames are ignored.",
+        "description": "WebSocket upgrade delivering the same events as GET /v2/events in real time. Authenticate with `Authorization: Bearer <token>` or, where headers cannot be set, `?token=`.\n\nAfter the upgrade the hub first replays every event after `cursor`, then pushes new ones. Server-to-client frames are JSON text frames:\n\n- `{\"type\":\"event\",\"event\":Event}` - one per event, ascending `cursor`.\n- `{\"type\":\"error\",\"error\":{\"code\":\"cursor_expired\",\"message\":\"...\"},\"cursor\":<head cursor>}` - sent when `cursor` is older than the retention window, followed by close code 4410. Resync, then reconnect with the given cursor.\n\nAn invalid or missing token closes the connection with code 4401. The session is checked again with every batch of events and at least every 30 seconds; once it is deleted, expires or its device is revoked by a DeviceList update, no further events are sent and the connection is closed with code 4401. Client-to-server frames are ignored.",
         "operationId": "stream",
         "parameters": [
           {
