@@ -1,0 +1,31 @@
+# PSK variant of compose.yaml (docs/federation.md §11.2, T11), applied by
+# `GIM_FED_PSK=1 scripts/fed-test.sh` on top of compose.yaml. hub-a, hub-b
+# and hub-c share a libp2p pnet key (`${GIM_FED_CONFIG_DIR}/swarm.key`) and
+# run TCP only; hub-x has no key, so its connections fail in the pnet
+# handshake before any `Hello`.
+
+x-psk: &psk
+  GIM_HUB_P2P_LISTEN: /ip4/0.0.0.0/tcp/4001
+  GIM_HUB_P2P_PSK_FILE: /config/swarm.key
+
+services:
+  hub-a:
+    environment:
+      <<: *psk
+      GIM_HUB_P2P_EXTERNAL_ADDRS: /ip4/${GIM_FED_SUBNET:?}.11/tcp/4001
+    volumes:
+      - ${GIM_FED_CONFIG_DIR:?}/swarm.key:/config/swarm.key:ro
+
+  hub-b:
+    environment:
+      <<: *psk
+      GIM_HUB_P2P_EXTERNAL_ADDRS: /ip4/${GIM_FED_SUBNET:?}.12/tcp/4001
+    volumes:
+      - ${GIM_FED_CONFIG_DIR:?}/swarm.key:/config/swarm.key:ro
+
+  hub-c:
+    environment:
+      <<: *psk
+      GIM_HUB_P2P_EXTERNAL_ADDRS: /ip4/${GIM_FED_SUBNET:?}.13/tcp/4001
+    volumes:
+      - ${GIM_FED_CONFIG_DIR:?}/swarm.key:/config/swarm.key:ro

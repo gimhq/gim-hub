@@ -9,7 +9,9 @@
 //!
 //! Environment: `GIM_FED_HUB_{A,B,C,X}` (base URLs), `GIM_FED_HUB_X_ID`
 //! (hub-x's hub_id), `GIM_FED_PROJECT` (compose project name, for container
-//! names), `GIM_FED_DOCKER_SOCKET` (default `/var/run/docker.sock`).
+//! names), `GIM_FED_DOCKER_SOCKET` (default `/var/run/docker.sock`),
+//! `GIM_FED_PSK` (`1`: hub-a, hub-b and hub-c run with a pnet key that
+//! hub-x lacks, `deploy/federation/compose.psk.yaml`).
 
 #[path = "../../gim-hub-api/tests/mls_support/mod.rs"]
 mod mls_support;
@@ -287,7 +289,7 @@ impl User {
         device_seed: u8,
         key_packages: usize,
     ) -> Self {
-        let (uid, did) = (user_id(root_seed), device_id(device_seed));
+        let uid = user_id(root_seed);
         let list = device_list(root_seed, 1, &[device_seed], &[]);
         let (status, body) = hub
             .call(
@@ -298,7 +300,22 @@ impl User {
             )
             .await;
         assert!(status.is_success(), "{name} device list: {body}");
+        let user = Self::sign_in(name, hub, root_seed, device_seed, key_packages).await;
+        user.publish_hosting_record(root_seed).await;
+        user
+    }
 
+    /// Signs in device `key(device_seed)`, which the user's DeviceList
+    /// certifies, with challenge/response and uploads `key_packages`
+    /// KeyPackages.
+    async fn sign_in(
+        name: &'static str,
+        hub: &Hub,
+        root_seed: u8,
+        device_seed: u8,
+        key_packages: usize,
+    ) -> Self {
+        let (uid, did) = (user_id(root_seed), device_id(device_seed));
         let (status, body) = hub
             .call(
                 Method::POST,
@@ -348,7 +365,6 @@ impl User {
                 .await;
             assert_eq!(status, StatusCode::OK, "{name} key packages: {body}");
         }
-        user.publish_hosting_record(root_seed).await;
         user
     }
 
@@ -656,6 +672,7 @@ async fn compose_federation() {
     let c = Hub::from_env("hub-c", "GIM_FED_HUB_C");
     let x = Hub::from_env("hub-x", "GIM_FED_HUB_X");
     let x_id = std::env::var("GIM_FED_HUB_X_ID").expect("GIM_FED_HUB_X_ID is not set");
+    let psk = std::env::var("GIM_FED_PSK").is_ok_and(|value| value == "1");
     for hub in [&a, &b, &c, &x] {
         hub.wait_healthy().await;
     }
@@ -681,11 +698,12 @@ async fn compose_federation() {
     ok("sign-up, hosting records resolved across hubs", start);
 
     cross_hub_dm(&alice, &bob).await;
+    revoked_device(&b, &alice, &bob).await;
     let (gid, mut groups) = three_hub_group(&alice, &bob, &carol, &dave).await;
     concurrent_commits(&gid, &alice, &bob, &dave, &mut groups).await;
     member_hub_outage(&gid, &c, &alice, &bob, &dave, &mut groups).await;
     owner_hub_outage(&gid, &a, &alice, &bob, &dave, &mut groups).await;
-    refusal(&a, &x_id, &alice, &eve).await;
+    refusal(&a, &x_id, &alice, &eve, psk).await;
     println!("fed: PASS ({:.1}s)", start.elapsed().as_secs_f64());
 }
 
@@ -739,6 +757,56 @@ async fn cross_hub_dm(alice: &User, bob: &User) {
     assert_eq!(alice.message_seqs(&gid).await, [2, 3, 4]);
     assert_eq!(bob.message_seqs(&gid).await, [5, 6, 7]);
     ok("cross-hub DM (B owns, A member)", start);
+}
+
+/// T6: alice@A certifies a second device, which uploads a KeyPackage that
+/// bob@B claims, and then revokes it (DeviceList seq 2 and 3). Once the owner
+/// hub-b has the new list, bob's Commit adding that KeyPackage is rejected.
+async fn revoked_device(b: &Hub, alice: &User, bob: &User) {
+    let start = Instant::now();
+    let path = format!("/v2/users/{}/device-list", alice.user_id);
+    let path = &path;
+    let publish = |list: Vec<u8>| async move {
+        let (status, body) = alice
+            .hub
+            .call(
+                Method::PUT,
+                path,
+                None,
+                Some(json!({ "device_list": b64(&list) })),
+            )
+            .await;
+        assert!(status.is_success(), "alice device list: {body}");
+    };
+    publish(device_list(1, 2, &[11, 12], &[])).await;
+    let alice2 = User::sign_in("alice2", &alice.hub, 1, 12, 1).await;
+    let kp = bob.claim(&alice2).await;
+
+    let revoking = device_list(1, 3, &[11], &[12]);
+    publish(revoking.clone()).await;
+    let expected = json!(b64(&revoking));
+    eventually("hub-b to have alice's revoking DeviceList", || async {
+        let (status, body) = b.call(Method::GET, path, None, None).await;
+        status == StatusCode::OK && body["device_list"] == expected
+    })
+    .await;
+
+    let (gid, mut group) = bob.create_group("group").await;
+    let (commit, _, _) = group
+        .add_members(&bob.provider, &bob.signer, &[kp])
+        .unwrap();
+    let (status, body) = bob.submit_commit(&gid, commit_body("c1", &commit)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(code(&body), "validation_failed", "{body}");
+    assert_eq!(
+        body["error"]["message"], "invalid MLS credential (revoked_device)",
+        "{body}"
+    );
+    assert!(bob.log(&gid).await.is_empty());
+    ok(
+        "revoked device of alice@A rejected by owner hub-b (400 revoked_device)",
+        start,
+    );
 }
 
 /// MLS groups of the group scenarios, per member.
@@ -1038,8 +1106,9 @@ async fn owner_hub_outage(
 }
 
 /// T10: hub-x is on nobody's allowlist: hub-a refuses its Hello and eve@X
-/// cannot claim alice@A.
-async fn refusal(a: &Hub, x_id: &str, alice: &User, eve: &User) {
+/// cannot claim alice@A. T11 (`psk`): hub-x lacks the pnet key, so its
+/// connections fail before any Hello reaches hub-a.
+async fn refusal(a: &Hub, x_id: &str, alice: &User, eve: &User, psk: bool) {
     let start = Instant::now();
     let request = json!({ "targets": [{ "user_id": alice.user_id }] });
     let (status, body) = eve
@@ -1056,12 +1125,20 @@ async fn refusal(a: &Hub, x_id: &str, alice: &User, eve: &User) {
     };
     assert!(listed("unavailable") || listed("missing"), "{body}");
 
-    eventually("hub-a to log the refused Hello of hub-x", || async {
+    let refused = || {
         a.logs()
             .lines()
             .any(|line| line.contains("Hello refused") && line.contains(x_id))
-    })
-    .await;
+    };
+    if psk {
+        // hub-x has been dialing hub-a since startup.
+        assert!(!refused(), "a Hello of hub-x reached hub-a despite the PSK");
+    } else {
+        eventually("hub-a to log the refused Hello of hub-x", || async {
+            refused()
+        })
+        .await;
+    }
     // Nothing about eve reached A.
     let (status, body) = alice
         .call(Method::GET, &format!("/v2/users/{}", eve.user_id), None)
@@ -1077,7 +1154,11 @@ async fn refusal(a: &Hub, x_id: &str, alice: &User, eve: &User) {
         .await;
     assert_ne!(status, StatusCode::OK, "{body}");
     ok(
-        "non-allowlisted hub-x refused; eve@X cannot reach alice@A",
+        if psk {
+            "hub-x without the PSK never reaches hub-a; eve@X cannot reach alice@A"
+        } else {
+            "non-allowlisted hub-x refused; eve@X cannot reach alice@A"
+        },
         start,
     );
 }

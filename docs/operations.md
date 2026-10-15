@@ -17,7 +17,7 @@ the variable.
 | `GIM_HUB_MAX_BLOB_BYTES` | `104857600` | Largest accepted blob (minimum 1) |
 | `GIM_HUB_LONGPOLL_MAX_WAIT_SECONDS` | `30` | Upper bound for long-poll `wait` |
 | `GIM_HUB_SESSION_TTL_DAYS` | `30` | Lifetime of device bearer tokens (minimum 1) |
-| `GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN` | `120` | Unauthenticated `GET /v2/users/{user_id}` and `.../device-list` requests per client IP (IPv6: per /64) per minute (minimum 1) |
+| `GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN` | `120` | Unauthenticated `GET /v2/users/{user_id}`, `.../device-list` and `.../hosting-record` requests per client IP (IPv6: per /64) per minute (minimum 1) |
 | `GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN` | `60` | Unauthenticated reads of one `user_id` per minute, across all clients (minimum 1) |
 | `GIM_HUB_RECOVERY_READ_PER_IP_PER_MIN` | `20` | Unauthenticated `GET /v2/users/{user_id}/recovery-backup` requests per client IP (IPv6: per /64) per minute, separate from the public reads (minimum 1) |
 | `GIM_HUB_RECOVERY_READ_PER_USER_PER_MIN` | `10` | Recovery backup reads of one `user_id` per minute, across all clients (minimum 1) |
@@ -85,7 +85,8 @@ only Docker:
    fed_compose -- --ignored`) in a `rust:1.99-bookworm` container attached to that network. The
    driver speaks the client API to every hub with openmls clients and stops and starts hubs
    through the mounted Docker socket. Scenarios: hosting-record resolution, a cross-hub direct
-   message, a group across three hubs with add and remove from a non-owning hub, a concurrent
+   message, a Commit adding a revoked device of a remote user (400 `revoked_device`), a group
+   across three hubs with add and remove from a non-owning hub, a concurrent
    Commit conflict (one 201, one 409 `stale_epoch`), a member-hub outage (50 messages, no loss,
    no duplicates), an owner-hub outage (503 `peer_unavailable`, then delivery) and the refusal of
    `hub-x`;
@@ -93,7 +94,14 @@ only Docker:
 
 All containers, the network and the volumes carry the label `ai-agent=true`. Other variables:
 `GIM_FED_PROJECT` (compose project, default `gim-fed`), `GIM_FED_CARGO_HOME` (cargo home of the
-driver container) and `GIM_FED_TIMEOUT` (driver timeout in seconds).
+driver container), `GIM_FED_TIMEOUT` (driver timeout in seconds) and `GIM_FED_RUN_LABEL` (value of
+the `ai-agent-run` label also set on every container, network and volume, default the project
+name).
+
+`GIM_FED_PSK=1 bash scripts/fed-test.sh` runs the PSK variant (`deploy/federation/compose.psk.yaml`,
+not run in CI): hub-a, hub-b and hub-c share a pnet key generated for the run and use TCP only;
+hub-x has no key. It first checks that a hub with the key and a QUIC listen address refuses to
+start, then runs the same scenarios; hub-x must never get a `Hello` to hub-a.
 
 ### Push
 
