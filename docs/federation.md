@@ -1267,6 +1267,33 @@ volumes: { a-data: {}, b-data: {}, c-data: {}, x-data: {} }
   -- --ignored`, env `GIM_FED_HUBS=http://127.0.0.1:18081,...`); it stops and starts containers
   with `docker compose stop|start` for outage cases.
 
+Resolved in H3-T6:
+
+- The libp2p host has no DNS transport, so `/dns4/...` multiaddrs (§3.3 example, the sketch
+  above) parse but cannot be dialed. The compose network has a fixed /24 (`GIM_FED_SUBNET`,
+  default `10.231.64`) and every hub a static IP; allowlists and `GIM_HUB_P2P_EXTERNAL_ADDRS` use
+  `/ip4/` addresses. A static IP also keeps a restarted hub reachable at its advertised address.
+- No test-only entrypoint flag and no committed key seeds: `scripts/fed-test.sh` runs
+  `gim-hub hub-id` once per hub (creating `hub_key` in its volume) and generates the allowlists
+  from the printed `hub_id`s into `.tmp/fed-<pid>/`. `hub-x` runs in every run (no `refusal`
+  profile); its allowlist lists `hub-a` so it keeps dialing and is refused.
+- No ports are published: the driver (`crates/gim-hub/tests/fed_compose.rs`, `#[ignore]`) runs
+  in a `rust:1.99-bookworm` container attached to the compose network and reaches the hubs by
+  service name. It stops and starts hubs through the Docker Engine API on the mounted Docker
+  socket (`curl --unix-socket`), so it needs no Docker CLI.
+- Covered by the compose driver: T1 (resolution only), T2, T3, T4, T5, T7 (dave@C instead of
+  carol, who is removed by T4; a stopped hub has no client API, so "carol-side submits get 503"
+  is checked by T9 instead), T9 and T10 (eve's claim of alice lists her in `unavailable` or
+  `missing`: hub-x cannot resolve alice's record at all; hub-a logs `Hello refused` with hub-x's
+  `hub_id`; hub-a knows nothing about eve). Not covered by the compose driver: T6 (only the
+  `NotifyDeviceList` propagation is tested, in process, in
+  `crates/gim-hub-api/tests/federation_identity.rs`), T8 (in process, `federation_groups.rs`),
+  T11 (no `compose.psk.yaml` yet; PSK mismatch and QUIC-with-PSK are covered by the transport
+  tests in `crates/gim-hub-s2s`) and T12.
+- §11.1: the in-process three-hub tests live in `crates/gim-hub-api/tests/federation_groups.rs`
+  and `federation_identity.rs` (they need the API crate's test helpers); no separate
+  `crates/gim-hub/tests/federation.rs` was added.
+
 ### 11.3 Matrix
 
 | # | Case | Steps | Assertions |
