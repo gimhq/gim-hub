@@ -9,7 +9,9 @@
 //!
 //! Environment: `GIM_FED_HUB_{A,B,C,X}` (base URLs), `GIM_FED_HUB_X_ID`
 //! (hub-x's hub_id), `GIM_FED_PROJECT` (compose project name, for container
-//! names), `GIM_FED_DOCKER_SOCKET` (default `/var/run/docker.sock`).
+//! names), `GIM_FED_DOCKER_SOCKET` (default `/var/run/docker.sock`),
+//! `GIM_FED_PSK` (`1`: hub-a, hub-b and hub-c run with a pnet key that
+//! hub-x lacks, `deploy/federation/compose.psk.yaml`).
 
 #[path = "../../gim-hub-api/tests/mls_support/mod.rs"]
 mod mls_support;
@@ -656,6 +658,7 @@ async fn compose_federation() {
     let c = Hub::from_env("hub-c", "GIM_FED_HUB_C");
     let x = Hub::from_env("hub-x", "GIM_FED_HUB_X");
     let x_id = std::env::var("GIM_FED_HUB_X_ID").expect("GIM_FED_HUB_X_ID is not set");
+    let psk = std::env::var("GIM_FED_PSK").is_ok_and(|value| value == "1");
     for hub in [&a, &b, &c, &x] {
         hub.wait_healthy().await;
     }
@@ -681,11 +684,12 @@ async fn compose_federation() {
     ok("sign-up, hosting records resolved across hubs", start);
 
     cross_hub_dm(&alice, &bob).await;
+    revoked_device(&b, &alice, &bob).await;
     let (gid, mut groups) = three_hub_group(&alice, &bob, &carol, &dave).await;
     concurrent_commits(&gid, &alice, &bob, &dave, &mut groups).await;
     member_hub_outage(&gid, &c, &alice, &bob, &dave, &mut groups).await;
     owner_hub_outage(&gid, &a, &alice, &bob, &dave, &mut groups).await;
-    refusal(&a, &x_id, &alice, &eve).await;
+    refusal(&a, &x_id, &alice, &eve, psk).await;
     println!("fed: PASS ({:.1}s)", start.elapsed().as_secs_f64());
 }
 
@@ -739,6 +743,70 @@ async fn cross_hub_dm(alice: &User, bob: &User) {
     assert_eq!(alice.message_seqs(&gid).await, [2, 3, 4]);
     assert_eq!(bob.message_seqs(&gid).await, [5, 6, 7]);
     ok("cross-hub DM (B owns, A member)", start);
+}
+
+/// T6: alice@A certifies a second device and then revokes it (DeviceList
+/// seq 2 and 3). Once the owner hub-b has the new list, bob@B's Commit
+/// adding a KeyPackage of the revoked device is rejected.
+async fn revoked_device(b: &Hub, alice: &User, bob: &User) {
+    let start = Instant::now();
+    let path = format!("/v2/users/{}/device-list", alice.user_id);
+    for list in [
+        device_list(1, 2, &[11, 12], &[]),
+        device_list(1, 3, &[11], &[12]),
+    ] {
+        let (status, body) = alice
+            .hub
+            .call(
+                Method::PUT,
+                &path,
+                None,
+                Some(json!({ "device_list": b64(&list) })),
+            )
+            .await;
+        assert!(status.is_success(), "alice device list: {body}");
+        let expected = json!(b64(&list));
+        eventually("hub-b to have alice's new DeviceList", || async {
+            let (status, body) = b.call(Method::GET, &path, None, None).await;
+            status == StatusCode::OK && body["device_list"] == expected
+        })
+        .await;
+    }
+
+    // A KeyPackage the revoked device made before the revocation.
+    let provider = OpenMlsRustCrypto::default();
+    let revoked_signer = signer(12);
+    revoked_signer.store(provider.storage()).unwrap();
+    let kp = KeyPackage::builder()
+        .leaf_node_capabilities(capabilities(GIM_CREDENTIAL))
+        .build(
+            CIPHERSUITE,
+            &provider,
+            &revoked_signer,
+            CredentialWithKey {
+                credential: gim_credential(1, 12),
+                signature_key: revoked_signer.public().into(),
+            },
+        )
+        .unwrap()
+        .key_package()
+        .clone();
+    let (gid, mut group) = bob.create_group("group").await;
+    let (commit, _, _) = group
+        .add_members(&bob.provider, &bob.signer, &[kp])
+        .unwrap();
+    let (status, body) = bob.submit_commit(&gid, commit_body("c1", &commit)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(code(&body), "validation_failed", "{body}");
+    assert_eq!(
+        body["error"]["message"], "invalid MLS credential (revoked_device)",
+        "{body}"
+    );
+    assert!(bob.log(&gid).await.is_empty());
+    ok(
+        "revoked device of alice@A rejected by owner hub-b (400 revoked_device)",
+        start,
+    );
 }
 
 /// MLS groups of the group scenarios, per member.
@@ -1038,8 +1106,9 @@ async fn owner_hub_outage(
 }
 
 /// T10: hub-x is on nobody's allowlist: hub-a refuses its Hello and eve@X
-/// cannot claim alice@A.
-async fn refusal(a: &Hub, x_id: &str, alice: &User, eve: &User) {
+/// cannot claim alice@A. T11 (`psk`): hub-x lacks the pnet key, so its
+/// connections fail before any Hello reaches hub-a.
+async fn refusal(a: &Hub, x_id: &str, alice: &User, eve: &User, psk: bool) {
     let start = Instant::now();
     let request = json!({ "targets": [{ "user_id": alice.user_id }] });
     let (status, body) = eve
@@ -1056,12 +1125,20 @@ async fn refusal(a: &Hub, x_id: &str, alice: &User, eve: &User) {
     };
     assert!(listed("unavailable") || listed("missing"), "{body}");
 
-    eventually("hub-a to log the refused Hello of hub-x", || async {
+    let refused = || {
         a.logs()
             .lines()
             .any(|line| line.contains("Hello refused") && line.contains(x_id))
-    })
-    .await;
+    };
+    if psk {
+        // hub-x has been dialing hub-a since startup.
+        assert!(!refused(), "a Hello of hub-x reached hub-a despite the PSK");
+    } else {
+        eventually("hub-a to log the refused Hello of hub-x", || async {
+            refused()
+        })
+        .await;
+    }
     // Nothing about eve reached A.
     let (status, body) = alice
         .call(Method::GET, &format!("/v2/users/{}", eve.user_id), None)
@@ -1077,7 +1154,11 @@ async fn refusal(a: &Hub, x_id: &str, alice: &User, eve: &User) {
         .await;
     assert_ne!(status, StatusCode::OK, "{body}");
     ok(
-        "non-allowlisted hub-x refused; eve@X cannot reach alice@A",
+        if psk {
+            "hub-x without the PSK never reaches hub-a; eve@X cannot reach alice@A"
+        } else {
+            "non-allowlisted hub-x refused; eve@X cannot reach alice@A"
+        },
         start,
     );
 }
