@@ -467,10 +467,7 @@ fn notification(
         PushKind::Welcome if data["ratchet_tree"].is_null() => data["welcome"].as_str(),
         _ => None,
     };
-    let message_id = match push::message_id_at(conn, gid, i64::try_from(seq).unwrap_or(i64::MAX))? {
-        Some(id) => id,
-        None => fallback_message_id(gid, seq),
-    };
+    let message_id = message_id(conn, gid, seq)?;
     Ok(Some(PushNotification {
         kind,
         gid: gid.to_owned(),
@@ -479,6 +476,17 @@ fn notification(
         mls_message: mls_message.map(str::to_owned),
         minimal,
     }))
+}
+
+/// The push `message_id` / `collapse_id` of `(gid, seq)`: the stored
+/// message's ID, else a deterministic stand-in.
+pub fn message_id(conn: &Connection, gid: &str, seq: u64) -> Result<String, DbError> {
+    Ok(
+        match push::message_id_at(conn, gid, i64::try_from(seq).unwrap_or(i64::MAX))? {
+            Some(id) => id,
+            None => fallback_message_id(gid, seq),
+        },
+    )
 }
 
 /// Deterministic stand-in when `(gid, seq)` is not stored here.

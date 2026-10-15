@@ -231,6 +231,14 @@ async fn send_stores_fans_out_and_replays() {
     let reply = send(&f.hub, GID_EXAMPLE, &f.alice, "c1", &mls).await;
     assert_eq!(reply.status, StatusCode::CREATED);
     let message = reply.json();
+    let message_id = f
+        .hub
+        .state
+        .db
+        .read(|conn| gim_hub_db::push::message_id_at(conn, GID_EXAMPLE, 1))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         message,
         json!({
@@ -239,6 +247,7 @@ async fn send_stores_fans_out_and_replays() {
             "sender_user_id": "u1",
             "sender_device_id": "d1",
             "client_id": "c1",
+            "message_id": message_id,
             "kind": "application",
             "epoch": 0,
             "mls_message": STANDARD.encode(&mls),
@@ -273,6 +282,44 @@ async fn send_stores_fans_out_and_replays() {
     let reply = send(&f.hub, GID_EXAMPLE, &f.alice2, "c1", &other).await;
     assert_eq!(reply.status, StatusCode::CREATED);
     assert_eq!(reply.json()["seq"], 2);
+}
+
+#[tokio::test]
+async fn legacy_message_event_gets_message_id() {
+    let mut f = fixture().await;
+    let mls = f.mls.application(b"hello");
+    let message = send(&f.hub, GID_EXAMPLE, &f.alice, "c1", &mls).await.json();
+    // A message event stored before `message_id` existed, and one for a
+    // message no longer stored here.
+    let mut legacy = message.clone();
+    legacy.as_object_mut().unwrap().remove("message_id");
+    let mut gone = legacy.clone();
+    gone["seq"] = json!(9);
+    let payloads = [legacy.to_string(), gone.to_string()];
+    f.hub
+        .state
+        .db
+        .write(move |tx| {
+            for payload in &payloads {
+                gim_hub_db::events::append(tx, "u2", "d1", "message", payload, TEST_NOW)?;
+            }
+            Ok::<_, gim_hub_db::DbError>(())
+        })
+        .await
+        .unwrap();
+
+    let body = events(&f.hub, &f.bob, "cursor=0").await.json();
+    let events = body["events"].as_array().unwrap();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[1]["data"], message);
+    let stand_in = f
+        .hub
+        .state
+        .db
+        .read(|conn| gim_hub_push::message_id(conn, GID_EXAMPLE, 9))
+        .await
+        .unwrap();
+    assert_eq!(events[2]["data"]["message_id"], json!(stand_in));
 }
 
 #[tokio::test]

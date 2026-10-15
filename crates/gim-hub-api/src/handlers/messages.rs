@@ -410,6 +410,7 @@ pub(crate) fn message_dto(stored: StoredMessage) -> Message {
         sender_user_id: stored.sender_user_id,
         sender_device_id: stored.sender_device_id,
         client_id: stored.client_id,
+        message_id: stored.message_id,
         created_at: stored.created_at,
     }
 }
@@ -429,6 +430,7 @@ fn sequenced_dto(message: &s2s::SequencedMessage) -> Message {
         sender_user_id: message.sender_user_id.clone(),
         sender_device_id: message.sender_device_id.clone(),
         client_id: message.client_id.clone(),
+        message_id: message.message_id.clone(),
         created_at: i64::try_from(message.created_at).unwrap_or(i64::MAX),
     }
 }

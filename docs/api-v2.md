@@ -158,6 +158,12 @@ e.g. `invalid MLS credential (leaf_key_mismatch)`.
 `POST /v2/groups/{gid}/messages` carries only `PrivateMessage` application messages; the hub reads
 the epoch from the framing but cannot see their content.
 
+A `Message` (submit responses, `GET /v2/groups/{gid}/messages`, `message` events) carries
+`gid`, `seq`, `sender_user_id`, `sender_device_id`, `client_id`, `message_id`, `kind`, `epoch`,
+`mls_message` and `created_at`. `message_id` (string, always present) is the opaque ID assigned by
+the owning hub and is identical on every hub that stores the message; it equals the push
+`message_id` / `collapse_id` and is the cross-hub dedup key (docs/multihoming.md §6.3).
+
 ## Pending Welcomes and 410 recovery
 
 Every Welcome addressed to a device is also kept as a pending Welcome for that device:

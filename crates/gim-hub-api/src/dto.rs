@@ -21,6 +21,8 @@ pub const GID_EXAMPLE: &str =
 pub const LINK_ID_EXAMPLE: &str = "wgy33neayyoqouya3g77pwolne";
 /// Example client idempotency key.
 pub const CLIENT_ID_EXAMPLE: &str = "9f1c2a7e-0b44-4d0e-9a51-3c8f1e2d6b70";
+/// Example message ID (opaque, assigned by the owning hub).
+pub const MESSAGE_ID_EXAMPLE: &str = "5f0e9c1d7a2b4c3e8d6f1a0b9c8d7e6f";
 /// Example timestamp.
 pub const TIMESTAMP_EXAMPLE: i64 = 1_760_479_200_000;
 
@@ -556,6 +558,10 @@ pub struct Message {
     pub sender_device_id: String,
     #[schema(min_length = 1, max_length = 64, example = json!(CLIENT_ID_EXAMPLE))]
     pub client_id: String,
+    /// Opaque message ID assigned by the owning hub, identical on every hub that stores the
+    /// message. Equals the push payload's `message_id` / `collapse_id`; the cross-hub dedup key.
+    #[schema(example = json!(MESSAGE_ID_EXAMPLE))]
+    pub message_id: String,
     pub kind: MessageKind,
     /// MLS epoch read from the message framing.
     pub epoch: u64,

@@ -3405,6 +3405,7 @@
           "sender_user_id",
           "sender_device_id",
           "client_id",
+          "message_id",
           "kind",
           "epoch",
           "mls_message",
@@ -3434,6 +3435,11 @@
           },
           "kind": {
             "$ref": "#/components/schemas/MessageKind"
+          },
+          "message_id": {
+            "type": "string",
+            "description": "Opaque message ID assigned by the owning hub, identical on every hub that stores the\nmessage. Equals the push payload's `message_id` / `collapse_id`; the cross-hub dedup key.",
+            "example": "5f0e9c1d7a2b4c3e8d6f1a0b9c8d7e6f"
           },
           "mls_message": {
             "type": "string",
