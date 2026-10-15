@@ -1,8 +1,13 @@
 # Multi-homing (M2c) hub-side design
 
-Status: design, normative for the M2c hub subtasks (§12). Nothing in this document is implemented
-yet. Every contract change (§9) is a proposal that needs L1 / gim-core sign-off before the
-subtask that implements it starts.
+Sign-off: L1 accepted §9 entirely and the recommendations for Q1-Q9 (§13). Q1 (application
+messages fan out to every listed hub) is a deliberate deviation from arch §9.2, chosen for
+simplicity and failure tolerance at our scale, at a bandwidth cost. Q6 (blobs are not replicated)
+is a known limit. The migration is `0007_multihoming.sql` (`0006` is taken).
+
+Status: design, normative for the M2c hub subtasks (§12). Every contract change (§9) is a proposal that needs L1 / gim-core sign-off before the
+subtask that implements it starts. Implemented so far: §2.2, §3.2, §4.2-§4.5, §5 and §7.3
+(H4-M1 to H4-M4).
 
 This document specifies how a hub behaves when a user's hosting record lists several hubs:
 fan-out, per-hub state and bootstrap of a new hub, KeyPackages, idempotent submission through
@@ -214,6 +219,12 @@ its roster:
    epoch, `seq` = `last_seq`, roster);
 2. enqueues `SeedReplica{gid, user_id: U, group: snapshot}` (kind `seed_replica`, payload stored)
    to every added hub that is not this hub.
+
+A hub that hosts U under either record also queues `NotifyHostingRecord` to each added hub ahead
+of the seeds and the `CopyPendingWelcomes` entry (the later queueing of §4.2 coalesces with it),
+so the added hub stores the record before it authorizes them, even when the client's `PUT` to it
+comes later. An owner that only caches U's record has no such ordering: a seed that reaches the
+added hub before the record is refused with `NOT_FOUND` and dropped.
 
 Because the fan-out of every later message is computed in a later transaction from the stored
 record, and the outbox is FIFO per peer (fed §7.2), the seed reaches the added hub ahead of every
@@ -566,7 +577,7 @@ disjoint KeyPackages per hub and claim+commit through one hub (§5.1, §5.4); ad
 (§4.1) and drain check (§7.1); acknowledge a Welcome on every hub that lists it (§4.4); push
 dedup by `message_id` (§8).
 
-### 9.3 Database migration `0006_multihoming.sql`
+### 9.3 Database migration `0007_multihoming.sql`
 
 - `hosting_records.removed_at INTEGER` (NULL unless removed, §7.3).
 - `s2s_outbox.kind` CHECK gains `hosting_record`, `seed_replica`, `pending_welcomes`. SQLite
@@ -624,7 +635,7 @@ regenerated).
 | Subtask | Scope | Owns | Depends on |
 |---|---|---|---|
 | H4-M1 contract | §9.1 proto diff and `s2s.md`; §9.2 DTOs, `hosting_record.updated` payload type, `GET /v2/hub`, error code `duplicate_key_package`, `api-v2.md`; op dispatch stubs (`INTERNAL` "not implemented") | `proto/s2s.proto`, `docs/s2s.md`, `docs/api-v2.md`, `crates/gim-hub-proto/**`, `crates/gim-hub-api/src/{dto.rs,handlers/health.rs}`, `crates/gim-hub-s2s/src/ops/mod.rs` | sign-off of §9 |
-| H4-M2 record propagation and removal | §3.2, §4.2, §4.5, §7.3: `NotifyHostingRecord` send/receive, hub-set diff hook API (called in the record-store transaction), `device_list_peer_hubs` co-hosts, removed state, write refusal, purge in retention, `0006_multihoming.sql` | `crates/gim-hub-db/migrations/0006_multihoming.sql`, `crates/gim-hub-db/src/{hosting.rs,remote_identity.rs,outbox.rs}`, `crates/gim-hub-s2s/src/hosting/**`, `crates/gim-hub-s2s/src/ops/hosting_record.rs`, `crates/gim-hub-s2s/src/outbox/**`, `crates/gim-hub-api/src/handlers/{hosting.rs,identity.rs}`, `crates/gim-hub-api/src/auth.rs` (write gate) | M1 |
+| H4-M2 record propagation and removal | §3.2, §4.2, §4.5, §7.3: `NotifyHostingRecord` send/receive, hub-set diff hook API (called in the record-store transaction), `device_list_peer_hubs` co-hosts, removed state, write refusal, purge in retention, `0007_multihoming.sql` | `crates/gim-hub-db/migrations/0007_multihoming.sql`, `crates/gim-hub-db/src/{hosting.rs,remote_identity.rs,outbox.rs}`, `crates/gim-hub-s2s/src/hosting/**`, `crates/gim-hub-s2s/src/ops/hosting_record.rs`, `crates/gim-hub-s2s/src/outbox/**`, `crates/gim-hub-api/src/handlers/{hosting.rs,identity.rs}`, `crates/gim-hub-api/src/auth.rs` (write gate) | M1 |
 | H4-M3 bootstrap | §4.3, §4.4, §2.2: owner seeding via the M2 hook, `SeedReplica` receive, `CopyPendingWelcomes` send/receive, DeliverWelcome to all listed hubs (verify and test) | `crates/gim-hub-api/src/handlers/{groups.rs,welcomes.rs}`, `crates/gim-hub-db/src/{groups.rs,welcomes.rs}`, `crates/gim-hub-s2s/src/ops/{seed.rs,welcome.rs}` | M1, M2 |
 | H4-M4 KeyPackages | §5.2, §5.3, §5.4: claim fallback and per-device follow-up, routing of removed users, `duplicate_key_package`, burns, `kp_not_claimed` message | `crates/gim-hub-api/src/handlers/keypackages.rs`, `crates/gim-hub-db/src/keypackages.rs`, `crates/gim-hub-s2s/src/ops/claim.rs`, `crates/gim-hub-api/src/mls.rs` (message only) | M1 |
 | H4-M5 push gate and acceptance | §8: `PushGate` implementation, co-host ping and down state in `transport/`, config §10; §11 compose tests and fixtures, `docs/operations.md` multi-homing section | `crates/gim-hub-s2s/src/{multihoming.rs,transport/**,config.rs}`, `crates/gim-hub/tests/multihoming_compose.rs`, `deploy/federation/**` (multihoming fixtures), `docs/operations.md` | M2, M3, M4, H4-P1 (gate hook), H3-T6 (harness) |

@@ -444,6 +444,18 @@ mod tests {
         assert_eq!(missing.request_id, "r-2");
     }
 
+    #[test]
+    fn multihoming_ops_are_implemented() {
+        // NotifyHostingRecord is registered by ops::hosting_record; the
+        // bootstrap ops by the group service.
+        for op in [
+            Op::SeedReplica(Default::default()),
+            Op::CopyPendingWelcomes(Default::default()),
+        ] {
+            assert!(crate::ops::GROUP_OPS.contains(&OpKind::of(&op)));
+        }
+    }
+
     #[tokio::test]
     async fn disabled_federation_refuses_to_send() {
         let federation: Arc<dyn Federation> = Arc::new(Disabled);

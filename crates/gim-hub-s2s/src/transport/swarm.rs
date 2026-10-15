@@ -103,7 +103,8 @@ impl Behaviour {
 }
 
 /// Builds the swarm: Noise and yamux over TCP plus QUIC, or TCP only behind
-/// pnet when a PSK is set (§3.3).
+/// pnet when a PSK is set (§3.3). Both are wrapped in the system DNS
+/// resolver so `/dns4` and `/dns6` addresses can be dialed.
 pub(crate) fn build_swarm(
     keypair: Keypair,
     psk: Option<Psk>,
@@ -122,6 +123,7 @@ pub(crate) fn build_swarm(
                 yamux::Config::default,
             )?
             .with_quic()
+            .with_dns()?
             .with_behaviour(behaviour)?
             .with_swarm_config(swarm_config)
             .build(),
@@ -140,6 +142,7 @@ pub(crate) fn build_swarm(
                         .timeout(Duration::from_secs(20)),
                 )
             })?
+            .with_dns()?
             .with_behaviour(behaviour)?
             .with_swarm_config(swarm_config)
             .build(),

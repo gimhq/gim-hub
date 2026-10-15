@@ -5,14 +5,14 @@
 use std::collections::BTreeSet;
 
 use gim_hub_db::{
-    groups,
+    groups, hosting as hosting_store,
     messages::{self, Membership, StoredMessage},
-    Connection, DbError,
+    welcomes, Connection, DbError,
 };
 use gim_hub_identity::HubId;
 use gim_hub_proto::s2s::{
-    s2s_response::Result as OpOutput, DeliverRequest, DeliverResponse, ErrorCode, Member,
-    MessageKind, SequencedMessage,
+    s2s_response::Result as OpOutput, CopyPendingWelcomesRequest, DeliverRequest, DeliverResponse,
+    ErrorCode, Member, MessageKind, PendingWelcome, SequencedMessage,
 };
 
 use super::{device_list::local_device_list, internal, owner_of, GroupService};
@@ -70,9 +70,14 @@ pub fn sequenced_message(
     Ok(Some(to_sequenced(stored, membership)))
 }
 
+/// Payload bytes of the Welcomes in one `CopyPendingWelcomes`, well below
+/// the transport frame limit; older Welcomes go first.
+const MAX_COPY_BYTES: usize = 4 * 1024 * 1024;
+
 /// The [`OutboxSource`] of a hub: `deliver` entries from the group log,
-/// `device_list` entries from the `users` table, and resync nudges for the
-/// groups this hub owns.
+/// `device_list` entries from the `users` table, resync nudges for the
+/// groups this hub owns, and `pending_welcomes` entries from the pending
+/// Welcomes (multihoming.md §4.4).
 #[derive(Debug, Clone)]
 pub struct GroupSource {
     hub_id: HubId,
@@ -116,6 +121,40 @@ impl OutboxSource for GroupSource {
             }
         }
         Ok(nudge)
+    }
+
+    fn pending_welcomes(
+        &self,
+        conn: &Connection,
+        user_id: &str,
+        _: &HubId,
+    ) -> Result<Option<CopyPendingWelcomesRequest>, DbError> {
+        if !hosting_store::is_local(conn, user_id)? {
+            return Ok(None);
+        }
+        let mut bytes = 0;
+        let mut copied = Vec::new();
+        for welcome in welcomes::pending_for_user(conn, user_id)? {
+            bytes += welcome.payload.len();
+            if !copied.is_empty() && bytes > MAX_COPY_BYTES {
+                tracing::warn!(user_id, "pending Welcomes copy truncated");
+                break;
+            }
+            copied.push(PendingWelcome {
+                device_id: welcome.device_id,
+                gid: welcome.gid,
+                message_id: welcome.message_id,
+                payload_json: welcome.payload,
+                created_at: u64::try_from(welcome.created_at).unwrap_or_default(),
+            });
+        }
+        if copied.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(CopyPendingWelcomesRequest {
+            user_id: user_id.to_owned(),
+            welcomes: copied,
+        }))
     }
 }
 

@@ -130,6 +130,25 @@ pub fn claim(
     }))
 }
 
+/// Marks the stored, unclaimed package `kp_ref` claimed ("burned", a copy
+/// of it was handed out by another hub). Returns its owner
+/// `(user_id, device_id)` if a package was burned.
+pub fn burn(
+    tx: &Transaction<'_>,
+    kp_ref: &[u8],
+    now: i64,
+) -> Result<Option<(String, String)>, DbError> {
+    let owner = tx
+        .query_row(
+            "UPDATE key_packages SET claimed_at = ?2 \
+             WHERE kp_ref = ?1 AND claimed_at IS NULL RETURNING user_id, device_id",
+            params![kp_ref, now],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(owner)
+}
+
 /// Owner `(user_id, device_id)` of a claimed (or last-resort) package.
 pub fn claimed_owner(
     conn: &Connection,
@@ -245,5 +264,26 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn burn_marks_only_unclaimed_packages() {
+        let db = Db::open_in_memory().unwrap();
+        let burned = db
+            .write(|tx| {
+                setup(tx)?;
+                insert_one_time(tx, "u1", "d1", b"kp1", b"r1", 1)?;
+                insert_one_time(tx, "u1", "d1", b"kp2", b"r2", 1)?;
+                Ok::<_, DbError>((
+                    burn(tx, b"r1", 2)?,
+                    burn(tx, b"r1", 3)?,
+                    burn(tx, b"unknown", 3)?,
+                ))
+            })
+            .await
+            .unwrap();
+        assert_eq!(burned, (Some(("u1".into(), "d1".into())), None, None));
+        let claimed = db.write(|tx| claim(tx, "u1", "d1", 4)).await.unwrap();
+        assert_eq!(claimed.unwrap().key_package, b"kp2");
     }
 }

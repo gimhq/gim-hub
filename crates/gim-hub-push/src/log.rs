@@ -125,6 +125,8 @@ mod tests {
             token: "t".into(),
             app_id: None,
             sandbox: false,
+            p256dh: None,
+            auth: None,
             updated_at: 0,
         };
         for i in 0..CAPACITY + 1 {

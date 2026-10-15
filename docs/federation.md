@@ -548,7 +548,9 @@ Resolved in H3-T3:
   local user (row in `users`) is always claimed locally. Otherwise the target's record is resolved
   (§4.5): none known → `missing`; resolution failed for lack of a peer → `unavailable`; the record
   lists this hub → local (so `missing`); else the primary hub (lowest priority, ties by smallest
-  `hub_id`) is asked. Only the primary hub is asked.
+  `hub_id`) is asked. Only the primary hub is asked. *Superseded by docs/multihoming.md §5.2:
+  the primary hub is asked first, then the fallback hubs, with a per-device follow-up
+  (implemented in H4-M4).*
 - **Requester check first.** If any target is remote and the caller has no valid hosting record
   listing this hub, the whole request fails with 403 `hosting_record_required` before anything
   is claimed.
@@ -1269,10 +1271,11 @@ volumes: { a-data: {}, b-data: {}, c-data: {}, x-data: {} }
 
 Resolved in H3-T6:
 
-- The libp2p host has no DNS transport, so `/dns4/...` multiaddrs (§3.3 example, the sketch
-  above) parse but cannot be dialed. The compose network has a fixed /24 (`GIM_FED_SUBNET`,
-  default `10.231.64`) and every hub a static IP; allowlists and `GIM_HUB_P2P_EXTERNAL_ADDRS` use
-  `/ip4/` addresses. A static IP also keeps a restarted hub reachable at its advertised address.
+- The compose network has a fixed /24 (`GIM_FED_SUBNET`, default `10.231.64`) and every hub a
+  static IP; allowlists and `GIM_HUB_P2P_EXTERNAL_ADDRS` use `/ip4/` addresses. A static IP also
+  keeps a restarted hub reachable at its advertised address. (At H3-T6 the libp2p host had no
+  DNS transport; since H4-CL1 the TCP and QUIC transports are wrapped in the system DNS resolver,
+  so `/dns4/` and `/dns6/` multiaddrs such as the §3.3 example and the sketch above are dialable.)
 - No test-only entrypoint flag and no committed key seeds: `scripts/fed-test.sh` runs
   `gim-hub hub-id` once per hub (creating `hub_key` in its volume) and generates the allowlists
   from the printed `hub_id`s into `.tmp/fed-<pid>/`. `hub-x` runs in every run (no `refusal`

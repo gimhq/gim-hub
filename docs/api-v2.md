@@ -63,7 +63,28 @@ without a token (the bundle is deleted on first fetch) and then signs in as abov
 
 Recovery: `PUT /v2/users/{user_id}/recovery-backup` stores the encrypted backup (own user only,
 at most 65536 bytes); after losing every device, `GET /v2/users/{user_id}/recovery-backup` (no
-token, rate limited) returns it for decryption with the recovery code.
+token; rate limited per client IP and per `user_id`, `GIM_HUB_RECOVERY_READ_PER_IP_PER_MIN`
+(default 20) and `GIM_HUB_RECOVERY_READ_PER_USER_PER_MIN` (default 10) requests per minute, 429
+`rate_limited` with `Retry-After`) returns it for decryption with the recovery code.
+
+### Public reads
+
+`GET /v2/users/{user_id}/device-list` and `GET /v2/users/{user_id}` need no token; a bearer token,
+if sent, is ignored (an invalid one is not rejected). A device restoring from a recovery code is
+not yet in the DeviceList, so it cannot sign in, but it must read the current list to publish the
+next `seq`. This exposes nothing new: DeviceLists are self-certifying and already uploaded without
+a token, and `user_id` is an unguessable hash (the same exposure as hosting records in the DHT).
+
+- They return only public data: `{user_id, device_list}` and, for `GET /v2/users/{user_id}`, the
+  optional `handle` of this hub's directory. No presence, last-seen time, device activity, group
+  or session information.
+- Remote users resolve as described under *Remote users and cross-hub claims* (cached copy, fetch
+  from the user's hub, or 503 `peer_unavailable` with `Retry-After`).
+- Both endpoints share token-bucket limits, checked per client IP first (before any lookup or
+  remote fetch) and then per target `user_id`: `GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN` (default 120)
+  and `GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN` (default 60) requests per minute, with a burst of the
+  same size. IPv6 clients are counted per /64. Over a limit the answer is 429 `rate_limited` with
+  `Retry-After` seconds (at least 1).
 
 ## Membership and wire format
 
@@ -198,10 +219,10 @@ own hub:
   the user; those hubs emit `device_list.updated` to their users in those groups, as for a local
   update.
 - `POST /v2/keypackages/claim` routes each target by its hosting record: targets on this hub are
-  claimed locally; targets on another hub are claimed from their primary hub on the caller's
-  behalf (in parallel). The response gains `unavailable: [ClaimTarget]` for targets whose hub could
-  not be reached, refused the request or timed out; retry those later (claims are never retried
-  by the hub). `missing` keeps its meaning (unknown user, no active device, no KeyPackage). If any
+  claimed locally; targets on another hub are claimed from their hubs (primary first, see
+  [Multi-homing](#multi-homing)) on the caller's behalf (in parallel). The response gains
+  `unavailable: [ClaimTarget]` for targets whose hub could not be reached, refused the request or
+  timed out; retry those later (claims are never retried by the hub). `missing` keeps its meaning (unknown user, no active device, no KeyPackage). If any
   target is on another hub, the caller needs a valid hosting record listing this hub (403
   `hosting_record_required`); no package is claimed then.
 
@@ -232,11 +253,57 @@ as on a single hub:
   the replica, also while the owning hub is down. A replica holds the log from the Commit that
   added its hub's first member on; a lower `from_seq` returns messages starting there.
 
+## Multi-homing
+
+A user's hosting record may list several hubs ([`multihoming.md`](multihoming.md) §9.2). The
+client keeps one connection and cursor per listed hub and merges by `message_id`.
+
+- `GET /v2/hub` (no token) returns `{hub_id, hub_root_pubkey, version}`: this hub's id, its
+  32-byte Ed25519 root public key (standard base64, as in `hosting-entry`) and the hub version. A
+  client checks that a URL belongs to the `hub_id` in its record before signing in. Live.
+- `POST /v2/keypackages`: a KeyPackage is uploaded to at most one hub, ever. An upload containing
+  a KeyPackage this hub already claimed from another hub on a client's behalf is rejected as a
+  whole with 409 `duplicate_key_package` (§5.3). Live.
+- `POST /v2/keypackages/claim`: each target is claimed from the listed hubs in
+  `(priority, hub_id)` order, moving to the next hub when one is unavailable or has no package;
+  devices the first answering hub did not return are requested from the following hubs. The
+  response shape is unchanged (§5.2). A local user whose record does not list this hub is claimed
+  from its listed hubs too. Claim and commit through the same hub. Live.
+- `POST /v2/groups/{gid}/commits`: an Add whose KeyPackage was not claimed through this hub keeps
+  failing with 400 `validation_failed`, with the message
+  `key package not claimed through this hub (kp_not_claimed)`; re-claim through this hub and
+  commit again (§5.4). Live.
+
+- Event `hosting_record.updated`, payload
+  `{user_id, seq, expires_at, hosted, hubs: [{hub_id, priority}]}` (`hosted` = the record lists
+  this hub). Emitted to the user's active devices on this hub when a stored record changes the
+  listed hubs or their priorities; renewals with the same entries emit nothing. Devices dedup by
+  `seq` across hubs ([`multihoming.md`](multihoming.md) §4.5). Live with federation.
+- Record propagation: a hub that stores a record changing the listed hubs or priorities (client
+  `PUT` or from another hub) passes it on to the user's other hubs, the hubs it removed, and the
+  hubs sharing groups with the user, so a `PUT` to one reachable hub is enough for the others to
+  learn it (§4.2). DeviceList uploads also reach the user's other listed hubs (§3.2). Live with
+  federation.
+- Removed users: when a stored record stops listing this hub, the user is removed here. During
+  `GIM_HUB_UNHOSTED_GRACE_HOURS` (default 168) sign-in, reads, `GET /v2/stream`,
+  `GET /v2/events`, pending Welcomes and their acks, `POST .../hosting-entry`, and `PUT` of the
+  DeviceList and hosting record keep working; every other write fails with 403
+  `hosting_record_required`. The unclaimed KeyPackages are deleted at once; after the grace
+  period the user's data is purged, keeping the hosting record. A later record that lists this
+  hub again ends the removal (§7.3). Live with federation.
+- Bootstrap of an added hub: once a hub is listed, the owners of the user's groups seed its
+  replicas at their current seq (no events; history before the seed is not served there), and the
+  user's other hubs copy the unacknowledged pending Welcomes, which appear in
+  `GET /v2/welcomes/pending` and as `welcome` events and are acknowledged on each hub
+  independently (§4.3, §4.4). Commits, messages and Welcomes reach every listed hub of a member
+  (§2.2). Live with federation.
+
 ## Push
 
 `PUT /v2/push/registration` stores the calling device's push registration (one per device,
 replacing the previous one) and `DELETE` removes it; both return 204. Tokens are validated per
-provider (400 `validation_failed`). The hub then pushes `message` and `welcome` events to the
+provider (400 `validation_failed`); `unifiedpush` also requires the RFC 8291 keys `p256dh` and
+`auth`, which encrypt its bodies. The hub then pushes `message` and `welcome` events to the
 device's provider (never to the sender's own device). Payload, provider mapping and the test-only
 `GET /v2/debug/push-log` (off by default): [`push.md`](push.md).
 
@@ -262,7 +329,7 @@ device's provider (never to the sender's own device). Payload, provider mapping 
 | Welcome | message of kind `welcome` with `recipients` | `welcome` event to each recipient device |
 | Members | `device_id` | `user_id` + `device_id` |
 | Events | `message`, `group.member_added`, `group.member_removed`, `keypackages.low` | same, membership events carry `user_id` and `device_ids`; plus `welcome` and `device_list.updated`; unacknowledged Welcomes via `GET /v2/welcomes/pending` |
-| Health | `{status}` | `{status, version}` |
+| Health | `{status}` | `{status, version}`; plus `GET /v2/hub` `{hub_id, hub_root_pubkey, version}` |
 
 Unchanged semantics: per-device event cursor, long-poll `GET /v2/events?cursor&wait`, 410
 `cursor_expired` with the head cursor, WebSocket `GET /v2/stream` with the same frames and close
@@ -271,17 +338,19 @@ ranges.
 
 ## Status
 
-Implemented: `/healthz`, sign-in (`/v2/auth/*`), DeviceLists and users (`/v2/users/*`, `/v2/me`),
+Implemented: `/healthz`, `/v2/hub`, sign-in (`/v2/auth/*`), DeviceLists and users (`/v2/users/*`, `/v2/me`),
 recovery backups, device linking (`/v2/link-bundles*`), handles, KeyPackages, groups and commits,
 messages, pending Welcomes, events (long-poll and `/v2/stream`), blobs, hosting records,
 federation (remote users and KeyPackage claims, groups across hubs) and push (registration and
 delivery for local and federated events; log provider, APNs, FCM and UnifiedPush when
-configured).
+configured; payload v1 without `sender_user_id`, optional minimal wake-up mode
+`GIM_HUB_PUSH_MINIMAL`, UnifiedPush bodies encrypted per RFC 8291 `aes128gcm`).
 
 Pending:
 
-- Push: no real APNs/FCM credentials have been exercised yet; UnifiedPush bodies are not Web Push
-  encrypted (RFC 8291).
+- Multi-homing (H4): replica seeding and Welcome copies for an added hub
+  ([`multihoming.md`](multihoming.md) §4.3, §4.4) and primary-only push (§8).
+- Push: no real APNs/FCM credentials have been exercised yet.
 - Validation of an added member's MLS credential (type `0xF001`) against their DeviceList is not
   enforced yet: the hub accepts every added member until gim-core identity part 3 defines the
   credential format. The 400 `validation_failed` rejection for credentials in the commit table
