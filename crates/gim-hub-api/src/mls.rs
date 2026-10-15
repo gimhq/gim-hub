@@ -8,7 +8,9 @@
 
 use std::collections::BTreeSet;
 
-use gim_hub_identity::{CredentialError, DeviceList, GimCredential, UserId};
+use gim_hub_identity::{
+    parse_public_key, CredentialError, DeviceId, DeviceList, GimCredential, UserId,
+};
 use openmls::prelude::{
     tls_codec::{Deserialize, Serialize, VLBytes},
     ContentType, Credential, KeyPackageIn, MlsMessageBodyIn, MlsMessageIn, ProposalIn,
@@ -218,10 +220,10 @@ impl LeafCredential {
 /// Validates the gim credential (type `0xF001`) of a leaf that must belong
 /// to the device `(user_id, device_id)`, against `device_list`, the stored
 /// `SignedDeviceList` of `user_id` on this hub. Fails closed: without a
-/// valid stored list, and for a device the list does not certify, the leaf
-/// is rejected. The `validation_failed` message carries the
-/// [`CredentialError::code`] or one of the hub's codes `no_device_list`,
-/// `unknown_device` and `identity_mismatch`.
+/// valid stored list (`device_list_unknown`), and for a device the list does
+/// not certify with the leaf's key (`device_not_in_list`), the leaf is
+/// rejected. The `validation_failed` message carries the
+/// [`CredentialError::code`] or the hub's code `identity_mismatch`.
 pub fn check_leaf_credential(
     leaf: &LeafCredential,
     device_list: Option<&[u8]>,
@@ -234,10 +236,9 @@ pub fn check_leaf_credential(
     let list = UserId::parse(user_id)
         .ok()
         .zip(device_list)
-        .and_then(|(user, bytes)| DeviceList::verify(bytes, &user).ok())
-        .ok_or_else(|| reject("no_device_list"))?;
+        .and_then(|(user, bytes)| DeviceList::verify(bytes, &user).ok());
     let (user, device) = credential
-        .verify(Some(&list), &leaf.signature_key)
+        .verify(list.as_ref(), &leaf.signature_key)
         .map_err(|err| match err {
             // The credential certifies another user.
             CredentialError::DeviceListUserMismatch { .. } => reject("identity_mismatch"),
@@ -246,10 +247,21 @@ pub fn check_leaf_credential(
     if user.as_str() != user_id || device.as_str() != device_id {
         return Err(reject("identity_mismatch"));
     }
-    if !list.is_active(&device) {
-        return Err(reject("unknown_device"));
-    }
     Ok(())
+}
+
+/// The `(user_id, device_id)` a leaf's gim credential claims: the user of
+/// its root key and the device of its MLS signature key. Not a validation:
+/// [`check_leaf_credential`] still has to accept the leaf for that
+/// identity. Used for members added by Commits from other hubs, whose claim
+/// ledger the owning hub cannot see (docs/federation.md §5.3).
+pub fn credential_identity(leaf: &LeafCredential) -> Option<(String, String)> {
+    let credential = GimCredential::decode_typed(leaf.credential_type, &leaf.content).ok()?;
+    let device_key = parse_public_key(&leaf.signature_key).ok()?;
+    Some((
+        UserId::from_root_pubkey(credential.root_pubkey()).to_string(),
+        DeviceId::from_device_pubkey(&device_key).to_string(),
+    ))
 }
 
 #[cfg(test)]
