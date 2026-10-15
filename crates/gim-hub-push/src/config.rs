@@ -84,7 +84,9 @@ pub fn build_providers(
         providers.push(Arc::new(FcmProvider::new(fcm, http.clone())?));
     }
     if config.unifiedpush {
-        providers.push(Arc::new(UnifiedPushProvider::new(http)));
+        providers.push(Arc::new(UnifiedPushProvider::new(Arc::new(
+            ReqwestClient::public_only()?,
+        ))));
     }
     Ok(providers)
 }

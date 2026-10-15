@@ -88,7 +88,9 @@ fn validate_endpoint(token: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn is_public(ip: IpAddr) -> bool {
+/// Whether `ip` is a globally routable unicast address. Also enforced on
+/// every DNS answer when sending to UnifiedPush endpoints.
+pub(crate) fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
             !(ip.is_loopback()
@@ -103,12 +105,18 @@ fn is_public(ip: IpAddr) -> bool {
             if let Some(v4) = ip.to_ipv4_mapped() {
                 return is_public(IpAddr::V4(v4));
             }
-            let first = ip.segments()[0];
+            let s = ip.segments();
             !(ip.is_loopback()
                 || ip.is_unspecified()
                 || ip.is_multicast()
-                || (first & 0xfe00) == 0xfc00
-                || (first & 0xffc0) == 0xfe80)
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                // IPv4-compatible ::/96, NAT64 64:ff9b::/96 and 64:ff9b:1::/48,
+                // 6to4 2002::/16.
+                || s[..6] == [0; 6]
+                || s[..6] == [0x64, 0xff9b, 0, 0, 0, 0]
+                || s[..3] == [0x64, 0xff9b, 1]
+                || s[0] == 0x2002)
         }
     }
 }
@@ -162,6 +170,9 @@ mod tests {
             "https://[::1]/up",
             "https://[fd00::1]/up",
             "https://[::ffff:127.0.0.1]/up",
+            "https://[::127.0.0.1]/up",
+            "https://[64:ff9b::a00:1]/up",
+            "https://[2002:a00:1::1]/up",
             "https://user:pw@push.example.eu/up",
         ] {
             assert!(

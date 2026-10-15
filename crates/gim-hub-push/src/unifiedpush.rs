@@ -64,6 +64,7 @@ fn classify(response: &HttpResponse) -> Result<(), PushError> {
     let detail = format!("UnifiedPush {}", response.status);
     match response.status {
         200..=299 => Ok(()),
+        // Redirects are not followed (the endpoint must be final).
         404 | 410 => Err(PushError::InvalidToken(detail)),
         429 | 500..=599 => Err(PushError::Retryable(detail)),
         _ => Err(PushError::Permanent(detail)),

@@ -17,7 +17,7 @@ previous one (one per device); `DELETE` removes it. Both return 204. The body is
 |---|---|---|---|
 | `apns` | APNs device token: 64-200 hex digits (even), stored lowercase | APNs topic (bundle ID); defaults to `GIM_HUB_PUSH_APNS_TOPIC` | use the APNs sandbox |
 | `fcm` | FCM registration token: at least 32 chars of `A-Z a-z 0-9 - _ : .` | ignored | ignored |
-| `unifiedpush` | endpoint URL: `https`, no credentials, not `localhost` or a loopback/private/link-local/CGNAT IP | ignored | ignored |
+| `unifiedpush` | endpoint URL: `https`, no credentials, not `localhost` or a non-public IP (loopback, private, link-local, CGNAT, NAT64, 6to4, ...) | ignored | ignored |
 | `log` | any string without control characters | ignored | ignored |
 
 Every token is 1-4096 bytes; `app_id` is 1-255 chars of `A-Z a-z 0-9 . - _ :`. Invalid input is
@@ -121,6 +121,9 @@ reused until a minute before it expires. Data-only message:
 inlined only if it fits), and headers `content-type: application/json`, `ttl: 86400`,
 `urgency: high` (`normal` for membership events) and `topic: <collapse_id>` when it is a valid
 Web Push topic (at most 32 base64url characters). The body is not Web Push encrypted (RFC 8291).
+The hub refuses to connect if the endpoint's host resolves to any non-public address (checked on
+every send, so DNS rebinding cannot reach internal hosts) and does not follow redirects (a 3xx is a
+permanent failure).
 
 ### log
 

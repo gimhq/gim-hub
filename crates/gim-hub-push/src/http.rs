@@ -1,9 +1,12 @@
 //! Minimal HTTP abstraction so providers build requests as plain data
 //! (unit-tested without network) and send them through [`HttpClient`].
 
-use std::time::Duration;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
+
+use crate::validate::is_public;
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -44,13 +47,51 @@ pub struct ReqwestClient {
 }
 
 impl ReqwestClient {
+    /// A client for fixed provider hosts (APNs, FCM).
     pub fn new() -> Result<Self, String> {
-        let client = reqwest::Client::builder()
+        Self::build(reqwest::Client::builder())
+    }
+
+    /// A client for client-supplied URLs (UnifiedPush endpoints): every
+    /// resolved address must be public (no DNS rebinding to internal hosts).
+    /// IP-literal URLs are checked at registration.
+    pub fn public_only() -> Result<Self, String> {
+        Self::build(reqwest::Client::builder().dns_resolver(Arc::new(PublicResolver)))
+    }
+
+    /// Redirects are never followed: a 3xx is a failed send.
+    fn build(builder: reqwest::ClientBuilder) -> Result<Self, String> {
+        let client = builder
             .use_rustls_tls()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(TIMEOUT)
             .build()
             .map_err(|err| err.to_string())?;
         Ok(Self { client })
+    }
+}
+
+/// Resolves with the system resolver and fails if any answer is not a
+/// public address.
+struct PublicResolver;
+
+impl Resolve for PublicResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> =
+                tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+            check_public(&host, &addrs)?;
+            Ok(Box::new(addrs.into_iter()) as Addrs)
+        })
+    }
+}
+
+fn check_public(host: &str, addrs: &[SocketAddr]) -> Result<(), String> {
+    match addrs.iter().find(|addr| !is_public(addr.ip())) {
+        _ if addrs.is_empty() => Err(format!("{host} did not resolve")),
+        Some(addr) => Err(format!("{host} resolves to non-public {}", addr.ip())),
+        None => Ok(()),
     }
 }
 
@@ -72,5 +113,19 @@ impl HttpClient for ReqwestClient {
             status,
             body: body.to_vec(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolved_addresses_must_all_be_public() {
+        let addr = |s: &str| s.parse::<SocketAddr>().unwrap();
+        assert!(check_public("h", &[addr("203.0.113.9:0")]).is_ok());
+        assert!(check_public("h", &[]).is_err());
+        assert!(check_public("h", &[addr("203.0.113.9:0"), addr("10.0.0.1:0")]).is_err());
+        assert!(check_public("h", &[addr("[::1]:0")]).is_err());
     }
 }
