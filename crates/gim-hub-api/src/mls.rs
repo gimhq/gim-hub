@@ -24,6 +24,10 @@ use crate::error::ApiError;
 /// `MLSMessage.wire_format` of a PublicMessage.
 const WIRE_FORMAT_PUBLIC_MESSAGE: u16 = 1;
 
+/// 400 message for an Add whose KeyPackage is not in this hub's claim
+/// ledger (docs/multihoming.md §5.4): the client re-claims through this hub.
+pub const KP_NOT_CLAIMED: &str = "key package not claimed through this hub (kp_not_claimed)";
+
 fn invalid(message: impl Into<String>) -> ApiError {
     ApiError::ValidationFailed(message.into())
 }

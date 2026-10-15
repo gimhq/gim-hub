@@ -217,10 +217,10 @@ own hub:
   the user; those hubs emit `device_list.updated` to their users in those groups, as for a local
   update.
 - `POST /v2/keypackages/claim` routes each target by its hosting record: targets on this hub are
-  claimed locally; targets on another hub are claimed from their primary hub on the caller's
-  behalf (in parallel). The response gains `unavailable: [ClaimTarget]` for targets whose hub could
-  not be reached, refused the request or timed out; retry those later (claims are never retried
-  by the hub). `missing` keeps its meaning (unknown user, no active device, no KeyPackage). If any
+  claimed locally; targets on another hub are claimed from their hubs (primary first, see
+  [Multi-homing](#multi-homing)) on the caller's behalf (in parallel). The response gains
+  `unavailable: [ClaimTarget]` for targets whose hub could not be reached, refused the request or
+  timed out; retry those later (claims are never retried by the hub). `missing` keeps its meaning (unknown user, no active device, no KeyPackage). If any
   target is on another hub, the caller needs a valid hosting record listing this hub (403
   `hosting_record_required`); no package is claimed then.
 
@@ -259,6 +259,18 @@ client keeps one connection and cursor per listed hub and merges by `message_id`
 - `GET /v2/hub` (no token) returns `{hub_id, hub_root_pubkey, version}`: this hub's id, its
   32-byte Ed25519 root public key (standard base64, as in `hosting-entry`) and the hub version. A
   client checks that a URL belongs to the `hub_id` in its record before signing in. Live.
+- `POST /v2/keypackages`: a KeyPackage is uploaded to at most one hub, ever. An upload containing
+  a KeyPackage this hub already claimed from another hub on a client's behalf is rejected as a
+  whole with 409 `duplicate_key_package` (§5.3). Live.
+- `POST /v2/keypackages/claim`: each target is claimed from the listed hubs in
+  `(priority, hub_id)` order, moving to the next hub when one is unavailable or has no package;
+  devices the first answering hub did not return are requested from the following hubs. The
+  response shape is unchanged (§5.2). A local user whose record does not list this hub is claimed
+  from its listed hubs too. Claim and commit through the same hub. Live.
+- `POST /v2/groups/{gid}/commits`: an Add whose KeyPackage was not claimed through this hub keeps
+  failing with 400 `validation_failed`, with the message
+  `key package not claimed through this hub (kp_not_claimed)`; re-claim through this hub and
+  commit again (§5.4). Live.
 
 The rest of this section is multi-homing (H4), implementation in progress: not live yet.
 
@@ -267,17 +279,6 @@ The rest of this section is multi-homing (H4), implementation in progress: not l
   this hub). Emitted to the user's active devices on this hub when a stored record changes the
   listed hubs or their priorities; renewals with the same entries emit nothing. Devices dedup by
   `seq` across hubs ([`multihoming.md`](multihoming.md) §4.5).
-- `POST /v2/keypackages`: a KeyPackage is uploaded to at most one hub, ever. An upload containing
-  a KeyPackage this hub already claimed from another hub on a client's behalf is rejected as a
-  whole with 409 `duplicate_key_package` (§5.3).
-- `POST /v2/keypackages/claim`: each target is claimed from the listed hubs in
-  `(priority, hub_id)` order, moving to the next hub when one is unavailable or has no package;
-  devices the first answering hub did not return are requested from the following hubs. The
-  response shape is unchanged (§5.2). Claim and commit through the same hub.
-- `POST /v2/groups/{gid}/commits`: an Add whose KeyPackage was not claimed through this hub keeps
-  failing with 400 `validation_failed`, with the message
-  `key package not claimed through this hub (kp_not_claimed)`; re-claim through this hub and
-  commit again (§5.4).
 - Removed users: when a stored record no longer lists this hub, the user is removed here. During
   `GIM_HUB_UNHOSTED_GRACE_HOURS` (default 168) sign-in, reads, `GET /v2/stream`,
   `GET /v2/events`, pending Welcomes and their acks, and `PUT` of the DeviceList and hosting record
