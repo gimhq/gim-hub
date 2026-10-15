@@ -79,6 +79,9 @@ opaque strings whose format is owned by gim-core. Every non-2xx JSON response ha
         h::download_blob,
         h::put_push_registration,
         h::delete_push_registration,
+        h::create_hosting_entry,
+        h::put_hosting_record,
+        h::get_hosting_record,
     ),
     modifiers(&SecurityAddon),
     tags(
@@ -94,6 +97,7 @@ opaque strings whose format is owned by gim-core. Every non-2xx JSON response ha
         (name = "events", description = "Per-device event stream"),
         (name = "blobs", description = "Encrypted attachments"),
         (name = "push", description = "Push registration"),
+        (name = "hosting", description = "Hosting records: which hubs host a user (federation)"),
     ),
 )]
 pub struct ApiDoc;
@@ -168,6 +172,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v2/push/registration",
             put(h::put_push_registration).delete(h::delete_push_registration),
+        )
+        .route(
+            "/v2/users/{user_id}/hosting-entry",
+            post(h::create_hosting_entry),
+        )
+        .route(
+            "/v2/users/{user_id}/hosting-record",
+            put(h::put_hosting_record).get(h::get_hosting_record),
         )
         .with_state(state)
 }

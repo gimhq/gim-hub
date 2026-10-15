@@ -29,8 +29,12 @@ pub enum CredentialError {
     Cert(IdentityError),
     #[error("leaf signature key does not match the certified device key")]
     LeafKeyMismatch,
+    #[error("no device list of {user} is known")]
+    DeviceListUnknown { user: UserId },
     #[error("device {device} of {user} is revoked")]
     RevokedDevice { user: UserId, device: DeviceId },
+    #[error("device {device} of {user} is not certified with the leaf key in the latest list")]
+    DeviceNotInList { user: UserId, device: DeviceId },
     /// The device list given to [`GimCredential::verify`] is not the
     /// certified user's.
     #[error("device list of {list_user} given for a credential of {user}")]
@@ -51,7 +55,9 @@ impl CredentialError {
             Self::Cert(IdentityError::DeviceIdMismatch) => "device_id_mismatch",
             Self::Cert(_) => "invalid_cert",
             Self::LeafKeyMismatch => "leaf_key_mismatch",
+            Self::DeviceListUnknown { .. } => "device_list_unknown",
             Self::RevokedDevice { .. } => "revoked_device",
+            Self::DeviceNotInList { .. } => "device_not_in_list",
             Self::DeviceListUserMismatch { .. } => "device_list_user_mismatch",
         }
     }
@@ -76,8 +82,9 @@ impl GimCredential {
         Self::decode(content)
     }
 
-    /// Decodes the credential content (validation step 2): deterministic
-    /// CBOR, an array of three items, version `1`, byte strings, a valid
+    /// Decodes the credential content (validation step 2), in this order:
+    /// CBOR, deterministic encoding, an array whose first item is an
+    /// integer, version `1`, then three items with byte strings, a valid
     /// root key and a well-formed `SignedDeviceCert` envelope.
     pub fn decode(content: &[u8]) -> Result<Self, CredentialError> {
         let malformed = |reason: &str| CredentialError::MalformedContent(reason.into());
@@ -88,15 +95,15 @@ impl GimCredential {
         let Value::Array(items) = value else {
             return Err(malformed("content is not an array"));
         };
-        let [version, root, cert]: [Value; 3] = items
-            .try_into()
-            .map_err(|_| malformed("content is not an array of 3 items"))?;
-        let Value::Integer(version) = version else {
+        let Some(Value::Integer(version)) = items.first() else {
             return Err(malformed("version is not an integer"));
         };
-        if u64::try_from(version).ok() != Some(CREDENTIAL_VERSION) {
+        if u64::try_from(*version).ok() != Some(CREDENTIAL_VERSION) {
             return Err(CredentialError::UnsupportedVersion);
         }
+        let [_, root, cert]: [Value; 3] = items
+            .try_into()
+            .map_err(|_| malformed("content is not an array of 3 items"))?;
         let (Value::Bytes(root), Value::Bytes(signed_device_cert)) = (root, cert) else {
             return Err(malformed("expected byte strings"));
         };
@@ -122,9 +129,11 @@ impl GimCredential {
 
     /// Validates the credential of a leaf whose MLS signature key is
     /// `leaf_sig_pubkey` (validation steps 3-5): the cert verifies under the
-    /// root key, its device key equals `leaf_sig_pubkey`, and the device is
-    /// not revoked in `device_list`, the latest verified list known for the
-    /// user (`None`: no known revocations). Returns the leaf's device.
+    /// root key, its device key equals `leaf_sig_pubkey`, and in
+    /// `device_list`, the latest verified list known for the user, the
+    /// device is not revoked and is certified with the leaf's key. Fails
+    /// closed: `None` (no known list) is `device_list_unknown`. Returns the
+    /// leaf's device.
     pub fn verify(
         &self,
         device_list: Option<&DeviceList>,
@@ -137,16 +146,20 @@ impl GimCredential {
         }
         let user = cert.user_id().clone();
         let device = cert.device_id().clone();
-        if let Some(list) = device_list {
-            if list.user_id() != &user {
-                return Err(CredentialError::DeviceListUserMismatch {
-                    user,
-                    list_user: list.user_id().clone(),
-                });
-            }
-            if list.is_revoked(&device) {
-                return Err(CredentialError::RevokedDevice { user, device });
-            }
+        let Some(list) = device_list else {
+            return Err(CredentialError::DeviceListUnknown { user });
+        };
+        if list.user_id() != &user {
+            return Err(CredentialError::DeviceListUserMismatch {
+                user,
+                list_user: list.user_id().clone(),
+            });
+        }
+        if list.is_revoked(&device) {
+            return Err(CredentialError::RevokedDevice { user, device });
+        }
+        if list.device_sig_pubkey(&device) != Some(cert.device_sig_pubkey()) {
+            return Err(CredentialError::DeviceNotInList { user, device });
         }
         Ok((user, device))
     }
@@ -182,20 +195,35 @@ mod tests {
         result.unwrap_err().code()
     }
 
+    fn active_list() -> DeviceList {
+        let root = key(1);
+        let bytes = list(
+            &root,
+            1,
+            vec![cert(&root, &key(2).verifying_key(), 1000, 1)],
+            vec![],
+        );
+        DeviceList::verify(&bytes, &user_of(1)).unwrap()
+    }
+
     #[test]
     fn decodes_and_verifies() {
         let credential = GimCredential::decode_typed(GIM_CREDENTIAL_TYPE, &sample()).unwrap();
         assert_eq!(credential.root_pubkey(), &key(1).verifying_key());
         let leaf = key(2).verifying_key();
+        let active = active_list();
         assert_eq!(
-            credential.verify(None, leaf.as_bytes()),
+            credential.verify(Some(&active), leaf.as_bytes()),
             Ok((user_of(1), device_of(2)))
         );
         assert_eq!(
-            code(credential.verify(None, key(3).verifying_key().as_bytes())),
+            code(credential.verify(Some(&active), key(3).verifying_key().as_bytes())),
             "leaf_key_mismatch"
         );
-        assert_eq!(code(credential.verify(None, &[])), "leaf_key_mismatch");
+        assert_eq!(
+            code(credential.verify(Some(&active), &[])),
+            "leaf_key_mismatch"
+        );
     }
 
     #[test]
@@ -275,6 +303,17 @@ mod tests {
             code(decode(content(one(), root, Value::Bytes(vec![0x01])))),
             "invalid_cert"
         );
+        // The version is checked before the shape of the rest.
+        assert_eq!(
+            code(decode(cbor::encode(&Value::Array(vec![Value::Integer(
+                2.into()
+            )])))),
+            "unsupported_version"
+        );
+        assert_eq!(
+            code(decode(cbor::encode(&Value::Array(vec![])))),
+            "malformed_content"
+        );
     }
 
     #[test]
@@ -328,16 +367,25 @@ mod tests {
     }
 
     #[test]
-    fn verify_checks_revocation() {
+    fn verify_checks_device_list() {
         let root = key(1);
         let credential = GimCredential::decode(&sample()).unwrap();
         let leaf = key(2).verifying_key();
-        let active = list(&root, 1, vec![cert(&root, &leaf, 1000, 1)], vec![]);
-        let active = DeviceList::verify(&active, &user_of(1)).unwrap();
-        assert!(credential.verify(Some(&active), leaf.as_bytes()).is_ok());
-        // Not listed at all: only revocations are checked.
+        assert!(credential
+            .verify(Some(&active_list()), leaf.as_bytes())
+            .is_ok());
+        assert_eq!(
+            credential.verify(None, leaf.as_bytes()),
+            Err(CredentialError::DeviceListUnknown { user: user_of(1) })
+        );
         let empty = DeviceList::verify(&list(&root, 1, vec![], vec![]), &user_of(1)).unwrap();
-        assert!(credential.verify(Some(&empty), leaf.as_bytes()).is_ok());
+        assert_eq!(
+            credential.verify(Some(&empty), leaf.as_bytes()),
+            Err(CredentialError::DeviceNotInList {
+                user: user_of(1),
+                device: device_of(2),
+            })
+        );
         let revoked = list(&root, 2, vec![], vec![device_of(2)]);
         let revoked = DeviceList::verify(&revoked, &user_of(1)).unwrap();
         assert_eq!(

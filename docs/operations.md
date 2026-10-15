@@ -19,6 +19,46 @@ the variable.
 | `GIM_HUB_SESSION_TTL_DAYS` | `30` | Lifetime of device bearer tokens (minimum 1) |
 | `RUST_LOG` | `info` | Log filter (`tracing_subscriber` `EnvFilter` syntax, e.g. `gim_hub_api=debug,info`) |
 
+### Federation
+
+Federation is off unless `GIM_HUB_FEDERATION=true`; every other variable in this table is ignored
+while it is off. Design: [`federation.md`](federation.md).
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GIM_HUB_FEDERATION` | `false` | `true` starts the libp2p host and federation |
+| `GIM_HUB_P2P_LISTEN` | `/ip4/0.0.0.0/udp/4001/quic-v1,/ip4/0.0.0.0/tcp/4001` | Comma-separated listen multiaddrs (TCP only when a PSK is set) |
+| `GIM_HUB_P2P_EXTERNAL_ADDRS` | unset | Comma-separated multiaddrs advertised to peers (default: the actual listen addresses that are not unspecified) |
+| `GIM_HUB_P2P_BOOTSTRAP` | unset | Comma-separated bootstrap multiaddrs, `/p2p/<PeerId>` optional |
+| `GIM_HUB_FEDERATION_ALLOWLIST` | `$GIM_HUB_DATA_DIR/allowlist` | Allowlist file, reloaded on SIGHUP |
+| `GIM_HUB_P2P_PSK_FILE` | unset | libp2p `swarm.key` file; set = private network (pnet), TCP only |
+| `GIM_HUB_RUNTIME_CERT_DAYS` | `30` | Runtime certificate lifetime (minimum 2) |
+| `GIM_HUB_S2S_TIMEOUT_SECONDS` | `10` | Timeout of one hub-to-hub request (minimum 1) |
+| `GIM_HUB_DHT_REPUBLISH_HOURS` | `12` | Republish cadence of hosted users' hosting records (minimum 1) |
+| `GIM_HUB_HOSTING_CACHE_SECONDS` | `600` | Freshness of cached remote hosting records |
+| `GIM_HUB_DEVICE_LIST_CACHE_HOURS` | `24` | Freshness of cached remote DeviceLists |
+| `GIM_HUB_OUTBOX_TTL_HOURS` | `168` | Lifetime of queued outbound hub-to-hub entries (minimum 1) |
+| `GIM_HUB_OUTBOX_MAX_ENTRIES_PER_PEER` | `100000` | Outbound backlog cap per peer hub, entries (minimum 1) |
+| `GIM_HUB_OUTBOX_MAX_BYTES_PER_PEER` | `1073741824` | Outbound backlog cap per peer hub, bytes (minimum 1) |
+| `GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS` | `300` | Maximum retry backoff per peer hub (minimum 1) |
+
+The allowlist lists one peer `hub_id` per line, optionally followed by static multiaddrs without
+`/p2p/`; `#` starts a comment and the hub's own `hub_id` is ignored:
+
+```
+# hub_id                                                  [multiaddr ...]
+hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq  /dns4/hub-b/tcp/4001 /dns4/hub-b/udp/4001/quic-v1
+```
+
+A missing or empty allowlist, an invalid line, or a QUIC address together with
+`GIM_HUB_P2P_PSK_FILE` stops startup. On SIGHUP the file is re-read; an invalid file is logged and
+the previous allowlist stays in force; hubs no longer listed are disconnected. With federation
+enabled the data directory also holds `runtime_key` (32-byte Ed25519 seed of the libp2p host key,
+mode 0600) and `runtime_cert` (its certificate, signed by `hub_key` and renewed automatically when
+less than a third of its lifetime remains). Deleting both while the hub is stopped rotates the
+PeerId; allowlists are unaffected because they name `hub_id`s. `gim-hub hub-id` prints the
+`hub_id` (creating `hub_key` if missing), which peers need for their allowlists.
+
 ## Data directory
 
 ```
