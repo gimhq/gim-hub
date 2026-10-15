@@ -1265,6 +1265,7 @@ dependencies = [
  "ciborium",
  "futures",
  "getrandom 0.4.3",
+ "gim-hub-db",
  "gim-hub-identity",
  "gim-hub-proto",
  "hex",

@@ -9,7 +9,7 @@ use std::{
 
 use gim_hub_api::{AppState, Clock, Config, HubIdentity, Notifier};
 use gim_hub_db::Db;
-use gim_hub_s2s::{FederationConfig, FederationService};
+use gim_hub_s2s::{outbox::NoSource, FederationConfig, FederationService, Outbox, OutboxConfig};
 use tracing_subscriber::EnvFilter;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
@@ -50,6 +50,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = open_state(config)?;
     tracing::info!(hub_id = %state.hub.hub_id(), "hub identity loaded");
     let federation = start_federation(&federation_config, &state).await?;
+    let outbox = federation
+        .as_ref()
+        .map(|federation| start_outbox(&federation_config, &state, federation));
 
     let listener = tokio::net::TcpListener::bind(state.config.listen).await?;
     tracing::info!(listen = %state.config.listen, "gim-hub listening");
@@ -59,6 +62,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     pruning.abort();
+    if let Some(outbox) = outbox {
+        outbox.shutdown();
+    }
     if let Some(federation) = federation {
         federation.shutdown();
     }
@@ -98,6 +104,22 @@ async fn start_federation(
         "federation started"
     );
     Ok(Some(federation))
+}
+
+/// Starts the S2S outbox worker, sending through `federation`.
+fn start_outbox(
+    config: &FederationConfig,
+    state: &AppState,
+    federation: &FederationService,
+) -> Outbox {
+    let outbox = Outbox::new(
+        state.db.clone(),
+        Arc::new(federation.clone()),
+        Arc::new(NoSource),
+        OutboxConfig::from(config),
+    );
+    outbox.start(Some(federation.transport().subscribe()));
+    outbox
 }
 
 /// Deletes events older than the retention window and expired link bundles,
@@ -322,6 +344,7 @@ mod tests {
         assert_eq!(federation.hub_id(), hub.state.hub.hub_id());
         assert!(data_dir.join("runtime_key").is_file());
         assert!(data_dir.join("runtime_cert").is_file());
+        start_outbox(&config(&allowlist), &hub.state, &federation).shutdown();
         federation.shutdown();
     }
 
