@@ -11,4 +11,11 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+gim-hub-identity = { workspace = true }
+rusqlite = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
