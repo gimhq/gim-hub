@@ -105,7 +105,7 @@ fn runtime_cert() {
     let other = key(&v["hubs"][1]["root_seed"]).verifying_key();
     assert_eq!(
         HubRuntimeCert::verify(&signed, &other, not_before),
-        Err(IdentityError::HubKeyMismatch)
+        Err(IdentityError::BadSignature)
     );
     assert_eq!(
         HubRuntimeCert::verify(&flip_last(&signed), &hub, not_before),
@@ -211,7 +211,10 @@ fn hosting_record() {
     // Ordering: a lower seq does not supersede; the highest seq wins.
     let older = resign(record.seq() - 1, items.clone());
     let older = HostingRecord::verify(&older, &user_id, 0).unwrap();
-    assert_eq!(older.supersedes(&record), Ok(false));
+    assert_eq!(
+        older.supersedes(&record),
+        Err(IdentityError::StaleSeq(record.seq() - 1))
+    );
     assert_eq!(record.supersedes(&older), Ok(true));
     assert_eq!(HostingRecord::latest([&record, &older]), Ok(Some(&record)));
     let conflict = resign(record.seq(), items[..1].to_vec());
@@ -336,10 +339,10 @@ fn recovery_backup_structure() {
     );
     let mut trailing = blob;
     trailing.push(0);
-    assert!(matches!(
+    assert_eq!(
         check_recovery_backup(&trailing, &user_id),
-        Err(IdentityError::Malformed(_))
-    ));
+        Err(IdentityError::NonCanonical)
+    );
 }
 
 #[test]

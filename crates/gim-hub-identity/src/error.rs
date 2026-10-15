@@ -3,9 +3,13 @@ use crate::{DeviceId, HubId};
 /// Every way decoding or verifying an identity structure can fail.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IdentityError {
-    /// Input is not the deterministic CBOR encoding of the expected shape.
+    /// Malformed input: not CBOR, wrong type, wrong element count or size.
     #[error("malformed encoding: {0}")]
     Malformed(String),
+    /// Valid CBOR that is not the deterministic encoding (non-shortest head,
+    /// indefinite length, trailing bytes).
+    #[error("not deterministic CBOR")]
+    NonCanonical,
     #[error("unsupported format version {0}")]
     UnsupportedVersion(u64),
     /// Not a valid Ed25519 public key (does not decompress or small order).
@@ -17,11 +21,12 @@ pub enum IdentityError {
     InvalidDeviceId(String),
     #[error("invalid hub id: {0}")]
     InvalidHubId(String),
-    /// Strict Ed25519 verification failed, including a wrong context.
+    /// Strict Ed25519 verification failed: wrong key, wrong context or
+    /// tampered bytes.
     #[error("signature verification failed")]
     BadSignature,
-    /// A user id does not match the root public key or the expected user,
-    /// or two lists or records of different users were compared.
+    /// A user id does not match the root public key, the expected user or
+    /// the stored item.
     #[error("user id mismatch")]
     UserIdMismatch,
     #[error("device id does not match the device public key")]
@@ -37,6 +42,10 @@ pub enum IdentityError {
     /// a seq.
     #[error("different records with the same seq {0}")]
     SeqConflict(u64),
+    /// A received device list or hosting record has a lower seq than the
+    /// stored one.
+    #[error("seq {0} is lower than the stored seq")]
+    StaleSeq(u64),
     /// `now >= not_after` / `now >= expires_at`.
     #[error("expired")]
     Expired,
@@ -45,6 +54,7 @@ pub enum IdentityError {
     NotYetValid,
     #[error("challenge audience does not match this hub")]
     AudienceMismatch,
+    /// A runtime cert body names another hub root key than its signer.
     #[error("hub root key does not match the expected hub")]
     HubKeyMismatch,
     #[error("invalid hub signature on the hosting entry of {0}")]
@@ -53,4 +63,51 @@ pub enum IdentityError {
     DuplicateHub(HubId),
     #[error("hosting record has {0} hubs, expected 1..=16")]
     HubCount(usize),
+    /// Hosting record hubs are not sorted by `(priority, hub_root_pubkey)`.
+    #[error("hosting record hubs are not in canonical order")]
+    HubsNotSorted,
+    /// The user root key of a hosting record is also one of its hub keys.
+    #[error("user root key is also a hub root key")]
+    UserRootIsHub,
+    /// Challenge `issued_at >= expires_at`, or lifetime above
+    /// [`crate::MAX_CHALLENGE_LIFETIME_MS`].
+    #[error("invalid challenge lifetime")]
+    InvalidChallengeLifetime,
+}
+
+impl IdentityError {
+    /// Stable snake_case name of the error kind, independent of the message
+    /// and payload: the `expected_error` codes of `negative.json` (spec
+    /// section "Negative vectors"). `invalid_hub_id`, `hubs_not_sorted`,
+    /// `user_root_is_hub` and `invalid_challenge_lifetime` are not (yet)
+    /// part of that table.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Malformed(_) => "decode_error",
+            Self::NonCanonical => "non_canonical_cbor",
+            Self::UnsupportedVersion(_) => "unsupported_version",
+            Self::InvalidKey => "invalid_key",
+            Self::InvalidUserId(_) => "invalid_user_id",
+            Self::InvalidDeviceId(_) => "invalid_device_id",
+            Self::InvalidHubId(_) => "invalid_hub_id",
+            Self::BadSignature => "bad_signature",
+            Self::UserIdMismatch => "user_id_mismatch",
+            Self::DeviceIdMismatch => "device_id_mismatch",
+            Self::DuplicateDevice(_) => "duplicate_device",
+            Self::Revoked(_) => "device_revoked",
+            Self::UnknownDevice(_) => "unknown_device",
+            Self::SeqConflict(_) => "seq_conflict",
+            Self::StaleSeq(_) => "stale_seq",
+            Self::Expired => "expired",
+            Self::NotYetValid => "not_yet_valid",
+            Self::AudienceMismatch => "audience_mismatch",
+            Self::HubKeyMismatch => "hub_key_mismatch",
+            Self::BadHubSignature(_) => "bad_hub_signature",
+            Self::DuplicateHub(_) => "duplicate_hub",
+            Self::HubCount(_) => "hub_count",
+            Self::HubsNotSorted => "hubs_not_sorted",
+            Self::UserRootIsHub => "user_root_is_hub",
+            Self::InvalidChallengeLifetime => "invalid_challenge_lifetime",
+        }
+    }
 }

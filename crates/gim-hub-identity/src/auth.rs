@@ -6,6 +6,10 @@ use crate::{cbor, DeviceId, DeviceList, HubId, IdentityError, UserId, FORMAT_VER
 /// Signature context of `AuthResponse.sig` (device signing key).
 pub const AUTH_RESPONSE_CONTEXT: &[u8] = b"gim/auth-response/v1";
 
+/// Longest accepted challenge lifetime, `expires_at - issued_at`, in
+/// milliseconds.
+pub const MAX_CHALLENGE_LIFETIME_MS: u64 = 300_000;
+
 /// An unsigned `AuthChallenge`. The hub that issues it must remember it and
 /// accept its nonce at most once; that store is not part of this crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +72,28 @@ impl AuthChallenge {
     pub fn expires_at(&self) -> u64 {
         self.expires_at
     }
+
+    /// Checks the challenge for the hub `expected_audience` at `now` (Unix
+    /// milliseconds): the audience, then `issued_at < expires_at` with a
+    /// lifetime of at most [`MAX_CHALLENGE_LIFETIME_MS`], then
+    /// `issued_at <= now < expires_at`.
+    pub fn check(&self, expected_audience: &HubId, now: u64) -> Result<(), IdentityError> {
+        if self.audience != expected_audience.as_str() {
+            return Err(IdentityError::AudienceMismatch);
+        }
+        if self.issued_at >= self.expires_at
+            || self.expires_at - self.issued_at > MAX_CHALLENGE_LIFETIME_MS
+        {
+            return Err(IdentityError::InvalidChallengeLifetime);
+        }
+        if now >= self.expires_at {
+            return Err(IdentityError::Expired);
+        }
+        if now < self.issued_at {
+            return Err(IdentityError::NotYetValid);
+        }
+        Ok(())
+    }
 }
 
 /// A device authenticated by [`verify_auth_response`]. The caller must still
@@ -87,36 +113,27 @@ pub fn auth_response_user_id(response: &[u8]) -> Result<UserId, IdentityError> {
 }
 
 /// Verifies `AuthResponse` bytes for the hub `expected_audience` at `now`
-/// (Unix milliseconds), against the user's verified `device_list`,
-/// following the spec's steps 1-5 in order.
+/// (Unix milliseconds), against the user's verified `device_list`, in the
+/// spec's verification order: the response decodes; the device list is the
+/// response user's, the device is not revoked and is certified in it; the
+/// signature under the certified device key; then the challenge decodes and
+/// passes [`AuthChallenge::check`].
 pub fn verify_auth_response(
     response: &[u8],
     expected_audience: &HubId,
     now: u64,
     device_list: &DeviceList,
 ) -> Result<AuthenticatedDevice, IdentityError> {
-    // Step 1.
     let [_version, challenge, user_id, device_id, sig] = cbor::decode_body(response)?;
     let challenge = cbor::byte_string(challenge)?;
     let user_id = UserId::parse(&cbor::text(user_id)?)?;
     let device_id = DeviceId::parse(&cbor::text(device_id)?)?;
     let sig: [u8; 64] = cbor::sized(sig, "signature")?;
 
-    // Step 2; the issued-challenge and nonce checks are the caller's.
-    let decoded = AuthChallenge::decode(&challenge)?;
-    if decoded.audience != expected_audience.as_str() {
-        return Err(IdentityError::AudienceMismatch);
-    }
-    if now >= decoded.expires_at {
-        return Err(IdentityError::Expired);
-    }
-
-    // Step 3: `device_list` is verified; it must be this user's.
+    // `device_list` is verified; it must be this user's.
     if device_list.user_id() != &user_id {
         return Err(IdentityError::UserIdMismatch);
     }
-
-    // Step 4.
     if device_list.is_revoked(&device_id) {
         return Err(IdentityError::Revoked(device_id));
     }
@@ -124,13 +141,16 @@ pub fn verify_auth_response(
         .device_sig_pubkey(&device_id)
         .ok_or_else(|| IdentityError::UnknownDevice(device_id.clone()))?;
 
-    // Step 5.
     let tbs = cbor::encode(&Value::Array(vec![
-        Value::Bytes(challenge),
+        Value::Bytes(challenge.clone()),
         Value::Text(user_id.to_string()),
         Value::Text(device_id.to_string()),
     ]));
     verify(device_key, AUTH_RESPONSE_CONTEXT, &tbs, &sig)?;
+
+    // The issued-challenge and nonce checks are the caller's.
+    let decoded = AuthChallenge::decode(&challenge)?;
+    decoded.check(expected_audience, now)?;
 
     Ok(AuthenticatedDevice {
         user_id,
@@ -207,8 +227,12 @@ mod tests {
         );
         assert_eq!(device.nonce, NONCE);
         assert_eq!(auth_response_user_id(&response).unwrap(), *list.user_id());
-        assert!(matches!(
+        assert_eq!(
             auth_response_user_id(&response[1..]),
+            Err(IdentityError::NonCanonical)
+        );
+        assert!(matches!(
+            auth_response_user_id(&response[..response.len() - 1]),
             Err(IdentityError::Malformed(_))
         ));
     }
@@ -224,6 +248,52 @@ mod tests {
         assert_eq!(
             verify_auth_response(&response, &hub_id(9), 200, &list),
             Err(IdentityError::Expired)
+        );
+    }
+
+    #[test]
+    fn challenge_times_and_lifetime() {
+        let check = |issued_at, expires_at, now| {
+            AuthChallenge::new(&hub_id(9), NONCE, issued_at, expires_at).check(&hub_id(9), now)
+        };
+        let max = MAX_CHALLENGE_LIFETIME_MS;
+        assert_eq!(check(1000, 1000 + max, 1000), Ok(()));
+        assert_eq!(check(1000, 1000 + max, 999 + max), Ok(()));
+        assert_eq!(
+            check(1000, 1001 + max, 1000),
+            Err(IdentityError::InvalidChallengeLifetime)
+        );
+        assert_eq!(
+            check(1000, 1000, 1000),
+            Err(IdentityError::InvalidChallengeLifetime)
+        );
+        assert_eq!(
+            check(1000, 999, 999),
+            Err(IdentityError::InvalidChallengeLifetime)
+        );
+        assert_eq!(check(1000, 2000, 2000), Err(IdentityError::Expired));
+        assert_eq!(check(1000, 2000, 999), Err(IdentityError::NotYetValid));
+        assert_eq!(
+            AuthChallenge::new(&hub_id(9), NONCE, 1000, 2000).check(&hub_id(8), 1500),
+            Err(IdentityError::AudienceMismatch)
+        );
+
+        // verify_auth_response applies the same checks.
+        let list = device_list();
+        let long = AuthChallenge::new(&hub_id(9), NONCE, 100, 101 + max).to_bytes();
+        assert_eq!(
+            verify_auth_response(
+                &respond(&long, list.user_id(), &key(2)),
+                &hub_id(9),
+                150,
+                &list
+            ),
+            Err(IdentityError::InvalidChallengeLifetime)
+        );
+        let response = respond(&challenge(&hub_id(9)), list.user_id(), &key(2));
+        assert_eq!(
+            verify_auth_response(&response, &hub_id(9), 99, &list),
+            Err(IdentityError::NotYetValid)
         );
     }
 
@@ -268,21 +338,21 @@ mod tests {
         let mut c = challenge(&hub_id(9));
         let signed = respond(&c, list.user_id(), &key(2));
         c.push(0);
-        assert!(matches!(
+        assert_eq!(
             verify_auth_response(
                 &respond(&c, list.user_id(), &key(2)),
                 &hub_id(9),
                 150,
                 &list
             ),
-            Err(IdentityError::Malformed(_))
-        ));
+            Err(IdentityError::NonCanonical)
+        );
         let mut trailing = signed;
         trailing.push(0);
-        assert!(matches!(
+        assert_eq!(
             verify_auth_response(&trailing, &hub_id(9), 150, &list),
-            Err(IdentityError::Malformed(_))
-        ));
+            Err(IdentityError::NonCanonical)
+        );
 
         let short_nonce = cbor::encode(&Value::Array(vec![
             Value::Integer(1.into()),

@@ -98,7 +98,11 @@ mod tests {
         );
         let mut trailing = encode(base.clone());
         trailing.push(0);
-        let mut bad = vec![trailing];
+        assert_eq!(
+            check_recovery_backup(&trailing, &user),
+            Err(IdentityError::NonCanonical)
+        );
+        let mut bad = vec![];
         for (index, value) in [
             (2, Value::Array(vec![uint(1), uint(1)])),
             (3, Value::Bytes(vec![0; 15])),

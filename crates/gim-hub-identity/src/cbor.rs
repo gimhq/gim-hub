@@ -2,7 +2,9 @@
 
 use ciborium::Value;
 
-use crate::{IdentityError, FORMAT_VERSION};
+use ed25519_dalek::VerifyingKey;
+
+use crate::{parse_public_key, IdentityError, FORMAT_VERSION};
 
 fn malformed(reason: impl Into<String>) -> IdentityError {
     IdentityError::Malformed(reason.into())
@@ -16,11 +18,12 @@ pub(crate) fn encode(value: &Value) -> Vec<u8> {
 
 /// Decodes one data item. `bytes` must be exactly its deterministic
 /// encoding: definite lengths, shortest heads, no trailing bytes. ciborium
-/// always writes that form, so a re-encoding must reproduce the input.
+/// always writes that form, so a re-encoding must reproduce the input;
+/// otherwise the input is [`IdentityError::NonCanonical`].
 pub(crate) fn decode(bytes: &[u8]) -> Result<Value, IdentityError> {
     let value: Value = ciborium::from_reader(bytes).map_err(|e| malformed(e.to_string()))?;
     if encode(&value) != bytes {
-        return Err(malformed("not deterministic CBOR or trailing bytes"));
+        return Err(IdentityError::NonCanonical);
     }
     Ok(value)
 }
@@ -42,7 +45,12 @@ pub(crate) fn decode_signed(bytes: &[u8]) -> Result<(Vec<u8>, [u8; 64]), Identit
 /// Decodes a body: an array whose first item is [`FORMAT_VERSION`] (checked
 /// before the length) and that has exactly `N` items.
 pub(crate) fn decode_body<const N: usize>(tbs: &[u8]) -> Result<[Value; N], IdentityError> {
-    let Value::Array(items) = decode(tbs)? else {
+    body(decode(tbs)?)
+}
+
+/// [`decode_body`] for an already decoded item.
+pub(crate) fn body<const N: usize>(value: Value) -> Result<[Value; N], IdentityError> {
+    let Value::Array(items) = value else {
         return Err(malformed("body is not an array"));
     };
     let version = uint(
@@ -61,6 +69,18 @@ pub(crate) fn array<const N: usize>(value: Value) -> Result<[Value; N], Identity
     list(value)?
         .try_into()
         .map_err(|_| malformed(format!("expected an array of {N} items")))
+}
+
+/// Element `index` of a decoded array, before the version and length are
+/// checked: reads an embedded key ahead of the signature check.
+pub(crate) fn item(value: &Value, index: usize) -> Result<Value, IdentityError> {
+    match value {
+        Value::Array(items) => items
+            .get(index)
+            .cloned()
+            .ok_or_else(|| malformed("array too short")),
+        _ => Err(malformed("body is not an array")),
+    }
 }
 
 pub(crate) fn list(value: Value) -> Result<Vec<Value>, IdentityError> {
@@ -91,6 +111,12 @@ pub(crate) fn byte_string(value: Value) -> Result<Vec<u8>, IdentityError> {
     }
 }
 
+/// Decodes a `bstr .size 32` public key: a wrong size is malformed input,
+/// an invalid point [`IdentityError::InvalidKey`].
+pub(crate) fn public_key(value: Value) -> Result<VerifyingKey, IdentityError> {
+    parse_public_key(&sized::<32>(value, "public key")?)
+}
+
 /// Decodes a `bstr .size N`.
 pub(crate) fn sized<const N: usize>(value: Value, what: &str) -> Result<[u8; N], IdentityError> {
     byte_string(value)?
@@ -108,16 +134,20 @@ mod tests {
 
     #[test]
     fn rejects_non_deterministic_input() {
+        let non_canonical = |bytes: &[u8]| decode(bytes) == Err(IdentityError::NonCanonical);
         // uint 1 with a one-byte argument.
-        assert!(decode(&[0x18, 0x01]).is_err());
+        assert!(non_canonical(&[0x18, 0x01]));
         // Indefinite-length array.
-        assert!(decode(&[0x9f, 0x01, 0xff]).is_err());
+        assert!(non_canonical(&[0x9f, 0x01, 0xff]));
         // Indefinite-length byte string.
-        assert!(decode(&[0x5f, 0x41, 0x00, 0xff]).is_err());
+        assert!(non_canonical(&[0x5f, 0x41, 0x00, 0xff]));
         // Trailing byte.
-        assert!(decode(&[0x01, 0x01]).is_err());
-        // Truncated.
-        assert!(decode(&[0x82, 0x01]).is_err());
+        assert!(non_canonical(&[0x01, 0x01]));
+        // Truncated input is malformed, not non-canonical.
+        assert!(matches!(
+            decode(&[0x82, 0x01]),
+            Err(IdentityError::Malformed(_))
+        ));
         assert_eq!(
             decode(&[0x82, 0x01, 0x40]).unwrap(),
             Value::Array(vec![one(), Value::Bytes(vec![])])
