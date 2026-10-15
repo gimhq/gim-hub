@@ -247,10 +247,15 @@ pub fn remove_member(
     Ok(())
 }
 
-/// Sets the group's epoch.
+/// Sets the group's epoch; Proposals of earlier epochs can no longer be
+/// referenced.
 pub fn set_epoch(tx: &Transaction<'_>, gid: &str, epoch: u64) -> Result<(), DbError> {
     tx.execute(
         "UPDATE groups SET epoch = ?2 WHERE gid = ?1",
+        params![gid, epoch],
+    )?;
+    tx.execute(
+        "DELETE FROM pending_proposals WHERE gid = ?1 AND epoch < ?2",
         params![gid, epoch],
     )?;
     Ok(())

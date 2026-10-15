@@ -15,6 +15,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0006_push_webpush_keys.sql"),
     include_str!("../migrations/0007_multihoming.sql"),
     include_str!("../migrations/0008_replica_detached_at.sql"),
+    include_str!("../migrations/0009_message_proposal.sql"),
 ];
 
 /// Schema version after all migrations.
@@ -78,6 +79,7 @@ mod tests {
                 "link_bundles",
                 "messages",
                 "meta",
+                "pending_proposals",
                 "pending_welcomes",
                 "push_registrations",
                 "recovery_backups",
@@ -306,6 +308,73 @@ mod tests {
         let at = rows[0].1.unwrap();
         assert!((before - 60_000..before + 60_000).contains(&at), "{at}");
         assert_eq!(rows[1], ("h2/b".to_owned(), None));
+    }
+
+    #[tokio::test]
+    async fn proposal_migration_keeps_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hub.db");
+        let proposal = super::MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("messages_new"))
+            .unwrap();
+        {
+            let mut conn = rusqlite::Connection::open(&path).unwrap();
+            for (version, sql) in (1..).zip(&super::MIGRATIONS[..proposal]) {
+                let tx = conn.transaction().unwrap();
+                tx.execute_batch(sql).unwrap();
+                tx.pragma_update(None, "user_version", version).unwrap();
+                tx.commit().unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO groups (gid, kind, epoch, last_seq, created_by_user_id, \
+                 created_by_device_id, created_at) VALUES ('h1/g', 'group', 1, 2, 'u', 'd', 0); \
+                 INSERT INTO messages (gid, seq, epoch, kind, sender_user_id, sender_device_id, \
+                 client_id, payload, commit_hash, message_id, created_at) VALUES \
+                 ('h1/g', 1, 0, 'commit', 'u', 'd', 'c1', x'01', x'aa', 'm1', 5), \
+                 ('h1/g', 2, 1, 'application', 'u', 'd', 'c2', x'02', NULL, 'm2', 6);",
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let listed = db
+            .read(|conn| crate::messages::list_from(conn, "h1/g", 1, 10))
+            .await
+            .unwrap();
+        let summary: Vec<_> = listed
+            .iter()
+            .map(|m| (m.seq, m.kind.as_str(), m.message_id.as_str()))
+            .collect();
+        assert_eq!(summary, [(1, "commit", "m1"), (2, "application", "m2")]);
+        assert_eq!(
+            db.read(|conn| crate::messages::find_commit(conn, "h1/g", &[0xaa]))
+                .await
+                .unwrap(),
+            Some((1, 0, "commit".to_owned()))
+        );
+        // Proposals are accepted, the constraints and the cascade kept.
+        let result = db
+            .write(|tx| {
+                tx.execute(
+                    "INSERT INTO messages (gid, seq, epoch, kind, sender_user_id, \
+                     sender_device_id, client_id, payload, message_id, created_at) VALUES \
+                     ('h1/g', 3, 1, 'proposal', 'u', 'd', 'c3', x'03', 'm3', 7)",
+                    [],
+                )?;
+                let duplicate = tx.execute(
+                    "INSERT INTO messages (gid, seq, epoch, kind, sender_user_id, \
+                     sender_device_id, client_id, payload, message_id, created_at) VALUES \
+                     ('h1/g', 4, 1, 'proposal', 'u', 'd', 'c3', x'04', 'm4', 7)",
+                    [],
+                );
+                assert!(duplicate.is_err());
+                tx.execute("DELETE FROM groups WHERE gid = 'h1/g'", [])?;
+                let left: i64 = tx.query_row("SELECT count(*) FROM messages", [], |r| r.get(0))?;
+                Ok::<_, DbError>(left)
+            })
+            .await
+            .unwrap();
+        assert_eq!(result, 0);
     }
 
     #[test]
