@@ -253,6 +253,53 @@ async fn ops_before_hello_get_hello_required() {
     assert!(response.result.is_some(), "{response:?}");
 }
 
+/// `addr` with its IPv4 host replaced by `/dns4/localhost`, plus
+/// `/p2p/<peer>`.
+fn dns4_localhost(addr: &Multiaddr, peer: PeerId) -> Multiaddr {
+    addr.iter()
+        .map(|p| match p {
+            libp2p::multiaddr::Protocol::Ip4(_) => {
+                libp2p::multiaddr::Protocol::Dns4("localhost".into())
+            }
+            other => other,
+        })
+        .chain([libp2p::multiaddr::Protocol::P2p(peer)])
+        .collect()
+}
+
+fn local_peer_id(hub: &Hub) -> PeerId {
+    let cert = hub.transport().shared().state().runtime_cert.clone();
+    let cert = HubRuntimeCert::verify(&cert, &root(hub.seed).verifying_key(), now_ms()).unwrap();
+    PeerId::from_bytes(&cert.peer_id()).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dns4_address_is_dialed_and_bound() {
+    for psk in [None, Some([7; 32])] {
+        let a = start_hub(1, &[2], TCP, psk).await;
+        let b = start_hub(2, &[1], TCP, psk).await;
+        a.serve_device_lists();
+        let addr = dns4_localhost(&a.transport().advertised_addrs()[0], local_peer_id(&a));
+
+        let peer = b
+            .transport()
+            .dial(Some(local_peer_id(&a)), addr)
+            .await
+            .unwrap();
+        assert_eq!(peer, local_peer_id(&a));
+        assert_eq!(
+            b.transport().hello(peer, Some(a.id())).await.unwrap(),
+            a.id()
+        );
+        let response = b
+            .transport()
+            .raw_request(peer, get_device_list("u1"))
+            .await
+            .unwrap();
+        assert!(response.result.is_some(), "{response:?}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_cert_for_another_peer_id_is_refused() {
     let a = start_hub(1, &[3], TCP, None).await;

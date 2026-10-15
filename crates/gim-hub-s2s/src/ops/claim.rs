@@ -46,9 +46,13 @@ pub enum ClaimOutcome {
     Claimed(Vec<ClaimedKeyPackage>),
     /// `NOT_FOUND`: unknown user, no active device or no KeyPackage.
     Missing,
-    /// Transport error, timeout or any other error: the hub could not be
-    /// reached or refused. Not retried (claims are not idempotent).
+    /// The `unavailable` class: transport error, timeout, `INTERNAL`,
+    /// `RATE_LIMITED`, `UNAUTHORIZED` (or `HELLO_REQUIRED`). Not retried on
+    /// the same hub (claims are not idempotent); routing moves to the next
+    /// listed hub (docs/multihoming.md §5.2).
     Unavailable(String),
+    /// Any other error (e.g. `INVALID`): routing stops here.
+    Rejected(String),
 }
 
 /// Sends `ClaimKeyPackage{requester, target, device_id}` to `hub`.
@@ -76,9 +80,16 @@ pub async fn claim_remote(
             (Some(OpOutput::ClaimKeyPackage(response)), _) => {
                 ClaimOutcome::Claimed(response.key_packages)
             }
-            (_, Some(err)) if err.code() == ErrorCode::NotFound => ClaimOutcome::Missing,
             (_, Some(err)) => {
-                ClaimOutcome::Unavailable(format!("{:?}: {}", err.code(), err.message))
+                let reason = format!("{:?}: {}", err.code(), err.message);
+                match err.code() {
+                    ErrorCode::NotFound => ClaimOutcome::Missing,
+                    ErrorCode::Internal
+                    | ErrorCode::RateLimited
+                    | ErrorCode::Unauthorized
+                    | ErrorCode::HelloRequired => ClaimOutcome::Unavailable(reason),
+                    _ => ClaimOutcome::Rejected(reason),
+                }
             }
             (_, None) => ClaimOutcome::Unavailable("unexpected response".into()),
         },

@@ -2,7 +2,10 @@
 
 use std::net::IpAddr;
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use url::{Host, Url};
+
+use crate::webpush;
 
 const MAX_TOKEN: usize = 4096;
 
@@ -61,6 +64,32 @@ pub fn validate_registration(
         }
         _ => Err(format!("unknown provider {provider:?}")),
     }
+}
+
+/// Decoded Web Push encryption keys `(p256dh, auth)`.
+pub type WebPushKeys = (Vec<u8>, Vec<u8>);
+
+/// Web Push encryption keys of a registration, decoded.
+/// Both are required for `unifiedpush` and ignored (`None`) for the other
+/// providers. The error is a client-facing reason.
+pub fn validate_webpush_keys(
+    provider: &str,
+    p256dh: Option<&str>,
+    auth: Option<&str>,
+) -> Result<Option<WebPushKeys>, String> {
+    if provider != "unifiedpush" {
+        return Ok(None);
+    }
+    let decode = |value: &str| URL_SAFE_NO_PAD.decode(value.trim_end_matches('=')).ok();
+    let p256dh = p256dh
+        .and_then(decode)
+        .filter(|key| webpush::is_valid_public_key(key))
+        .ok_or("p256dh must be a base64url uncompressed P-256 public key (65 bytes)")?;
+    let auth = auth
+        .and_then(decode)
+        .filter(|auth| auth.len() == webpush::AUTH_LEN)
+        .ok_or("auth must be a base64url 16-byte secret")?;
+    Ok(Some((p256dh, auth)))
 }
 
 /// A UnifiedPush endpoint must be a public `https` URL: the hub POSTs to it,
@@ -180,6 +209,39 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn webpush_keys_are_required_for_unifiedpush_only() {
+        use crate::webpush::tests::b64;
+        let p256dh = "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4";
+        let auth = "BTBZMqHH6r4Tts7J_aSIgg";
+        assert_eq!(
+            validate_webpush_keys("unifiedpush", Some(p256dh), Some(auth)).unwrap(),
+            Some((b64(p256dh), b64(auth)))
+        );
+        assert!(validate_webpush_keys(
+            "unifiedpush",
+            Some(p256dh),
+            Some("BTBZMqHH6r4Tts7J_aSIgg==")
+        )
+        .is_ok());
+        for (key, secret) in [
+            (None, Some(auth)),
+            (Some(p256dh), None),
+            (Some(&p256dh[..86]), Some(auth)),
+            (Some("not base64!"), Some(auth)),
+            (Some(p256dh), Some("BTBZMqHH6r4Tts7J_aSI")),
+        ] {
+            assert!(
+                validate_webpush_keys("unifiedpush", key, secret).is_err(),
+                "{key:?} {secret:?}"
+            );
+        }
+        assert_eq!(
+            validate_webpush_keys("fcm", None, Some("bad")).unwrap(),
+            None
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Hosting records: POST hosting-entry, PUT/GET hosting-record and the
+//! Hosting records: GET /v2/hub, POST hosting-entry, PUT/GET hosting-record and the
 //! `hosting_record.expiring` event, with the `hosting.json` vector and
 //! records signed like it.
 
@@ -113,6 +113,22 @@ fn test_records_are_signed_like_the_vector() {
     assert_eq!(
         record(1, vector_expires_at(), 10),
         hex_bytes(&v["hosting_record"]["signed"])
+    );
+}
+
+#[tokio::test]
+async fn hub_identity_needs_no_token() {
+    let hub = TestHub::with_hub_seed(vector_keys().1.to_bytes());
+    let (status, body) = send(&hub, Method::GET, "/v2/hub", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let v = vector();
+    assert_eq!(
+        body,
+        json!({
+            "hub_id": v["hubs"][0]["hub_id"],
+            "hub_root_pubkey": b64(&hex_bytes(&v["hubs"][0]["root_pubkey"])),
+            "version": env!("CARGO_PKG_VERSION"),
+        })
     );
 }
 

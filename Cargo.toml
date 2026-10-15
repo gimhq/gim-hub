@@ -50,6 +50,7 @@ getrandom = "=0.4.3"
 hex = "=0.4.3"
 # Federation transport; only `gim-hub-s2s::transport` imports it.
 libp2p = { version = "=0.56.0", default-features = false, features = [
+    "dns",
     "kad",
     "macros",
     "noise",
