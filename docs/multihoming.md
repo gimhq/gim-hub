@@ -478,6 +478,14 @@ the client (NSE / Android service) dedups by `message_id`. That bounds the effec
 (the primary is up but a fallback cannot reach it, so both push): the device shows one
 notification.
 
+Implementation (H4-M5a): `gim_hub_s2s::multihoming::PushGate`, installed on the push dispatcher
+only when federation is enabled. The dispatcher calls the gate synchronously, so the gate reads an
+in-memory view of the hosted users' hub lists, reloaded from the database every 10 s (a record
+change reaches the gate up to 10 s late), and `transport::Liveness`, fed by libp2p ping
+(every 10 s, shorter only when the failover delay is under 30 s) and by every S2S exchange. The
+same 10 s loop keeps a connection open to every co-host. A co-host first seen by the view gets the
+full failover delay before it counts as down.
+
 ## 9. Contract changes (proposals, need L1 / gim-core sign-off)
 
 ### 9.1 `proto/s2s.proto`

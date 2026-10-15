@@ -47,6 +47,7 @@ while it is off. Design: [`federation.md`](federation.md).
 | `GIM_HUB_OUTBOX_MAX_BYTES_PER_PEER` | `1073741824` | Outbound backlog cap per peer hub, bytes (minimum 1) |
 | `GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS` | `300` | Maximum retry backoff per peer hub (minimum 1) |
 | `GIM_HUB_UNHOSTED_GRACE_HOURS` | `168` | How long a user who removed this hub from their hosting record keeps read access before their data is purged (minimum 1; [`multihoming.md`](multihoming.md) §7.3) |
+| `GIM_HUB_PUSH_FAILOVER_SECONDS` | `30` | A co-host hub without a successful ping or hub-to-hub exchange for this long is down; a fallback hub of a multi-homed user pushes only while every hub before it is down (minimum 1; [`multihoming.md`](multihoming.md) §8) |
 
 The allowlist lists one peer `hub_id` per line, optionally followed by static multiaddrs without
 `/p2p/`; `#` starts a comment and the hub's own `hub_id` is ignored:

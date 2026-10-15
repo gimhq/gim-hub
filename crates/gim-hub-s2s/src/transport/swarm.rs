@@ -27,7 +27,7 @@ use libp2p::{
         Record, RecordKey, StoreInserts,
     },
     multiaddr::Protocol,
-    noise, pnet,
+    noise, ping, pnet,
     request_response::{
         self, InboundRequestId, OutboundFailure, OutboundRequestId, ProtocolSupport,
         ResponseChannel,
@@ -66,10 +66,11 @@ pub(crate) struct Behaviour {
     block: allow_block_list::Behaviour<BlockedPeers>,
     rr: request_response::Behaviour<S2sCodec>,
     kad: kad::Behaviour<MemoryStore>,
+    ping: ping::Behaviour,
 }
 
 impl Behaviour {
-    fn new(local: PeerId, timeout: Duration) -> Self {
+    fn new(local: PeerId, timeout: Duration, ping_interval: Duration) -> Self {
         let rr = request_response::Behaviour::new(
             [(StreamProtocol::new(S2S_PROTOCOL), ProtocolSupport::Full)],
             request_response::Config::default().with_request_timeout(timeout),
@@ -98,6 +99,7 @@ impl Behaviour {
             block: allow_block_list::Behaviour::default(),
             rr,
             kad,
+            ping: ping::Behaviour::new(ping::Config::new().with_interval(ping_interval)),
         }
     }
 }
@@ -109,8 +111,10 @@ pub(crate) fn build_swarm(
     keypair: Keypair,
     psk: Option<Psk>,
     timeout: Duration,
+    ping_interval: Duration,
 ) -> Result<Swarm<Behaviour>, Box<dyn Error + Send + Sync>> {
-    let behaviour = move |key: &Keypair| Behaviour::new(key.public().to_peer_id(), timeout);
+    let behaviour =
+        move |key: &Keypair| Behaviour::new(key.public().to_peer_id(), timeout, ping_interval);
     let swarm_config = |config: libp2p::swarm::Config| {
         config.with_idle_connection_timeout(IDLE_CONNECTION_TIMEOUT)
     };
@@ -433,6 +437,11 @@ impl Driver {
             SwarmEvent::Behaviour(BehaviourEvent::Rr(event)) => self.on_rr_event(event),
             SwarmEvent::Behaviour(BehaviourEvent::Kad(event)) => self.on_kad_event(event),
             SwarmEvent::Behaviour(BehaviourEvent::Block(never)) => match never {},
+            SwarmEvent::Behaviour(BehaviourEvent::Ping(ping::Event {
+                peer,
+                result: Ok(_),
+                ..
+            })) => self.shared.alive(&peer),
             SwarmEvent::ConnectionEstablished {
                 peer_id,
                 connection_id,
@@ -531,6 +540,7 @@ impl Driver {
                 ..
             } => match self.pending.remove(&request_id) {
                 Some(Pending::Request(reply)) => {
+                    self.shared.alive(&peer);
                     let _ = reply.send(Ok(response));
                 }
                 Some(Pending::Hello { expect, reply }) => {
@@ -620,6 +630,7 @@ impl Driver {
             );
             return;
         };
+        self.shared.liveness.alive(&caller);
         let inbound = InboundRequest {
             caller,
             request,
@@ -739,6 +750,7 @@ impl Driver {
             self.swarm.behaviour_mut().kad.remove_peer(&old);
         }
         drop(state);
+        self.shared.liveness.alive(&hub_id);
         for addr in addrs {
             self.swarm.behaviour_mut().kad.add_address(&peer, addr);
         }

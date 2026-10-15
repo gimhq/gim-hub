@@ -40,6 +40,17 @@ struct Hub {
 /// Starts hub `seed` listening on `listen`, allowing `allowed` (no
 /// addresses yet; see [`Hub::allow`]).
 async fn start_hub(seed: u8, allowed: &[u8], listen: &str, psk: Option<Psk>) -> Hub {
+    start_hub_with_failover(seed, allowed, listen, psk, 30).await
+}
+
+/// [`start_hub`] with `GIM_HUB_PUSH_FAILOVER_SECONDS=failover`.
+async fn start_hub_with_failover(
+    seed: u8,
+    allowed: &[u8],
+    listen: &str,
+    psk: Option<Psk>,
+    failover: u32,
+) -> Hub {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("allowlist");
     let text: String = allowed
@@ -53,6 +64,7 @@ async fn start_hub(seed: u8, allowed: &[u8], listen: &str, psk: Option<Psk>) -> 
         listen: vec![listen.parse().unwrap()],
         s2s_timeout: Duration::from_secs(3),
         psk,
+        push_failover_seconds: failover,
         ..FederationConfig::disabled(dir.path())
     };
     let service = FederationService::start(&config, &root(seed), policy.clone())
@@ -324,6 +336,7 @@ async fn runtime_cert_for_another_peer_id_is_refused() {
         bootstrap: Vec::new(),
         timeout: Duration::from_secs(3),
         psk: None,
+        failover: Duration::from_secs(30),
     };
     let (x, _inbound) = Transport::start(config, hub_id(3), &runtime, policy)
         .await
@@ -420,4 +433,22 @@ async fn hub_locator_publish_and_lookup_between_three_hubs() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn co_host_is_down_after_the_failover_delay_once_stopped() {
+    let a = start_hub_with_failover(1, &[2], TCP, None, 1).await;
+    let b = start_hub_with_failover(2, &[1], TCP, None, 1).await;
+    a.allow(&[(&b, true)], &[]);
+    a.transport().keep_connected(&b.id()).await.unwrap();
+    let liveness = a.transport().liveness();
+    liveness.track(&[b.id()]);
+
+    // Pings (every 333 ms) keep B up well past the 1 s delay.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(!liveness.is_down(&b.id()));
+    assert!(!b.transport().liveness().is_down(&a.id()), "B pings A too");
+
+    b.service.shutdown();
+    eventually("B to be down at A", || liveness.is_down(&b.id())).await;
 }
