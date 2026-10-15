@@ -10,7 +10,8 @@ use gim_hub_db::outbox::{self, Entry, Kind};
 use gim_hub_identity::HubId;
 use gim_hub_proto::s2s::{
     s2s_request::Op, s2s_response::Result as OpOutput, DeliverRequest, DeliverWelcomeRequest,
-    ErrorCode, NotifyDeviceListRequest, S2sRequest, S2sResponse, SequencedMessage,
+    ErrorCode, NotifyDeviceListRequest, NotifyHostingRecordRequest, S2sRequest, S2sResponse,
+    SeedReplicaRequest, SequencedMessage,
 };
 use prost::Message;
 use tokio::task::JoinSet;
@@ -156,7 +157,7 @@ async fn drain_peer(outbox: &Outbox, hub_id: &HubId) -> Result<(), gim_hub_db::D
             return Ok(());
         }
 
-        let mut batch = build(outbox, head).await?;
+        let mut batch = build(outbox, hub_id, head).await?;
         if !batch.unbuildable.is_empty() {
             let ids = batch.unbuildable.clone();
             let deleted = inner.db.write(move |tx| outbox::delete(tx, &ids)).await?;
@@ -335,9 +336,14 @@ struct Batch {
     op: Option<Op>,
 }
 
-/// Builds the request for the head: the leading run of `deliver` entries
-/// (≤ 256 messages, ≤ 4 MiB) or the single first entry of another kind.
-async fn build(outbox: &Outbox, mut head: Vec<Entry>) -> Result<Batch, gim_hub_db::DbError> {
+/// Builds the request for `peer`'s head: the leading run of `deliver`
+/// entries (≤ 256 messages, ≤ 4 MiB) or the single first entry of another
+/// kind.
+async fn build(
+    outbox: &Outbox,
+    peer: &HubId,
+    mut head: Vec<Entry>,
+) -> Result<Batch, gim_hub_db::DbError> {
     let kind = head[0].kind;
     let source = outbox.inner.source.clone();
     match kind {
@@ -414,6 +420,44 @@ async fn build(outbox: &Outbox, mut head: Vec<Entry>) -> Result<Batch, gim_hub_d
             });
             Ok(single(kind, entry, op))
         }
+        Kind::HostingRecord => {
+            let entry = head.swap_remove(0);
+            let user_id = entry.user_id.clone().unwrap_or_default();
+            let record = {
+                let user_id = user_id.clone();
+                outbox
+                    .inner
+                    .db
+                    .read(move |conn| source.hosting_record(conn, &user_id))
+                    .await?
+            };
+            let op = record.map(|hosting_record_cbor| {
+                Op::NotifyHostingRecord(NotifyHostingRecordRequest {
+                    user_id,
+                    hosting_record_cbor,
+                })
+            });
+            Ok(single(kind, entry, op))
+        }
+        Kind::SeedReplica => {
+            let entry = head.swap_remove(0);
+            let request = entry
+                .payload
+                .as_deref()
+                .and_then(|payload| SeedReplicaRequest::decode(payload).ok());
+            Ok(single(kind, entry, request.map(Op::SeedReplica)))
+        }
+        Kind::PendingWelcomes => {
+            let entry = head.swap_remove(0);
+            let user_id = entry.user_id.clone().unwrap_or_default();
+            let peer = peer.clone();
+            let request = outbox
+                .inner
+                .db
+                .read(move |conn| source.pending_welcomes(conn, &user_id, &peer))
+                .await?;
+            Ok(single(kind, entry, request.map(Op::CopyPendingWelcomes)))
+        }
     }
 }
 
@@ -479,7 +523,10 @@ fn acked(batch: &Batch, output: &OpOutput) -> Option<Vec<i64>> {
             )
         }
         (Kind::DeliverWelcome, OpOutput::DeliverWelcome(_))
-        | (Kind::DeviceList, OpOutput::NotifyDeviceList(_)) => Some(all()),
+        | (Kind::DeviceList, OpOutput::NotifyDeviceList(_))
+        | (Kind::HostingRecord, OpOutput::NotifyHostingRecord(_))
+        | (Kind::SeedReplica, OpOutput::SeedReplica(_))
+        | (Kind::PendingWelcomes, OpOutput::CopyPendingWelcomes(_)) => Some(all()),
         _ => None,
     }
 }

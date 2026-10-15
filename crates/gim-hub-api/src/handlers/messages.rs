@@ -235,6 +235,11 @@ async fn forward_message(
         .message
         .filter(|message| message.gid == gid)
         .ok_or_else(|| ApiError::PeerRefused("owning hub answered without the message".into()))?;
+    if message.kind() != s2s::MessageKind::Application {
+        return Err(ApiError::PeerRefused(
+            "owning hub answered with a non-application message".into(),
+        ));
+    }
     let dto = sequenced_dto(&message);
     if let Err(err) = apply_replica(state, &owner, vec![message], true).await {
         tracing::error!(%err, gid, "applying the submitted message failed");
@@ -301,7 +306,7 @@ enum Outcome {
     path = "/v2/groups/{gid}/messages",
     tag = "messages",
     summary = "List group messages",
-    description = "Commits and application messages with `seq >= from_seq`, ascending. For a \
+    description = "Commits, Proposals and application messages with `seq >= from_seq`, ascending. For a \
 group owned by another hub (federation), this hub serves its replica, which holds the log from \
 the Commit that added this hub's first member on: a lower `from_seq` returns messages starting \
 there.",
@@ -393,10 +398,10 @@ fn new_message_id() -> Result<String, ApiError> {
 /// API view of a stored message.
 pub(crate) fn message_dto(stored: StoredMessage) -> Message {
     Message {
-        kind: if stored.kind == "commit" {
-            MessageKind::Commit
-        } else {
-            MessageKind::Application
+        kind: match stored.kind.as_str() {
+            "commit" => MessageKind::Commit,
+            "proposal" => MessageKind::Proposal,
+            _ => MessageKind::Application,
         },
         mls_message: STANDARD.encode(&stored.payload),
         seq: u64::try_from(stored.seq).unwrap_or_default(),
@@ -405,6 +410,7 @@ pub(crate) fn message_dto(stored: StoredMessage) -> Message {
         sender_user_id: stored.sender_user_id,
         sender_device_id: stored.sender_device_id,
         client_id: stored.client_id,
+        message_id: stored.message_id,
         created_at: stored.created_at,
     }
 }
@@ -412,10 +418,10 @@ pub(crate) fn message_dto(stored: StoredMessage) -> Message {
 /// API view of a message received from the owning hub.
 fn sequenced_dto(message: &s2s::SequencedMessage) -> Message {
     Message {
-        kind: if message.kind() == s2s::MessageKind::Commit {
-            MessageKind::Commit
-        } else {
-            MessageKind::Application
+        kind: match message.kind() {
+            s2s::MessageKind::Commit => MessageKind::Commit,
+            s2s::MessageKind::Proposal => MessageKind::Proposal,
+            _ => MessageKind::Application,
         },
         mls_message: STANDARD.encode(&message.payload),
         seq: message.seq,
@@ -424,6 +430,7 @@ fn sequenced_dto(message: &s2s::SequencedMessage) -> Message {
         sender_user_id: message.sender_user_id.clone(),
         sender_device_id: message.sender_device_id.clone(),
         client_id: message.client_id.clone(),
+        message_id: message.message_id.clone(),
         created_at: i64::try_from(message.created_at).unwrap_or(i64::MAX),
     }
 }

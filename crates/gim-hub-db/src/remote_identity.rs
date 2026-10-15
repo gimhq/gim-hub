@@ -155,15 +155,20 @@ pub fn prune_claims(tx: &Transaction<'_>, cutoff: i64) -> Result<usize, DbError>
 }
 
 /// Peer hubs that must learn about `user_id`'s DeviceList updates (§5.1):
-/// the owning hubs of the groups `user_id` is in, and the hubs listed in the
-/// hosting records of the other members of the groups `own_hub_id` owns that
-/// contain `user_id`. Sorted, without `own_hub_id`.
+/// the other hubs listed in `user_id`'s stored hosting record (co-hosts,
+/// docs/multihoming.md §3.2), the owning hubs of the groups `user_id` is in,
+/// and the hubs listed in the hosting records of the other members of the
+/// groups `own_hub_id` owns that contain `user_id`. Sorted, without
+/// `own_hub_id`.
 pub fn device_list_peer_hubs(
     conn: &Connection,
     user_id: &str,
     own_hub_id: &str,
 ) -> Result<Vec<String>, DbError> {
     let mut hubs = BTreeSet::new();
+    if let Some(record) = hosting::get(conn, user_id)? {
+        hubs.extend(record.hub_ids);
+    }
     let mut stmt =
         conn.prepare_cached("SELECT DISTINCT gid FROM group_members WHERE user_id = ?1")?;
     for gid in stmt.query_map([user_id], |row| row.get::<_, String>(0))? {
@@ -277,7 +282,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peer_hubs_are_owners_and_member_hubs_of_owned_groups() {
+    async fn peer_hubs_are_co_hosts_owners_and_member_hubs_of_owned_groups() {
         let db = Db::open_in_memory().unwrap();
         db.write(|tx| {
             for (gid, members) in [
@@ -305,6 +310,8 @@ mod tests {
                 }
             }
             for (user, hubs) in [
+                // Alice's own co-host h6 counts.
+                ("alice", &["h1", "h6"][..]),
                 ("carol", &["h3", "h1"][..]),
                 ("erin", &["h4"][..]),
                 ("frank", &["h5"][..]),
@@ -332,7 +339,7 @@ mod tests {
             .read(|conn| device_list_peer_hubs(conn, "alice", "h1"))
             .await
             .unwrap();
-        assert_eq!(hubs, ["h2", "h3"]);
+        assert_eq!(hubs, ["h2", "h3", "h6"]);
         assert!(db
             .read(|conn| device_list_peer_hubs(conn, "nobody", "h1"))
             .await

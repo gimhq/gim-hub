@@ -21,6 +21,8 @@ pub const GID_EXAMPLE: &str =
 pub const LINK_ID_EXAMPLE: &str = "wgy33neayyoqouya3g77pwolne";
 /// Example client idempotency key.
 pub const CLIENT_ID_EXAMPLE: &str = "9f1c2a7e-0b44-4d0e-9a51-3c8f1e2d6b70";
+/// Example message ID (opaque, assigned by the owning hub).
+pub const MESSAGE_ID_EXAMPLE: &str = "5f0e9c1d7a2b4c3e8d6f1a0b9c8d7e6f";
 /// Example timestamp.
 pub const TIMESTAMP_EXAMPLE: i64 = 1_760_479_200_000;
 
@@ -85,6 +87,21 @@ pub enum HealthStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Health {
     pub status: HealthStatus,
+    /// Hub version.
+    #[schema(example = "0.1.0")]
+    pub version: String,
+}
+
+/// This hub's identity, so a client can check that a URL belongs to the
+/// `hub_id` listed in its hosting record before signing in.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HubInfo {
+    #[schema(example = json!(HUB_ID_EXAMPLE))]
+    pub hub_id: String,
+    /// The hub's 32-byte Ed25519 root public key, base64; `hub_id` is
+    /// derived from it.
+    #[schema(content_encoding = "base64")]
+    pub hub_root_pubkey: String,
     /// Hub version.
     #[schema(example = "0.1.0")]
     pub version: String,
@@ -468,16 +485,16 @@ pub struct GroupList {
     pub groups: Vec<Group>,
 }
 
-/// Submit an MLS Commit.
+/// Submit an MLS Commit or Proposal.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SubmitCommitRequest {
     /// Sender-chosen idempotency key, unique per sending device and group (1-64 chars).
     #[schema(min_length = 1, max_length = 64, example = json!(CLIENT_ID_EXAMPLE))]
     pub client_id: String,
-    /// MLSMessage carrying the Commit as a PublicMessage (TLS encoding), base64.
+    /// MLSMessage carrying the Commit or Proposal as a PublicMessage (TLS encoding), base64.
     #[schema(content_encoding = "base64")]
     pub mls_message: String,
-    /// MLS Welcome for the devices added by this Commit, base64.
+    /// MLS Welcome for the devices added by this Commit, base64. Not allowed with a Proposal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(content_encoding = "base64")]
     pub welcome: Option<String>,
@@ -492,14 +509,14 @@ pub struct SubmitCommitRequest {
     pub ratchet_tree: Option<String>,
 }
 
-/// An accepted Commit.
+/// An accepted Commit or Proposal.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CommitResult {
-    /// Per-group sequence number of the Commit.
+    /// Per-group sequence number of the Commit or Proposal.
     pub seq: u64,
-    /// Group epoch after the Commit.
+    /// Group epoch after the Commit; for a Proposal, the (unchanged) epoch it was sent in.
     pub epoch: u64,
-    /// True if this exact Commit had already been accepted (nothing was emitted again).
+    /// True if this exact Commit or Proposal had already been accepted (nothing was emitted again).
     pub duplicate: bool,
 }
 
@@ -512,6 +529,7 @@ pub struct CommitResult {
 pub enum MessageKind {
     Commit,
     Application,
+    Proposal,
 }
 
 /// Send an MLS application message.
@@ -540,6 +558,10 @@ pub struct Message {
     pub sender_device_id: String,
     #[schema(min_length = 1, max_length = 64, example = json!(CLIENT_ID_EXAMPLE))]
     pub client_id: String,
+    /// Opaque message ID assigned by the owning hub, identical on every hub that stores the
+    /// message. Equals the push payload's `message_id` / `collapse_id`; the cross-hub dedup key.
+    #[schema(example = json!(MESSAGE_ID_EXAMPLE))]
+    pub message_id: String,
     pub kind: MessageKind,
     /// MLS epoch read from the message framing.
     pub epoch: u64,
@@ -617,6 +639,7 @@ pub struct EventList {
     ("keypackages.low" = "#/components/schemas/KeyPackagesLowEvent"),
     ("device_list.updated" = "#/components/schemas/DeviceListUpdatedEvent"),
     ("hosting_record.expiring" = "#/components/schemas/HostingRecordExpiringEvent"),
+    ("hosting_record.updated" = "#/components/schemas/HostingRecordUpdatedEvent"),
 )))]
 pub enum Event {
     Message(MessageEvent),
@@ -626,6 +649,7 @@ pub enum Event {
     KeyPackagesLow(KeyPackagesLowEvent),
     DeviceListUpdated(DeviceListUpdatedEvent),
     HostingRecordExpiring(HostingRecordExpiringEvent),
+    HostingRecordUpdated(HostingRecordUpdatedEvent),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
@@ -833,6 +857,51 @@ pub struct HostingRecordExpiringEvent {
     pub data: HostingRecordExpiring,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+pub enum HostingRecordUpdatedEventType {
+    #[serde(rename = "hosting_record.updated")]
+    Tag,
+}
+
+/// A hub entry of a hosting record.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HostingRecordHub {
+    #[schema(example = json!(HUB_ID_EXAMPLE))]
+    pub hub_id: String,
+    /// Lower is preferred.
+    #[schema(minimum = 0, maximum = 255)]
+    pub priority: u8,
+}
+
+/// The receiving user's hosting record as stored by this hub.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HostingRecordUpdated {
+    #[schema(example = json!(USER_ID_EXAMPLE))]
+    pub user_id: String,
+    /// `seq` of the stored record; dedup across hubs by it.
+    pub seq: u64,
+    /// When the stored record expires (ms since the Unix epoch).
+    #[schema(example = json!(TIMESTAMP_EXAMPLE))]
+    pub expires_at: u64,
+    /// Whether the record lists this hub.
+    pub hosted: bool,
+    /// The listed hubs.
+    pub hubs: Vec<HostingRecordHub>,
+}
+
+/// Emitted to the user's active devices on this hub when a stored record
+/// changes the listed hubs or their priorities (renewals with the same
+/// entries emit nothing). Multi-homing (H4), emitted with federation.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HostingRecordUpdatedEvent {
+    pub cursor: u64,
+    #[schema(example = json!(TIMESTAMP_EXAMPLE))]
+    pub created_at: i64,
+    #[schema(inline)]
+    pub r#type: HostingRecordUpdatedEventType,
+    pub data: HostingRecordUpdated,
+}
+
 // ---------------------------------------------------------------------------
 // Blobs
 // ---------------------------------------------------------------------------
@@ -881,4 +950,17 @@ pub struct PushRegistration {
     #[serde(default)]
     #[schema(default = false)]
     pub sandbox: bool,
+    /// UnifiedPush only (required there, ignored otherwise): the device's
+    /// RFC 8291 Web Push public key, base64url of the 65-byte uncompressed
+    /// P-256 point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+    )]
+    pub p256dh: Option<String>,
+    /// UnifiedPush only (required there, ignored otherwise): the RFC 8291
+    /// authentication secret, base64url of 16 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "BTBZMqHH6r4Tts7J_aSIgg")]
+    pub auth: Option<String>,
 }

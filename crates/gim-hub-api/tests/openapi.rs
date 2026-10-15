@@ -100,6 +100,12 @@ async fn every_documented_operation_is_routed() {
                 assert_eq!(value["status"], "ok");
                 continue;
             }
+            if template == "/v2/hub" {
+                let (status, value) = call(&hub, &method, &uri, None).await;
+                assert_eq!(status, StatusCode::OK, "{method} {template}");
+                assert!(value["hub_id"].is_string());
+                continue;
+            }
 
             if requires_token(template, operation) {
                 authenticated += 1;
@@ -120,6 +126,6 @@ async fn every_documented_operation_is_routed() {
             );
         }
     }
-    assert_eq!(operations, 34);
-    assert_eq!(authenticated, 25);
+    assert_eq!(operations, 35);
+    assert_eq!(authenticated, 23);
 }
