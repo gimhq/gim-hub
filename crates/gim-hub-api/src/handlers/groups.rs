@@ -13,12 +13,12 @@ use gim_hub_identity::HubId;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::identity::json_body;
+use super::{identity::json_body, messages as message_handlers};
 use crate::{
     auth::AuthDevice,
     dto::{
         CommitResult, CreateGroupRequest, Error, Group, GroupKind, GroupList, GroupMember,
-        MembershipChange, Message, MessageKind, StaleEpochError, SubmitCommitRequest, Welcome,
+        MembershipChange, StaleEpochError, SubmitCommitRequest, Welcome,
     },
     error::ApiError,
     mls::{self, AcceptAllCredentials, AddedMember, CredentialPolicy},
@@ -414,7 +414,7 @@ fn apply_commit(
     if sender.leaf_index != Some(parsed.sender_leaf) {
         return Err(invalid("Commit sender leaf is not the calling device"));
     }
-    if messages::client_id_used(tx, &gid, &auth.device_id, &client_id)? {
+    if messages::find_by_client_id(tx, &gid, &auth.device_id, &client_id)?.is_some() {
         return Err(invalid("client_id was already used in this group"));
     }
 
@@ -482,24 +482,32 @@ fn apply_commit(
         }
     }
 
+    let framing_epoch =
+        i64::try_from(parsed.epoch).map_err(|_| invalid("Commit epoch out of range"))?;
+    let stored = messages::append(
+        tx,
+        &messages::NewMessage {
+            gid: &gid,
+            epoch: framing_epoch,
+            kind: "commit",
+            sender_user_id: &auth.user_id,
+            sender_device_id: &auth.device_id,
+            client_id: &client_id,
+            payload: &mls_message,
+            commit_hash: Some(&commit_hash),
+            message_id: &message_id,
+        },
+        now,
+    )?;
     let seq = group.last_seq + 1;
     let epoch = group.epoch + 1;
-    messages::append_commit(
-        tx,
-        &messages::NewCommit {
-            gid: gid.clone(),
-            seq,
-            epoch: parsed.epoch,
-            sender_user_id: auth.user_id.clone(),
-            sender_device_id: auth.device_id.clone(),
-            client_id: client_id.clone(),
-            payload: mls_message.clone(),
-            commit_hash: commit_hash.to_vec(),
-            message_id,
-            created_at: now,
-        },
-    )?;
-    groups::advance(tx, &gid, epoch, seq)?;
+    groups::set_epoch(tx, &gid, epoch)?;
+    // The Commit itself goes to every previous member except its sender,
+    // including the removed ones; new members join from the Welcome.
+    let mut wake: BTreeSet<(String, String)> =
+        message_handlers::emit_message_events(tx, &stored, now)?
+            .into_iter()
+            .collect();
     for (user_id, device_id) in &removed {
         groups::remove_member(tx, &gid, user_id, device_id)?;
     }
@@ -507,31 +515,11 @@ fn apply_commit(
         groups::add_member(tx, &gid, user_id, device_id, *leaf, now)?;
     }
 
-    let mut wake = BTreeSet::new();
     let mut emit = |user_id: &str, device_id: &str, event_type: &str, data: &str| {
         events::append(tx, user_id, device_id, event_type, data, now)?;
         wake.insert((user_id.to_owned(), device_id.to_owned()));
         Ok::<_, ApiError>(())
     };
-
-    // The Commit itself goes to every previous member except its sender,
-    // including the removed ones; new members join from the Welcome.
-    let message = event_data(&Message {
-        gid: gid.clone(),
-        seq,
-        sender_user_id: auth.user_id.clone(),
-        sender_device_id: auth.device_id.clone(),
-        client_id,
-        kind: MessageKind::Commit,
-        epoch: parsed.epoch,
-        mls_message: STANDARD.encode(&mls_message),
-        created_at: now,
-    })?;
-    for member in &members {
-        if member.user_id != auth.user_id || member.device_id != auth.device_id {
-            emit(&member.user_id, &member.device_id, "message", &message)?;
-        }
-    }
 
     // Membership events go to the old and the new roster.
     let mut audience: BTreeSet<(String, String)> = members

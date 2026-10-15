@@ -23,6 +23,8 @@ pub struct Config {
     pub max_blob_bytes: u64,
     /// `GIM_HUB_LONGPOLL_MAX_WAIT_SECONDS`: cap on long-poll `wait`.
     pub longpoll_max_wait_seconds: u32,
+    /// `GIM_HUB_SESSION_TTL_DAYS`: lifetime of device bearer tokens.
+    pub session_ttl_days: u32,
 }
 
 /// Invalid configuration value.
@@ -66,6 +68,7 @@ impl Config {
             max_message_bytes: parse(get, "GIM_HUB_MAX_MESSAGE_BYTES", 262_144, Some(1))?,
             max_blob_bytes: parse(get, "GIM_HUB_MAX_BLOB_BYTES", 104_857_600, Some(1))?,
             longpoll_max_wait_seconds: parse(get, "GIM_HUB_LONGPOLL_MAX_WAIT_SECONDS", 30, None)?,
+            session_ttl_days: parse(get, "GIM_HUB_SESSION_TTL_DAYS", 30, Some(1))?,
             data_dir,
             database_path,
         })
@@ -133,6 +136,7 @@ mod tests {
         assert_eq!(config.max_message_bytes, 262_144);
         assert_eq!(config.max_blob_bytes, 104_857_600);
         assert_eq!(config.longpoll_max_wait_seconds, 30);
+        assert_eq!(config.session_ttl_days, 30);
         assert_eq!(config.hub_key_path(), PathBuf::from("./data/hub_key"));
         assert_eq!(config.blobs_dir(), PathBuf::from("./data/blobs"));
     }
@@ -161,5 +165,6 @@ mod tests {
         assert_eq!(err.name, "GIM_HUB_EVENT_RETENTION_DAYS");
         assert!(Config::from_vars(vars(&[("GIM_HUB_MAX_MESSAGE_BYTES", "big")])).is_err());
         assert!(Config::from_vars(vars(&[("GIM_HUB_LISTEN", "nowhere")])).is_err());
+        assert!(Config::from_vars(vars(&[("GIM_HUB_SESSION_TTL_DAYS", "0")])).is_err());
     }
 }

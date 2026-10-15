@@ -144,11 +144,11 @@ pub fn remove_member(
     Ok(())
 }
 
-/// Sets the group's epoch and last sequence number.
-pub fn advance(tx: &Transaction<'_>, gid: &str, epoch: u64, last_seq: u64) -> Result<(), DbError> {
+/// Sets the group's epoch.
+pub fn set_epoch(tx: &Transaction<'_>, gid: &str, epoch: u64) -> Result<(), DbError> {
     tx.execute(
-        "UPDATE groups SET epoch = ?2, last_seq = ?3 WHERE gid = ?1",
-        params![gid, epoch, last_seq],
+        "UPDATE groups SET epoch = ?2 WHERE gid = ?1",
+        params![gid, epoch],
     )?;
     Ok(())
 }
@@ -192,13 +192,13 @@ mod tests {
         db.write(move |tx| {
             create(tx, &stored)?;
             add_member(tx, "h1/g1", "u2", "d2", 1, 11)?;
-            advance(tx, "h1/g1", 1, 1)
+            set_epoch(tx, "h1/g1", 1)
         })
         .await
         .unwrap();
 
         let got = db.read(|conn| get(conn, "h1/g1")).await.unwrap().unwrap();
-        assert_eq!((got.epoch, got.last_seq), (1, 1));
+        assert_eq!((got.epoch, got.last_seq), (1, 0));
         let listed = db
             .read(|conn| list_for_device(conn, "u2", "d2"))
             .await
