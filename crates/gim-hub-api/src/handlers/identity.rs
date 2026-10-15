@@ -7,7 +7,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use gim_hub_db::{
-    events, handles,
+    events, groups, handles,
     users::{self, StoredDeviceList},
 };
 use gim_hub_identity::UserId;
@@ -48,10 +48,11 @@ fn device_list_dto(list: &StoredDeviceList) -> DeviceList {
 /// What a DeviceList upload did.
 enum Upload {
     Created,
-    /// `notify`: devices to notify of the update; `revoked`: devices
-    /// deactivated by it, woken so their open streams re-check the session.
+    /// `notify`: `(user_id, device_id)` of the devices to notify of the
+    /// update; `revoked`: the user's devices deactivated by it, woken so
+    /// their open streams re-check the session.
     Replaced {
-        notify: Vec<String>,
+        notify: Vec<(String, String)>,
         revoked: Vec<String>,
     },
     Unchanged,
@@ -65,7 +66,8 @@ enum Upload {
     description = "No authentication: the DeviceList is self-certifying. The hub verifies the root \
 key signature and that the list's user ID matches `user_id` (derived from the root key). The first \
 upload creates the user on this hub. A later upload with a higher `seq` replaces the stored list; \
-re-uploading the identical list (same `seq`, same bytes) is idempotent and returns 200. Devices revoked by the new list lose their tokens; a `device_list.updated` event is emitted.",
+re-uploading the identical list (same `seq`, same bytes) is idempotent and returns 200. Devices revoked by the new list lose their tokens; a `device_list.updated` event is emitted to \
+the user's other active devices and to every active device of users sharing a group with them.",
     params(("user_id" = String, Path, description = "Opaque user ID (format owned by gim-core)", example = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa")),
     request_body = PutDeviceListRequest,
     responses(
@@ -132,11 +134,17 @@ pub async fn put_device_list(
             if created {
                 return Ok(Upload::Created);
             }
-            let notify = users::active_device_ids(tx, &stored.user_id)?;
-            for device_id in &notify {
+            // The user's devices and their group peers, who must re-verify
+            // the user's MLS credentials against the new list.
+            let mut notify: Vec<(String, String)> = users::active_device_ids(tx, &stored.user_id)?
+                .into_iter()
+                .map(|device_id| (stored.user_id.clone(), device_id))
+                .collect();
+            notify.extend(groups::peer_devices(tx, &stored.user_id)?);
+            for (user_id, device_id) in &notify {
                 events::append(
                     tx,
-                    &stored.user_id,
+                    user_id,
                     device_id,
                     DEVICE_LIST_UPDATED,
                     &payload,
@@ -150,7 +158,10 @@ pub async fn put_device_list(
     let status = match upload {
         Upload::Created => StatusCode::CREATED,
         Upload::Replaced { notify, revoked } => {
-            for device_id in notify.iter().chain(&revoked) {
+            for (user_id, device_id) in &notify {
+                state.notifier.notify(user_id, device_id);
+            }
+            for device_id in &revoked {
                 state.notifier.notify(&response.user_id, device_id);
             }
             StatusCode::OK

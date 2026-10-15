@@ -1,6 +1,9 @@
 //! Bearer-token authentication of devices.
 
-use axum::{extract::FromRequestParts, http::request::Parts};
+use axum::{
+    extract::FromRequestParts,
+    http::{header, request::Parts, HeaderMap},
+};
 use sha2::{Digest, Sha256};
 
 use crate::{error::ApiError, state::AppState};
@@ -21,15 +24,12 @@ pub fn token_hash(token: &str) -> [u8; 32] {
     Sha256::digest(token.as_bytes()).into()
 }
 
-fn bearer_token(parts: &Parts) -> Option<&str> {
-    let value = parts
-        .headers
-        .get(axum::http::header::AUTHORIZATION)?
-        .to_str()
-        .ok()?;
+/// SHA-256 of the `Authorization: Bearer` token, if the header carries one.
+pub(crate) fn bearer_token_hash(headers: &HeaderMap) -> Option<[u8; 32]> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let (scheme, token) = value.split_once(' ')?;
     let token = token.trim();
-    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then(|| token_hash(token))
 }
 
 impl FromRequestParts<AppState> for AuthDevice {
@@ -39,7 +39,7 @@ impl FromRequestParts<AppState> for AuthDevice {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let hash = token_hash(bearer_token(parts).ok_or(ApiError::Unauthorized)?);
+        let hash = bearer_token_hash(&parts.headers).ok_or(ApiError::Unauthorized)?;
         let now = state.clock.now_ms();
         let session = state
             .db
