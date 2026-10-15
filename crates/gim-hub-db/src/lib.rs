@@ -19,6 +19,7 @@ pub mod outbox;
 mod pool;
 pub mod push;
 pub mod recovery;
+pub mod remote_identity;
 pub mod users;
 pub mod welcomes;
 

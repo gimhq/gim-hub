@@ -9,6 +9,7 @@ use crate::DbError;
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_hosting.sql"),
+    include_str!("../migrations/0003_remote_identity.sql"),
     include_str!("../migrations/0004_outbox.sql"),
 ];
 
@@ -75,6 +76,8 @@ mod tests {
                 "pending_welcomes",
                 "push_registrations",
                 "recovery_backups",
+                "remote_device_lists",
+                "remote_kp_claims",
                 "s2s_outbox",
                 "s2s_peers",
                 "sessions",

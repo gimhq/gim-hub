@@ -183,6 +183,28 @@ seconds) if a needed peer hub did not answer and nothing else is known.
 Federated actions of a user without a valid record listing their hub fail with 403
 `hosting_record_required`.
 
+## Remote users and cross-hub claims
+
+With federation ([`federation.md`](federation.md) §5.1, §5.2), clients keep talking only to their
+own hub:
+
+- `GET /v2/users/{user_id}` and `GET /v2/users/{user_id}/device-list` also answer for users of
+  other hubs. The hub serves its cached copy of the user's DeviceList, fetching it from the user's
+  hub when it is not cached or older than `GIM_HUB_DEVICE_LIST_CACHE_HOURS` (default 24). A stale
+  copy is served while the user's hub is unreachable; without any copy the answer is 503
+  `peer_unavailable` (with `Retry-After` seconds), and 404 `not_found` if no hosting record of the
+  user is known. `handle` is absent for remote users (handles are per-hub).
+- When a hosted user's DeviceList is replaced, the hub pushes it to the hubs sharing groups with
+  the user; those hubs emit `device_list.updated` to their users in those groups, as for a local
+  update.
+- `POST /v2/keypackages/claim` routes each target by its hosting record: targets on this hub are
+  claimed locally; targets on another hub are claimed from their primary hub on the caller's
+  behalf (in parallel). The response gains `unavailable: [ClaimTarget]` for targets whose hub could
+  not be reached, refused the request or timed out; retry those later (claims are never retried
+  by the hub). `missing` keeps its meaning (unknown user, no active device, no KeyPackage). If any
+  target is on another hub, the caller needs a valid hosting record listing this hub (403
+  `hosting_record_required`); no package is claimed then.
+
 
 | Area | v1 (gim-server) | v2 (gim-hub) |
 |---|---|---|

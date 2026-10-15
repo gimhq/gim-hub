@@ -1147,7 +1147,7 @@
           "keypackages"
         ],
         "summary": "Claim one KeyPackage per active device",
-        "description": "For each target, atomically removes and returns one one-time KeyPackage per active device of the user's DeviceList (or only the given device). The device's last-resort KeyPackage is returned (and kept) only when its one-time packages are exhausted. Emits `keypackages.low` to a device whose one-time count drops below the threshold.",
+        "description": "For each target, atomically removes and returns one one-time KeyPackage per active device of the user's DeviceList (or only the given device). The device's last-resort KeyPackage is returned (and kept) only when its one-time packages are exhausted. Emits `keypackages.low` to a device whose one-time count drops below the threshold.\n\nWith federation, a target hosted on another hub (per its hosting record) is claimed from that hub on the caller's behalf; targets whose hub could not be reached, refused or timed out are listed in `unavailable` (retryable). Claiming from another hub requires the caller to have a valid hosting record listing this hub.",
         "operationId": "claim_key_packages",
         "requestBody": {
           "content": {
@@ -1182,6 +1182,16 @@
           },
           "401": {
             "description": "Missing or invalid bearer token (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A target is on another hub and the caller has no valid hosting record listing this hub (`hosting_record_required`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1560,6 +1570,7 @@
           "identity"
         ],
         "summary": "Get a user",
+        "description": "For a user of another hub, the DeviceList comes from the cache of remote DeviceLists (fetched from the user's hub when missing or stale) and `handle` is absent.",
         "operationId": "get_user",
         "parameters": [
           {
@@ -1603,6 +1614,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The user's hub is unreachable and no cached copy exists (`peer_unavailable`); retry after `Retry-After` seconds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1618,6 +1639,7 @@
           "identity"
         ],
         "summary": "Get a user's DeviceList",
+        "description": "For a user of another hub, the hub answers from its cache of remote DeviceLists, fetching the list from the user's hub when it is not cached or older than `GIM_HUB_DEVICE_LIST_CACHE_HOURS`. A stale cached copy is returned if the user's hub cannot be reached.",
         "operationId": "get_device_list",
         "parameters": [
           {
@@ -1661,6 +1683,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The user's hub is unreachable and no cached copy exists (`peer_unavailable`); retry after `Retry-After` seconds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1674,7 +1706,7 @@
           "identity"
         ],
         "summary": "Upload a signed DeviceList",
-        "description": "No authentication: the DeviceList is self-certifying. The hub verifies the root key signature and that the list's user ID matches `user_id` (derived from the root key). The first upload creates the user on this hub. A later upload with a higher `seq` replaces the stored list; re-uploading the identical list (same `seq`, same bytes) is idempotent and returns 200. Devices revoked by the new list lose their tokens; a `device_list.updated` event is emitted to the user's other active devices and to every active device of users sharing a group with them.",
+        "description": "No authentication: the DeviceList is self-certifying. The hub verifies the root key signature and that the list's user ID matches `user_id` (derived from the root key). The first upload creates the user on this hub. A later upload with a higher `seq` replaces the stored list; re-uploading the identical list (same `seq`, same bytes) is idempotent and returns 200. Devices revoked by the new list lose their tokens; a `device_list.updated` event is emitted to the user's other active devices and to every active device of users sharing a group with them. With federation, a replaced list of a hosted user is pushed to the hubs sharing groups with the user, which emit `device_list.updated` to their users in those groups.",
         "operationId": "put_device_list",
         "parameters": [
           {
@@ -2335,7 +2367,8 @@
         "description": "Claimed KeyPackages.",
         "required": [
           "key_packages",
-          "missing"
+          "missing",
+          "unavailable"
         ],
         "properties": {
           "key_packages": {
@@ -2350,6 +2383,13 @@
               "$ref": "#/components/schemas/ClaimTarget"
             },
             "description": "Targets that are unknown, have no active device, or have no KeyPackage at all."
+          },
+          "unavailable": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClaimTarget"
+            },
+            "description": "Targets on another hub that could not be reached, refused, or timed out (retryable)."
           }
         }
       },

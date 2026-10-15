@@ -62,6 +62,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(outbox) = &outbox {
         state.outbox = Arc::new(outbox.clone());
     }
+    // Registered last: the handlers keep a copy of the final state.
+    let _claims = federation
+        .as_ref()
+        .map(|service| register_identity_ops(&state, service));
 
     let listener = tokio::net::TcpListener::bind(state.config.listen).await?;
     tracing::info!(listen = %state.config.listen, "gim-hub listening");
@@ -130,7 +134,23 @@ fn enable_federation(
         state.clock.as_now(),
     );
     state.hosting.register(service);
+    state.device_lists = state.device_lists.with_federation(
+        state.federation.clone(),
+        state.hosting.clone(),
+        Duration::from_secs(u64::from(config.device_list_cache_hours) * 3600),
+    );
     state.hosting.spawn_republisher()
+}
+
+/// Registers the remote identity ops (`GetDeviceList`, `NotifyDeviceList`,
+/// `ClaimKeyPackage`) with handlers on `state`. Returns the claim handler,
+/// which must be kept alive.
+fn register_identity_ops(
+    state: &AppState,
+    service: &FederationService,
+) -> Arc<gim_hub_s2s::ClaimService> {
+    gim_hub_api::handlers::register_device_list_ops(state, service);
+    gim_hub_api::handlers::register_claim_op(state, service)
 }
 
 /// Starts the S2S outbox worker, sending through `federation`.
@@ -160,6 +180,11 @@ async fn prune_periodically(state: AppState) {
             Ok((0, 0)) => {}
             Ok((events, link_bundles)) => tracing::info!(events, link_bundles, "pruned"),
             Err(err) => tracing::error!(%err, "pruning failed"),
+        }
+        match gim_hub_api::handlers::prune_remote_claims(&state).await {
+            Ok(0) => {}
+            Ok(claims) => tracing::info!(claims, "remote KeyPackage claims pruned"),
+            Err(err) => tracing::error!(%err, "pruning remote KeyPackage claims failed"),
         }
         match gim_hub_api::handlers::check_hosting_records(&state).await {
             Ok((0, 0)) => {}
@@ -382,6 +407,7 @@ mod tests {
         let mut state = hub.state.clone();
         let republish = enable_federation(&mut state, &federation, &config(&allowlist)).unwrap();
         assert!(state.federation.is_enabled());
+        drop(register_identity_ops(&state, &federation));
         republish.abort();
         start_outbox(&config(&allowlist), &hub.state, &federation).shutdown();
         federation.shutdown();

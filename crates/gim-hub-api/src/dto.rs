@@ -411,6 +411,8 @@ pub struct ClaimKeyPackagesResponse {
     pub key_packages: Vec<ClaimedKeyPackage>,
     /// Targets that are unknown, have no active device, or have no KeyPackage at all.
     pub missing: Vec<ClaimTarget>,
+    /// Targets on another hub that could not be reached, refused, or timed out (retryable).
+    pub unavailable: Vec<ClaimTarget>,
 }
 
 // ---------------------------------------------------------------------------
