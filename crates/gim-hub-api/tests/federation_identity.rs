@@ -359,11 +359,13 @@ async fn remote_users_are_read_from_their_hub_and_cached() {
     b.cache_record(&hosting_record(3, 103)).await;
 
     let alice_list = b64(&device_list(1, 1, &[11], &[]));
+    // The read is public, including the fetch from A: the empty (invalid)
+    // bearer token is ignored.
     let (status, body) = send(
         &b.hub,
         Method::GET,
         &format!("/v2/users/{}/device-list", user_id(1)),
-        &bob.token,
+        "",
         None,
     )
     .await;

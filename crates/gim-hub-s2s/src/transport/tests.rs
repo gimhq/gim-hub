@@ -40,6 +40,17 @@ struct Hub {
 /// Starts hub `seed` listening on `listen`, allowing `allowed` (no
 /// addresses yet; see [`Hub::allow`]).
 async fn start_hub(seed: u8, allowed: &[u8], listen: &str, psk: Option<Psk>) -> Hub {
+    start_hub_with_failover(seed, allowed, listen, psk, 30).await
+}
+
+/// [`start_hub`] with `GIM_HUB_PUSH_FAILOVER_SECONDS=failover`.
+async fn start_hub_with_failover(
+    seed: u8,
+    allowed: &[u8],
+    listen: &str,
+    psk: Option<Psk>,
+    failover: u32,
+) -> Hub {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("allowlist");
     let text: String = allowed
@@ -53,6 +64,7 @@ async fn start_hub(seed: u8, allowed: &[u8], listen: &str, psk: Option<Psk>) -> 
         listen: vec![listen.parse().unwrap()],
         s2s_timeout: Duration::from_secs(3),
         psk,
+        push_failover_seconds: failover,
         ..FederationConfig::disabled(dir.path())
     };
     let service = FederationService::start(&config, &root(seed), policy.clone())
@@ -253,6 +265,53 @@ async fn ops_before_hello_get_hello_required() {
     assert!(response.result.is_some(), "{response:?}");
 }
 
+/// `addr` with its IPv4 host replaced by `/dns4/localhost`, plus
+/// `/p2p/<peer>`.
+fn dns4_localhost(addr: &Multiaddr, peer: PeerId) -> Multiaddr {
+    addr.iter()
+        .map(|p| match p {
+            libp2p::multiaddr::Protocol::Ip4(_) => {
+                libp2p::multiaddr::Protocol::Dns4("localhost".into())
+            }
+            other => other,
+        })
+        .chain([libp2p::multiaddr::Protocol::P2p(peer)])
+        .collect()
+}
+
+fn local_peer_id(hub: &Hub) -> PeerId {
+    let cert = hub.transport().shared().state().runtime_cert.clone();
+    let cert = HubRuntimeCert::verify(&cert, &root(hub.seed).verifying_key(), now_ms()).unwrap();
+    PeerId::from_bytes(&cert.peer_id()).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dns4_address_is_dialed_and_bound() {
+    for psk in [None, Some([7; 32])] {
+        let a = start_hub(1, &[2], TCP, psk).await;
+        let b = start_hub(2, &[1], TCP, psk).await;
+        a.serve_device_lists();
+        let addr = dns4_localhost(&a.transport().advertised_addrs()[0], local_peer_id(&a));
+
+        let peer = b
+            .transport()
+            .dial(Some(local_peer_id(&a)), addr)
+            .await
+            .unwrap();
+        assert_eq!(peer, local_peer_id(&a));
+        assert_eq!(
+            b.transport().hello(peer, Some(a.id())).await.unwrap(),
+            a.id()
+        );
+        let response = b
+            .transport()
+            .raw_request(peer, get_device_list("u1"))
+            .await
+            .unwrap();
+        assert!(response.result.is_some(), "{response:?}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_cert_for_another_peer_id_is_refused() {
     let a = start_hub(1, &[3], TCP, None).await;
@@ -277,6 +336,7 @@ async fn runtime_cert_for_another_peer_id_is_refused() {
         bootstrap: Vec::new(),
         timeout: Duration::from_secs(3),
         psk: None,
+        failover: Duration::from_secs(30),
     };
     let (x, _inbound) = Transport::start(config, hub_id(3), &runtime, policy)
         .await
@@ -373,4 +433,22 @@ async fn hub_locator_publish_and_lookup_between_three_hubs() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn co_host_is_down_after_the_failover_delay_once_stopped() {
+    let a = start_hub_with_failover(1, &[2], TCP, None, 1).await;
+    let b = start_hub_with_failover(2, &[1], TCP, None, 1).await;
+    a.allow(&[(&b, true)], &[]);
+    a.transport().keep_connected(&b.id()).await.unwrap();
+    let liveness = a.transport().liveness();
+    liveness.track(&[b.id()]);
+
+    // Pings (every 333 ms) keep B up well past the 1 s delay.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(!liveness.is_down(&b.id()));
+    assert!(!b.transport().liveness().is_down(&a.id()), "B pings A too");
+
+    b.service.shutdown();
+    eventually("B to be down at A", || liveness.is_down(&b.id())).await;
 }

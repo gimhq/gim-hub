@@ -39,6 +39,9 @@ pub enum OpKind {
     GetDeviceList,
     GetHostingRecord,
     NotifyDeviceList,
+    NotifyHostingRecord,
+    SeedReplica,
+    CopyPendingWelcomes,
 }
 
 impl OpKind {
@@ -54,6 +57,9 @@ impl OpKind {
             Op::GetDeviceList(_) => Self::GetDeviceList,
             Op::GetHostingRecord(_) => Self::GetHostingRecord,
             Op::NotifyDeviceList(_) => Self::NotifyDeviceList,
+            Op::NotifyHostingRecord(_) => Self::NotifyHostingRecord,
+            Op::SeedReplica(_) => Self::SeedReplica,
+            Op::CopyPendingWelcomes(_) => Self::CopyPendingWelcomes,
         }
     }
 }

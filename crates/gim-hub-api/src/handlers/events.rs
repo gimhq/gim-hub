@@ -12,7 +12,10 @@ use axum::{
     response::Response,
     Json,
 };
-use gim_hub_db::events::{self, StoredEvent};
+use gim_hub_db::{
+    events::{self, StoredEvent},
+    Connection,
+};
 use serde_json::{json, Value};
 
 use crate::{
@@ -293,16 +296,24 @@ async fn fetch_events(
             }
             events::list_after(conn, &user_id, &device_id, after, limit)?
                 .into_iter()
-                .map(event_json)
+                .map(|event| event_json(conn, event))
                 .collect()
         })
         .await
 }
 
-/// Wire shape of an event: `{cursor, created_at, type, data}`.
-fn event_json(event: StoredEvent) -> Result<(u64, Value), ApiError> {
-    let data: Value = serde_json::from_str(&event.payload)
+/// Wire shape of an event: `{cursor, created_at, type, data}`. A `message`
+/// event stored before `Message.message_id` existed gets it filled from the
+/// message log, with the same value as the push `collapse_id`.
+fn event_json(conn: &Connection, event: StoredEvent) -> Result<(u64, Value), ApiError> {
+    let mut data: Value = serde_json::from_str(&event.payload)
         .map_err(|err| ApiError::Internal(format!("event {} payload: {err}", event.id)))?;
+    if event.event_type == "message" && data.get("message_id").is_none() {
+        if let (Some(gid), Some(seq)) = (data["gid"].as_str(), data["seq"].as_u64()) {
+            let message_id = gim_hub_push::message_id(conn, gid, seq)?;
+            data["message_id"] = message_id.into();
+        }
+    }
     let cursor = u64::try_from(event.id).unwrap_or_default();
     Ok((
         cursor,

@@ -210,7 +210,7 @@ async fn update_revokes_dropped_devices_and_notifies_the_rest() {
 }
 
 #[tokio::test]
-async fn lookups_require_auth_and_report_missing_users() {
+async fn lookups_are_public_and_report_missing_users() {
     let hub = TestHub::new();
     let user = user_id(1);
     put_device_list(&hub, &user, &device_list(1, 1, &[2], &[])).await;
@@ -220,9 +220,11 @@ async fn lookups_require_auth_and_report_missing_users() {
         format!("/v2/users/{user}"),
         format!("/v2/users/{user}/device-list"),
     ] {
-        let (status, body) = send(&hub, Method::GET, &uri, None, None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
-        assert_eq!(code(&body), "unauthorized");
+        let (status, _) = send(&hub, Method::GET, &uri, None, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        // An invalid bearer token is ignored.
+        let (status, _) = send(&hub, Method::GET, &uri, Some("bogus"), None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
     }
     let missing = user_id(5);
     for uri in [

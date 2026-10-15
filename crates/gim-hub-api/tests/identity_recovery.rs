@@ -2,9 +2,19 @@
 
 mod identity_support;
 
-use axum::http::{Method, StatusCode};
-use gim_hub_api::testing::{TestHub, TEST_NOW};
+use std::net::SocketAddr;
+
+use axum::{
+    body::Body,
+    extract::ConnectInfo,
+    http::{header, Method, Request, StatusCode},
+};
+use gim_hub_api::{
+    ratelimit::PublicReadLimits,
+    testing::{TestHub, TEST_NOW},
+};
 use serde_json::json;
+use tower::ServiceExt;
 
 use identity_support::{b64, code, send};
 
@@ -111,4 +121,59 @@ async fn store_is_restricted_and_validated() {
         send(&hub, Method::GET, uri, None, None).await.0,
         StatusCode::NOT_FOUND
     );
+}
+
+/// Unauthenticated GET of `user_id`'s backup from `peer`: the status and
+/// `Retry-After`.
+async fn fetch(hub: &TestHub, user_id: &str, peer: &str) -> (StatusCode, Option<u64>) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("/v2/users/{user_id}/recovery-backup"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(peer.parse::<SocketAddr>().unwrap()));
+    let response = hub.router().oneshot(request).await.unwrap();
+    let retry_after = response
+        .headers()
+        .get(header::RETRY_AFTER)
+        .map(|value| value.to_str().unwrap().parse().unwrap());
+    (response.status(), retry_after)
+}
+
+#[tokio::test]
+async fn fetch_is_rate_limited_per_address_and_per_user() {
+    let mut hub = TestHub::new();
+    let token = hub.create_session("u1", "d1").await;
+    let (status, _) = send(
+        &hub,
+        Method::PUT,
+        "/v2/users/u1/recovery-backup",
+        Some(&token),
+        Some(json!({ "backup": b64(b"ciphertext") })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    hub.state.recovery_reads = PublicReadLimits::new(2, 2, false);
+    let limited = |secs| (StatusCode::TOO_MANY_REQUESTS, Some(secs));
+
+    // 2 per minute per address and per user (one token every 30 s), the
+    // address first; checked before the lookup, so missing backups count.
+    let (a, b, c) = ("203.0.113.7:1", "198.51.100.1:1", "192.0.2.1:1");
+    assert_eq!(fetch(&hub, "u1", a).await, (StatusCode::OK, None));
+    assert_eq!(fetch(&hub, "u2", a).await, (StatusCode::NOT_FOUND, None));
+    assert_eq!(fetch(&hub, "u1", a).await, limited(30));
+    assert_eq!(fetch(&hub, "u1", b).await, (StatusCode::OK, None));
+    assert_eq!(fetch(&hub, "u1", c).await, limited(30));
+    assert_eq!(fetch(&hub, "u2", c).await, (StatusCode::NOT_FOUND, None));
+    // The public user reads have their own budget.
+    let (status, _) = send(&hub, Method::GET, "/v2/users/u1", None, None).await;
+    assert_ne!(status, StatusCode::TOO_MANY_REQUESTS);
+
+    hub.state.clock.advance(20_000);
+    assert_eq!(fetch(&hub, "u1", a).await, limited(10));
+    assert_eq!(fetch(&hub, "u1", b).await, limited(10));
+    hub.state.clock.advance(10_000);
+    assert_eq!(fetch(&hub, "u1", b).await, (StatusCode::OK, None));
 }

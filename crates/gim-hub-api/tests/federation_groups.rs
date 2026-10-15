@@ -15,15 +15,19 @@ use gim_hub_api::{
 };
 use gim_hub_db::groups;
 use gim_hub_identity::{HostingRecord, HubId};
-use gim_hub_proto::s2s::{s2s_request::Op, ErrorCode, S2sRequest, SubmitMessageRequest};
+use gim_hub_proto::s2s::{
+    s2s_request::Op, s2s_response::Result as OpOutput, ErrorCode, MessageKind, S2sRequest,
+    SequencedMessage, SubmitMessageRequest, SubmitMessageResponse,
+};
 use gim_hub_s2s::{
-    hosting::testing::sign_record, AllowlistPolicy, ClaimService, Federation, FederationConfig,
-    FederationService, GroupService, GroupSource, Multiaddr, Outbox, OutboxConfig,
+    hosting::testing::sign_record, AllowlistPolicy, BoxFuture, ClaimService, Federation,
+    FederationConfig, FederationService, GroupService, GroupSource, Multiaddr, OpKind, OpResult,
+    Outbox, OutboxConfig,
 };
 use openmls::prelude::{
     tls_codec::Deserialize, GroupId, LeafNodeIndex, LeafNodeParameters, MlsGroup,
     MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageIn, MlsMessageOut,
-    ProcessedMessageContent, StagedWelcome, MIXED_PLAINTEXT_WIRE_FORMAT_POLICY,
+    OpenMlsProvider, ProcessedMessageContent, StagedWelcome, MIXED_PLAINTEXT_WIRE_FORMAT_POLICY,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -592,7 +596,7 @@ async fn federated_events_push_to_local_devices() {
     assert_eq!(pushes[0].payload["type"], "welcome");
     assert_eq!(pushes[0].payload["gid"], json!(gid));
     assert_eq!(pushes[0].payload["seq"], 1);
-    assert_eq!(pushes[0].payload["sender_user_id"], json!(bob.user_id));
+    assert!(pushes[0].payload.get("sender_user_id").is_none());
     assert_eq!(
         pushes[0].payload["message_id"],
         json!(message_id(&b.hub, &gid, 1).await)
@@ -602,11 +606,26 @@ async fn federated_events_push_to_local_devices() {
     let mls = application(&bob, &mut bob_group, b"hi");
     let (status, message) = post_message(&bob, &b.hub, &gid, "m1", &mls).await;
     assert_eq!(status, StatusCode::CREATED, "{message}");
-    wait_message(&alice, &a.hub, 2).await;
+    let event = wait_message(&alice, &a.hub, 2).await;
     assert_eq!(a.hub.deliver_pushes().await, 1);
     let push = a.hub.state.push.log().recent(None).pop().unwrap();
     let owner_id = message_id(&b.hub, &gid, 2).await;
     assert_eq!(owner_id, message_id(&a.hub, &gid, 2).await);
+    // The client Message carries the owner's ID on both hubs.
+    assert_eq!(message["message_id"], json!(owner_id));
+    assert_eq!(event["message_id"], json!(owner_id));
+    for (hub, client) in [(&b.hub, &bob), (&a.hub, &alice)] {
+        let (status, body) = send(
+            hub,
+            Method::GET,
+            &format!("{}/messages?from_seq=2", group_path(&gid)),
+            &client.token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["messages"][0]["message_id"], json!(owner_id));
+    }
     assert_eq!(
         push.payload,
         json!({
@@ -615,7 +634,6 @@ async fn federated_events_push_to_local_devices() {
             "gid": gid,
             "seq": 2,
             "message_id": owner_id,
-            "sender_user_id": bob.user_id,
             "collapse_id": owner_id,
             "mls_message": message["mls_message"],
         })
@@ -939,4 +957,182 @@ async fn submits_from_unlisted_or_unknown_hubs_are_refused() {
     )
     .await;
     assert_eq!(messages["messages"], json!([]));
+}
+
+#[tokio::test]
+async fn forwarded_submit_answered_with_a_non_application_message_is_refused() {
+    let nodes = cluster(&[101, 102], 1000).await;
+    let (a, b) = (&nodes[0], &nodes[1]);
+    let alice = Client::new(&a.hub, 1, 11).await;
+    let bob = Client::new(&b.hub, 2, 21).await;
+    host(&[a, b], 1, a).await;
+    host(&[a, b], 2, b).await;
+    let (gid, mut alice_group) = create_group(&alice, &a.hub, "group").await;
+    let mls = application(&alice, &mut alice_group, b"hi");
+
+    // B holds a replica listing bob; A answers every submit with a Commit.
+    let (key, members) = (
+        gid.clone(),
+        vec![
+            (alice.user_id.clone(), alice.device_id.clone()),
+            (bob.user_id.clone(), bob.device_id.clone()),
+        ],
+    );
+    let creator = (alice.user_id.clone(), alice.device_id.clone());
+    b.hub
+        .state
+        .db
+        .write(move |tx| {
+            groups::create_replica(
+                tx,
+                &groups::Group {
+                    gid: key,
+                    kind: "group".into(),
+                    epoch: 0,
+                    last_seq: 0,
+                    created_by_user_id: creator.0,
+                    created_by_device_id: creator.1,
+                    created_at: TEST_NOW,
+                },
+                &members,
+                TEST_NOW,
+            )
+        })
+        .await
+        .unwrap();
+    a.service.register(
+        OpKind::SubmitMessage,
+        Arc::new(|_: HubId, op: Op| -> BoxFuture<'static, OpResult> {
+            Box::pin(async move {
+                let Op::SubmitMessage(req) = op else {
+                    unreachable!()
+                };
+                Ok(OpOutput::SubmitMessage(SubmitMessageResponse {
+                    seq: 1,
+                    epoch: 1,
+                    duplicate: false,
+                    message: Some(SequencedMessage {
+                        gid: req.gid,
+                        seq: 1,
+                        epoch: 1,
+                        kind: MessageKind::Commit.into(),
+                        sender_user_id: req.sender_user_id,
+                        sender_device_id: req.sender_device_id,
+                        client_id: req.client_id,
+                        payload: req.mls_message,
+                        ..Default::default()
+                    }),
+                }))
+            })
+        }),
+    );
+
+    let (status, body) = post_message(&bob, &b.hub, &gid, "b1", &mls).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    assert_eq!(code(&body), "peer_refused");
+    assert_eq!(
+        body["error"]["message"],
+        "owning hub answered with a non-application message"
+    );
+    assert_eq!(log(&bob, &b.hub, &gid).await, Vec::new());
+}
+
+#[tokio::test]
+async fn proposal_forwarded_and_committed_by_reference_from_a_third_hub() {
+    let nodes = cluster(&[101, 102, 103], 1000).await;
+    let (a, b, c) = (&nodes[0], &nodes[1], &nodes[2]);
+    let all = [a, b, c];
+    let alice = Client::new(&a.hub, 1, 11).await;
+    let bob = Client::new(&b.hub, 2, 21).await;
+    let carol = Client::new(&c.hub, 3, 31).await;
+    for (client, home, root) in [(&bob, b, 2), (&carol, c, 3)] {
+        client.upload_key_packages(&home.hub, 1).await;
+        host(&all, root, home).await;
+    }
+    host(&all, 1, a).await;
+
+    // alice@A creates the group and adds bob@B and carol@C.
+    let (gid, mut alice_group) = create_group(&alice, &a.hub, "group").await;
+    let kps = vec![
+        alice.claim(&a.hub, &bob).await,
+        alice.claim(&a.hub, &carol).await,
+    ];
+    let (commit, welcome, _) = alice_group
+        .add_members(&alice.provider, &alice.signer, &kps)
+        .unwrap();
+    let body = with_welcome(commit_body("c1", &commit), &welcome, &[&bob, &carol]);
+    let (status, result) = alice.submit_commit(&a.hub, &gid, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    alice_group.merge_pending_commit(&alice.provider).unwrap();
+    let mut bob_group = join(&bob, &wait_events(&bob, &b.hub, "welcome", 1).await[0]);
+    let mut carol_group = join(&carol, &wait_events(&carol, &c.hub, "welcome", 1).await[0]);
+
+    // bob@B leaves with a self-Remove Proposal, forwarded to A.
+    let leave = bob_group.leave_group(&bob.provider, &bob.signer).unwrap();
+    let (status, result) = bob
+        .submit_commit(&b.hub, &gid, commit_body("p1", &leave))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result, json!({ "seq": 2, "epoch": 1, "duplicate": false }));
+    let (status, result) = bob
+        .submit_commit(&b.hub, &gid, commit_body("p1", &leave))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["duplicate"], true);
+    let (_, replica) = send(&b.hub, Method::GET, &group_path(&gid), &bob.token, None).await;
+    assert_eq!(replica["last_seq"], 2);
+    assert_eq!(replica["epoch"], 1);
+
+    // carol@C stores it and commits it by reference through C.
+    let proposal = wait_message(&carol, &c.hub, 2).await;
+    assert_eq!(proposal["kind"], "proposal");
+    assert_eq!(wait_message(&alice, &a.hub, 2).await["kind"], "proposal");
+    let message = MlsMessageIn::tls_deserialize_exact(unb64(&proposal["mls_message"])).unwrap();
+    let processed = carol_group
+        .process_message(
+            &carol.provider,
+            message.try_into_protocol_message().unwrap(),
+        )
+        .unwrap();
+    let ProcessedMessageContent::ProposalMessage(queued) = processed.into_content() else {
+        panic!("not a Proposal");
+    };
+    carol_group
+        .store_pending_proposal(carol.provider.storage(), *queued)
+        .unwrap();
+    let (commit, _, _) = carol_group
+        .commit_to_pending_proposals(&carol.provider, &carol.signer)
+        .unwrap();
+    let (status, result) = carol
+        .submit_commit(&c.hub, &gid, commit_body("c2", &commit))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result, json!({ "seq": 3, "epoch": 2, "duplicate": false }));
+
+    // bob is removed everywhere.
+    for (client, node) in [(&alice, a), (&bob, b), (&carol, c)] {
+        let removed = wait_events(client, &node.hub, "group.member_removed", 1).await;
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0]["user_id"], json!(bob.user_id));
+        assert_eq!(removed[0]["by_device_id"], json!(carol.device_id));
+        assert_eq!(removed[0]["epoch"], 2);
+    }
+    for (client, node) in [(&alice, a), (&carol, c)] {
+        let (_, group) = send(
+            &node.hub,
+            Method::GET,
+            &group_path(&gid),
+            &client.token,
+            None,
+        )
+        .await;
+        assert_eq!(group["epoch"], 2);
+        assert_eq!(
+            device_ids(&group),
+            sorted(&[&alice.device_id, &carol.device_id])
+        );
+    }
+    let (status, body) = send(&b.hub, Method::GET, &group_path(&gid), &bob.token, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(code(&body), "not_member");
 }
