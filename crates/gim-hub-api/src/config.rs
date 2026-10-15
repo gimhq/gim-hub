@@ -124,6 +124,7 @@ fn push_config<'a>(
     });
     Ok(PushConfig {
         member_events: parse(get, "GIM_HUB_PUSH_MEMBER_EVENTS", false, None)?,
+        minimal: parse(get, "GIM_HUB_PUSH_MINIMAL", false, None)?,
         queue_capacity: parse(get, "GIM_HUB_PUSH_QUEUE_CAPACITY", 10_000, Some(1))?,
         log_endpoint: parse(get, "GIM_HUB_PUSH_LOG_ENDPOINT", false, None)?,
         apns,
@@ -193,6 +194,7 @@ mod tests {
     fn push_settings() {
         let config = Config::from_vars(vars(&[
             ("GIM_HUB_PUSH_MEMBER_EVENTS", "true"),
+            ("GIM_HUB_PUSH_MINIMAL", "true"),
             ("GIM_HUB_PUSH_QUEUE_CAPACITY", "5"),
             ("GIM_HUB_PUSH_LOG_ENDPOINT", "true"),
             ("GIM_HUB_PUSH_APNS_TEAM_ID", "TEAM123456"),
@@ -207,7 +209,8 @@ mod tests {
         ]))
         .unwrap()
         .push;
-        assert!(config.member_events && config.log_endpoint && config.unifiedpush);
+        assert!(config.member_events && config.minimal);
+        assert!(config.log_endpoint && config.unifiedpush);
         assert_eq!(config.queue_capacity, 5);
         let apns = config.apns.unwrap();
         assert_eq!(apns.key_path, PathBuf::from("/run/secrets/apns.p8"));

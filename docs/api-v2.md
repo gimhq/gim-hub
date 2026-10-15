@@ -236,7 +236,8 @@ as on a single hub:
 
 `PUT /v2/push/registration` stores the calling device's push registration (one per device,
 replacing the previous one) and `DELETE` removes it; both return 204. Tokens are validated per
-provider (400 `validation_failed`). The hub then pushes `message` and `welcome` events to the
+provider (400 `validation_failed`); `unifiedpush` also requires the RFC 8291 keys `p256dh` and
+`auth`, which encrypt its bodies. The hub then pushes `message` and `welcome` events to the
 device's provider (never to the sender's own device). Payload, provider mapping and the test-only
 `GET /v2/debug/push-log` (off by default): [`push.md`](push.md).
 
@@ -280,8 +281,7 @@ configured).
 
 Pending:
 
-- Push: no real APNs/FCM credentials have been exercised yet; UnifiedPush bodies are not Web Push
-  encrypted (RFC 8291).
+- Push: no real APNs/FCM credentials have been exercised yet.
 - Validation of an added member's MLS credential (type `0xF001`) against their DeviceList is not
   enforced yet: the hub accepts every added member until gim-core identity part 3 defines the
   credential format. The 400 `validation_failed` rejection for credentials in the commit table

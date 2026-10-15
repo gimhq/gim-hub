@@ -48,10 +48,12 @@ pub struct PushNotification {
     pub seq: u64,
     /// ID of the stored message at `(gid, seq)`; also the collapse id.
     pub message_id: String,
-    pub sender_user_id: String,
     /// MLS message (or Welcome), base64, inlined only if it fits the
     /// provider's limit.
     pub mls_message: Option<String>,
+    /// Minimal mode (`GIM_HUB_PUSH_MINIMAL`): the payload is only a wake-up
+    /// with the collapse id; `mls_message` is never inlined.
+    pub minimal: bool,
 }
 
 impl PushNotification {
@@ -62,14 +64,17 @@ impl PushNotification {
     }
 
     /// The contract payload; `mls_message` is included only if `inline`.
+    /// The sender is never included: it is inside the MLS ciphertext.
     pub fn payload(&self, inline: bool) -> Value {
+        if self.minimal {
+            return json!({ "v": 1, "type": "wake", "collapse_id": self.collapse_id() });
+        }
         let mut payload = json!({
             "v": 1,
             "type": self.kind.as_str(),
             "gid": self.gid,
             "seq": self.seq,
             "message_id": self.message_id,
-            "sender_user_id": self.sender_user_id,
             "collapse_id": self.collapse_id(),
         });
         if let (true, Some(mls_message)) = (inline, &self.mls_message) {
@@ -87,7 +92,7 @@ pub fn encode_within(
     limit: usize,
     wrap: impl Fn(Value) -> Vec<u8>,
 ) -> (Vec<u8>, bool) {
-    if notification.mls_message.is_some() {
+    if notification.mls_message.is_some() && !notification.minimal {
         let inlined = wrap(notification.payload(true));
         if inlined.len() <= limit {
             return (inlined, true);
@@ -103,8 +108,8 @@ pub(crate) fn sample(mls_len: usize) -> PushNotification {
         gid: "g1".into(),
         seq: 7,
         message_id: "m7".into(),
-        sender_user_id: "u1".into(),
         mls_message: (mls_len > 0).then(|| "A".repeat(mls_len)),
+        minimal: false,
     }
 }
 
@@ -119,10 +124,24 @@ mod tests {
             n.payload(true),
             json!({
                 "v": 1, "type": "message", "gid": "g1", "seq": 7, "message_id": "m7",
-                "sender_user_id": "u1", "collapse_id": "m7", "mls_message": "AAAA",
+                "collapse_id": "m7", "mls_message": "AAAA",
             })
         );
         assert!(n.payload(false).get("mls_message").is_none());
+    }
+
+    #[test]
+    fn minimal_payload_is_a_wake_up() {
+        let n = PushNotification {
+            minimal: true,
+            ..sample(4)
+        };
+        let wake = json!({ "v": 1, "type": "wake", "collapse_id": "m7" });
+        assert_eq!(n.payload(true), wake);
+        let plain = |v: Value| serde_json::to_vec(&v).unwrap();
+        let (bytes, inlined) = encode_within(&n, 4096, plain);
+        assert!(!inlined);
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), wake);
     }
 
     #[test]

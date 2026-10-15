@@ -222,6 +222,8 @@ mod tests {
             token: "ab".repeat(32),
             app_id: app_id.map(str::to_owned),
             sandbox,
+            p256dh: None,
+            auth: None,
             updated_at: 0,
         }
     }
