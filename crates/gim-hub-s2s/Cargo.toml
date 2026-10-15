@@ -15,6 +15,7 @@ async-trait = { workspace = true }
 ciborium = { workspace = true }
 futures = { workspace = true }
 getrandom = { workspace = true }
+gim-hub-db = { workspace = true }
 gim-hub-identity = { workspace = true }
 gim-hub-proto = { workspace = true }
 hex = { workspace = true }

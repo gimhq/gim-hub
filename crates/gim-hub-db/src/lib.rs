@@ -14,6 +14,7 @@ pub mod keypackages;
 pub mod links;
 pub mod messages;
 mod migrate;
+pub mod outbox;
 mod pool;
 pub mod push;
 pub mod recovery;
