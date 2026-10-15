@@ -42,8 +42,22 @@ ciborium = "=0.2.2"
 data-encoding = "=2.11.1"
 ed25519-dalek = "=2.2.0"
 futures-util = "=0.3.34"
+async-trait = "=0.1.92"
+futures = "=0.3.34"
 getrandom = "=0.4.3"
 hex = "=0.4.3"
+# Federation transport; only `gim-hub-s2s::transport` imports it.
+libp2p = { version = "=0.56.0", default-features = false, features = [
+    "kad",
+    "macros",
+    "noise",
+    "pnet",
+    "quic",
+    "request-response",
+    "tcp",
+    "tokio",
+    "yamux",
+] }
 http-body-util = "=0.1.5"
 openmls = "=0.9.1"
 openmls_basic_credential = "=0.6.0"

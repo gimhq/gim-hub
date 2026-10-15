@@ -7,8 +7,12 @@ use std::{
     time::Duration,
 };
 
-use gim_hub_api::{AppState, Clock, Config, HubIdentity, Notifier};
+use gim_hub_api::{AppState, Clock, Config, HubIdentity};
 use gim_hub_db::Db;
+use gim_hub_s2s::{
+    outbox::NoSource, FederationConfig, FederationService, Hosting, HostingSettings, Outbox,
+    OutboxConfig,
+};
 use tracing_subscriber::EnvFilter;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
@@ -23,8 +27,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let config = Config::from_env()?;
             return Ok(healthcheck(probe_addr(config.listen))?);
         }
+        Some("hub-id") => {
+            let config = Config::from_env()?;
+            println!(
+                "{}",
+                HubIdentity::load_or_create(&config.hub_key_path())?.hub_id()
+            );
+            return Ok(());
+        }
         Some(other) => {
-            return Err(format!("unknown command {other:?}; usage: gim-hub [healthcheck]").into())
+            return Err(
+                format!("unknown command {other:?}; usage: gim-hub [healthcheck|hub-id]").into(),
+            )
         }
     }
 
@@ -35,8 +49,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = Config::from_env()?;
-    let state = open_state(config)?;
+    let federation_config = FederationConfig::from_env(&config.data_dir)?;
+    let mut state = open_state(config)?;
     tracing::info!(hub_id = %state.hub.hub_id(), "hub identity loaded");
+    let federation = start_federation(&federation_config, &state).await?;
+    let republish = federation
+        .as_ref()
+        .and_then(|service| enable_federation(&mut state, service, &federation_config));
+    let outbox = federation
+        .as_ref()
+        .map(|federation| start_outbox(&federation_config, &state, federation));
+    if let Some(outbox) = &outbox {
+        state.outbox = Arc::new(outbox.clone());
+    }
 
     let listener = tokio::net::TcpListener::bind(state.config.listen).await?;
     tracing::info!(listen = %state.config.listen, "gim-hub listening");
@@ -46,6 +71,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     pruning.abort();
+    if let Some(republish) = republish {
+        republish.abort();
+    }
+    if let Some(outbox) = outbox {
+        outbox.shutdown();
+    }
+    if let Some(federation) = federation {
+        federation.shutdown();
+    }
     tracing::info!("gim-hub stopped");
     Ok(())
 }
@@ -57,17 +91,67 @@ fn open_state(config: Config) -> Result<AppState, Box<dyn std::error::Error>> {
     std::fs::create_dir_all(config.blobs_dir())?;
     let db = Db::open(&config.database_path)?;
     let hub = HubIdentity::load_or_create(&config.hub_key_path())?;
-    Ok(AppState {
-        db,
-        config: Arc::new(config),
-        hub,
-        notifier: Notifier::default(),
-        clock: Clock::system(),
-    })
+    Ok(AppState::new(db, config, hub, Clock::system()))
+}
+
+/// Starts the federation service when `GIM_HUB_FEDERATION=true`.
+async fn start_federation(
+    config: &FederationConfig,
+    state: &AppState,
+) -> Result<Option<FederationService>, Box<dyn std::error::Error>> {
+    if !config.enabled {
+        tracing::info!("federation disabled");
+        return Ok(None);
+    }
+    let federation =
+        FederationService::start_with_allowlist(config, state.hub.signing_key()).await?;
+    tracing::info!(
+        addrs = ?federation.transport().advertised_addrs(),
+        "federation started"
+    );
+    Ok(Some(federation))
+}
+
+/// Wires a started federation service into `state`: S2S sends, hosting
+/// resolution through peers and the DHT, the `/gim/user/` validator and the
+/// `GetHostingRecord` op. Returns the hosting record republish task.
+fn enable_federation(
+    state: &mut AppState,
+    service: &FederationService,
+    config: &FederationConfig,
+) -> Option<tokio::task::JoinHandle<()>> {
+    state.federation = Arc::new(service.clone());
+    state.hosting = Hosting::new(
+        state.db.clone(),
+        state.hub.hub_id().clone(),
+        state.federation.clone(),
+        Some(service.transport().clone()),
+        HostingSettings::from_config(config),
+        state.clock.as_now(),
+    );
+    state.hosting.register(service);
+    state.hosting.spawn_republisher()
+}
+
+/// Starts the S2S outbox worker, sending through `federation`.
+fn start_outbox(
+    config: &FederationConfig,
+    state: &AppState,
+    federation: &FederationService,
+) -> Outbox {
+    let outbox = Outbox::new(
+        state.db.clone(),
+        Arc::new(federation.clone()),
+        Arc::new(NoSource),
+        OutboxConfig::from(config),
+    );
+    outbox.start(Some(federation.transport().subscribe()));
+    outbox
 }
 
 /// Deletes events older than the retention window and expired link bundles,
-/// now and then hourly.
+/// expires hosting records and emits `hosting_record.expiring`, now and then
+/// hourly.
 async fn prune_periodically(state: AppState) {
     let mut interval = tokio::time::interval(PRUNE_INTERVAL);
     loop {
@@ -76,6 +160,13 @@ async fn prune_periodically(state: AppState) {
             Ok((0, 0)) => {}
             Ok((events, link_bundles)) => tracing::info!(events, link_bundles, "pruned"),
             Err(err) => tracing::error!(%err, "pruning failed"),
+        }
+        match gim_hub_api::handlers::check_hosting_records(&state).await {
+            Ok((0, 0)) => {}
+            Ok((expired, notified)) => {
+                tracing::info!(expired, notified, "hosting records checked")
+            }
+            Err(err) => tracing::error!(%err, "hosting record check failed"),
         }
     }
 }
@@ -246,6 +337,54 @@ mod tests {
             .unwrap();
         assert_eq!(prune(&hub.state).await.unwrap(), (0, 1));
         assert_eq!(prune(&hub.state).await.unwrap(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn federation_is_off_by_default() {
+        let hub = TestHub::new();
+        let config = FederationConfig::from_vars(Vec::new(), &hub.state.config.data_dir).unwrap();
+        assert!(start_federation(&config, &hub.state)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn federation_starts_when_enabled_and_fails_without_allowlist() {
+        let hub = TestHub::new();
+        let data_dir = hub.state.config.data_dir.clone();
+        let config = |allowlist: &std::path::Path| {
+            FederationConfig::from_vars(
+                [
+                    ("GIM_HUB_FEDERATION", "true"),
+                    ("GIM_HUB_P2P_LISTEN", "/ip4/127.0.0.1/tcp/0"),
+                    ("GIM_HUB_FEDERATION_ALLOWLIST", allowlist.to_str().unwrap()),
+                ]
+                .map(|(k, v)| (k.to_owned(), v.to_owned())),
+                &data_dir,
+            )
+            .unwrap()
+        };
+        let allowlist = data_dir.join("allowlist");
+        assert!(start_federation(&config(&allowlist), &hub.state)
+            .await
+            .is_err());
+
+        let peer = HubIdentity::from_seed(&[9; 32]);
+        std::fs::write(&allowlist, format!("{}\n", peer.hub_id())).unwrap();
+        let federation = start_federation(&config(&allowlist), &hub.state)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(federation.hub_id(), hub.state.hub.hub_id());
+        assert!(data_dir.join("runtime_key").is_file());
+        assert!(data_dir.join("runtime_cert").is_file());
+        let mut state = hub.state.clone();
+        let republish = enable_federation(&mut state, &federation, &config(&allowlist)).unwrap();
+        assert!(state.federation.is_enabled());
+        republish.abort();
+        start_outbox(&config(&allowlist), &hub.state, &federation).shutdown();
+        federation.shutdown();
     }
 
     #[tokio::test]

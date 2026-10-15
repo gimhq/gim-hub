@@ -11,6 +11,10 @@ pub const KAD_PROTOCOL: &str = "/gim/kad/1.0.0";
 /// `/gim/user/<user_id>`.
 pub const USER_RECORD_KEY_PREFIX: &str = "/gim/user/";
 
+/// Prefix of the DHT key holding a hub's locator ([`s2s::HubLocator`]):
+/// `/gim/hub/<hub_id>`.
+pub const HUB_RECORD_KEY_PREFIX: &str = "/gim/hub/";
+
 /// Server-to-server messages, package `gim.s2s.v1`.
 pub mod s2s {
     include!(concat!(env!("OUT_DIR"), "/gim.s2s.v1.rs"));
