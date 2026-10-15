@@ -235,6 +235,61 @@ pub struct RecoveryBackup {
 }
 
 // ---------------------------------------------------------------------------
+// Hosting records
+// ---------------------------------------------------------------------------
+
+/// Body of POST /v2/users/{user_id}/hosting-entry.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct CreateHostingEntryRequest {
+    /// Priority of this hub in the record; lower is preferred.
+    #[serde(default)]
+    #[schema(minimum = 0, maximum = 255, default = 0)]
+    pub priority: i64,
+}
+
+/// This hub's signed entry for the caller's hosting record.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HostingEntry {
+    #[schema(example = json!(HUB_ID_EXAMPLE))]
+    pub hub_id: String,
+    /// The hub's 32-byte Ed25519 root public key, base64.
+    #[schema(content_encoding = "base64")]
+    pub hub_root_pubkey: String,
+    #[schema(minimum = 0, maximum = 255)]
+    pub priority: u8,
+    /// gim-core CBOR `HostingEntry` `[hub_root_pubkey, priority, hub_sig]`,
+    /// base64; signing is deterministic, so repeated calls return identical
+    /// bytes.
+    #[schema(content_encoding = "base64")]
+    pub entry: String,
+}
+
+/// Body of PUT /v2/users/{user_id}/hosting-record.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PutHostingRecordRequest {
+    /// gim-core CBOR `SignedHostingRecord`, base64, at most 8192 decoded
+    /// bytes.
+    #[schema(content_encoding = "base64")]
+    pub hosting_record: String,
+}
+
+/// A user's hosting record.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HostingRecord {
+    #[schema(example = json!(USER_ID_EXAMPLE))]
+    pub user_id: String,
+    /// gim-core CBOR `SignedHostingRecord`, base64.
+    #[schema(content_encoding = "base64")]
+    pub hosting_record: String,
+    pub seq: u64,
+    /// Expiry of the record (ms since the Unix epoch, exclusive).
+    #[schema(example = json!(TIMESTAMP_EXAMPLE))]
+    pub expires_at: u64,
+    /// Whether the user is local to this hub and the record lists this hub.
+    pub hosted: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Link bundles
 // ---------------------------------------------------------------------------
 
@@ -356,6 +411,8 @@ pub struct ClaimKeyPackagesResponse {
     pub key_packages: Vec<ClaimedKeyPackage>,
     /// Targets that are unknown, have no active device, or have no KeyPackage at all.
     pub missing: Vec<ClaimTarget>,
+    /// Targets on another hub that could not be reached, refused, or timed out (retryable).
+    pub unavailable: Vec<ClaimTarget>,
 }
 
 // ---------------------------------------------------------------------------
@@ -559,6 +616,7 @@ pub struct EventList {
     ("welcome" = "#/components/schemas/WelcomeEvent"),
     ("keypackages.low" = "#/components/schemas/KeyPackagesLowEvent"),
     ("device_list.updated" = "#/components/schemas/DeviceListUpdatedEvent"),
+    ("hosting_record.expiring" = "#/components/schemas/HostingRecordExpiringEvent"),
 )))]
 pub enum Event {
     Message(MessageEvent),
@@ -567,6 +625,7 @@ pub enum Event {
     Welcome(WelcomeEvent),
     KeyPackagesLow(KeyPackagesLowEvent),
     DeviceListUpdated(DeviceListUpdatedEvent),
+    HostingRecordExpiring(HostingRecordExpiringEvent),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
@@ -731,6 +790,12 @@ pub struct KeyPackagesLowEvent {
     pub data: KeyPackagesLow,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+pub enum HostingRecordExpiringEventType {
+    #[serde(rename = "hosting_record.expiring")]
+    Tag,
+}
+
 /// A newer DeviceList was stored for the receiving user or for a user sharing
 /// a group with the receiving device.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -741,6 +806,31 @@ pub struct DeviceListUpdatedEvent {
     #[schema(inline)]
     pub r#type: DeviceListUpdatedEventType,
     pub data: DeviceList,
+}
+
+/// The receiving user's hosting record expires soon.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HostingRecordExpiring {
+    #[schema(example = json!(USER_ID_EXAMPLE))]
+    pub user_id: String,
+    /// When the stored record expires (ms since the Unix epoch).
+    #[schema(example = json!(TIMESTAMP_EXAMPLE))]
+    pub expires_at: u64,
+    /// `seq` of the stored record.
+    pub seq: u64,
+}
+
+/// Emitted once per record `seq` (at most once per 24 hours per user) to the
+/// user's active devices when less than 48 hours remain on the hosting
+/// record listing this hub. Publish a renewed record (new `seq`).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HostingRecordExpiringEvent {
+    pub cursor: u64,
+    #[schema(example = json!(TIMESTAMP_EXAMPLE))]
+    pub created_at: i64,
+    #[schema(inline)]
+    pub r#type: HostingRecordExpiringEventType,
+    pub data: HostingRecordExpiring,
 }
 
 // ---------------------------------------------------------------------------
