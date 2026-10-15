@@ -254,7 +254,7 @@ refuses the request the result is 502 `peer_refused`, when it cannot be reached 
     responses(
         (status = 200, description = "Duplicate of an accepted Commit or Proposal (`duplicate: true`)", body = CommitResult),
         (status = 201, description = "Commit or Proposal accepted", body = CommitResult),
-        (status = 400, description = "Not a PublicMessage Commit/Proposal for this group, unknown proposal reference, invalid credential of an added member or of the sender's leaf, or Welcome fields inconsistent (`validation_failed`)", body = Error),
+        (status = 400, description = "Not a PublicMessage Commit/Proposal for this group, unknown proposal reference, invalid credential of an added member or of the sender's leaf, `welcome` not an MLSMessage carrying a Welcome, or Welcome fields inconsistent (`validation_failed`)", body = Error),
         (status = 401, description = "Missing or invalid bearer token (`unauthorized`)", body = Error),
         (status = 403, description = "Caller is not a member of the group (`not_member`), group policy forbids the change (`forbidden`), or the group is owned by another hub and the caller has no valid hosting record listing this hub (`hosting_record_required`)", body = Error),
         (status = 404, description = "Not found (`not_found`)", body = Error),
@@ -470,6 +470,7 @@ impl Submission {
             {
                 return Err(ApiError::PayloadTooLarge);
             }
+            mls::check_welcome(&welcome.welcome)?;
         }
         let parsed = mls::parse_handshake(&mls_message)?;
         let group_id = match &parsed {
@@ -1798,11 +1799,25 @@ impl Groups for StateGroups {
     fn deliver_welcome(
         &self,
         request: s2s::DeliverWelcomeRequest,
-    ) -> BoxFuture<'_, Result<(), DbError>> {
+    ) -> BoxFuture<'_, Result<(), s2s::Error>> {
         Box::pin(async move {
             welcome_handlers::deliver_welcome(&self.0, request)
                 .await
-                .map_err(|err| DbError::Task(err.to_string()))
+                .map_err(|err| match err {
+                    ApiError::ValidationFailed(message) => s2s::Error {
+                        code: ErrorCode::Invalid as i32,
+                        message,
+                        ..s2s::Error::default()
+                    },
+                    err => {
+                        tracing::error!(%err, "storing a delivered Welcome failed");
+                        s2s::Error {
+                            code: ErrorCode::Internal as i32,
+                            message: "internal error".into(),
+                            ..s2s::Error::default()
+                        }
+                    }
+                })
         })
     }
 

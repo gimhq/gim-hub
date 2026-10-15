@@ -18,9 +18,9 @@ use gim_hub_api::testing::TestHub;
 use gim_hub_identity::{DeviceList, UserId, GIM_CREDENTIAL_TYPE};
 use openmls::prelude::{
     tls_codec::{Deserialize, Serialize},
-    Capabilities, Ciphersuite, Credential, CredentialType, CredentialWithKey, GroupId, KeyPackage,
-    KeyPackageIn, MlsGroup, MlsGroupCreateConfig, MlsMessageOut, OpenMlsProvider, ProtocolVersion,
-    WireFormatPolicy, MIXED_PLAINTEXT_WIRE_FORMAT_POLICY,
+    BasicCredential, Capabilities, Ciphersuite, Credential, CredentialType, CredentialWithKey,
+    GroupId, KeyPackage, KeyPackageIn, MlsGroup, MlsGroupCreateConfig, MlsMessageOut,
+    OpenMlsProvider, ProtocolVersion, WireFormatPolicy, MIXED_PLAINTEXT_WIRE_FORMAT_POLICY,
 };
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
@@ -121,6 +121,33 @@ pub fn signer(device_seed: u8) -> SignatureKeyPair {
         device.to_bytes().to_vec(),
         device.verifying_key().to_bytes().to_vec(),
     )
+}
+
+/// A TLS-encoded MLSMessage carrying a real Welcome, from a local group
+/// (basic credentials, no hub) that adds a second member.
+pub fn welcome_fixture() -> Vec<u8> {
+    let provider = OpenMlsRustCrypto::default();
+    let member = |seed: u8| {
+        let signer = signer(seed);
+        let credential = CredentialWithKey {
+            credential: BasicCredential::new(vec![seed]).into(),
+            signature_key: signer.public().into(),
+        };
+        (signer, credential)
+    };
+    let (alice, alice_credential) = member(201);
+    let (bob, bob_credential) = member(202);
+    let key_package = KeyPackage::builder()
+        .build(CIPHERSUITE, &provider, &bob, bob_credential)
+        .unwrap();
+    let config = MlsGroupCreateConfig::builder()
+        .ciphersuite(CIPHERSUITE)
+        .build();
+    let mut group = MlsGroup::new(&provider, &alice, &config, alice_credential).unwrap();
+    let (_, welcome, _) = group
+        .add_members(&provider, &alice, &[key_package.key_package().clone()])
+        .unwrap();
+    welcome.tls_serialize_detached().unwrap()
 }
 
 /// An MLS client signed in to the hub as one device.
