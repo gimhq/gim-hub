@@ -25,13 +25,18 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Value, IdentityError> {
     Ok(value)
 }
 
+/// Encodes `[tbs: bstr, sig: bstr .size 64]`.
+pub(crate) fn encode_signed(tbs: &[u8], sig: &[u8; 64]) -> Vec<u8> {
+    encode(&Value::Array(vec![
+        Value::Bytes(tbs.to_vec()),
+        Value::Bytes(sig.to_vec()),
+    ]))
+}
+
 /// Decodes `[tbs: bstr, sig: bstr .size 64]`.
 pub(crate) fn decode_signed(bytes: &[u8]) -> Result<(Vec<u8>, [u8; 64]), IdentityError> {
     let [tbs, sig] = array(decode(bytes)?)?;
-    let sig = byte_string(sig)?
-        .try_into()
-        .map_err(|_| malformed("signature is not 64 bytes"))?;
-    Ok((byte_string(tbs)?, sig))
+    Ok((byte_string(tbs)?, sized(sig, "signature")?))
 }
 
 /// Decodes a body: an array whose first item is [`FORMAT_VERSION`] (checked
@@ -84,6 +89,13 @@ pub(crate) fn byte_string(value: Value) -> Result<Vec<u8>, IdentityError> {
         Value::Bytes(bytes) => Ok(bytes),
         _ => Err(malformed("expected a byte string")),
     }
+}
+
+/// Decodes a `bstr .size N`.
+pub(crate) fn sized<const N: usize>(value: Value, what: &str) -> Result<[u8; N], IdentityError> {
+    byte_string(value)?
+        .try_into()
+        .map_err(|_| malformed(format!("{what} is not {N} bytes")))
 }
 
 #[cfg(test)]

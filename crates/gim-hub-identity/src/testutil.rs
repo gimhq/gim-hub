@@ -1,4 +1,4 @@
-//! Test-only builders for signed structures; the hub never signs them.
+//! Test-only builders for signed structures the hub never signs.
 
 use ciborium::Value;
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
