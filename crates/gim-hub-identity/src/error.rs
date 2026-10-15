@@ -65,22 +65,23 @@ pub enum IdentityError {
     HubCount(usize),
     /// Hosting record hubs are not sorted by `(priority, hub_root_pubkey)`.
     #[error("hosting record hubs are not in canonical order")]
-    HubsNotSorted,
+    UnsortedHubs,
     /// The user root key of a hosting record is also one of its hub keys.
     #[error("user root key is also a hub root key")]
-    UserRootIsHub,
-    /// Challenge `issued_at >= expires_at`, or lifetime above
-    /// [`crate::MAX_CHALLENGE_LIFETIME_MS`].
-    #[error("invalid challenge lifetime")]
-    InvalidChallengeLifetime,
+    UserKeyIsHubKey,
+    /// Challenge `issued_at >= expires_at`.
+    #[error("challenge validity window is empty")]
+    InvalidValidityWindow,
+    /// Challenge `expires_at - issued_at` above
+    /// [`crate::AUTH_CHALLENGE_MAX_LIFETIME_MS`].
+    #[error("challenge lifetime is too long")]
+    LifetimeTooLong,
 }
 
 impl IdentityError {
     /// Stable snake_case name of the error kind, independent of the message
     /// and payload: the `expected_error` codes of `negative.json` (spec
-    /// section "Negative vectors"). `invalid_hub_id`, `hubs_not_sorted`,
-    /// `user_root_is_hub` and `invalid_challenge_lifetime` are not (yet)
-    /// part of that table.
+    /// section "Negative vectors"). `invalid_hub_id` is not part of that table.
     pub fn code(&self) -> &'static str {
         match self {
             Self::Malformed(_) => "decode_error",
@@ -105,9 +106,10 @@ impl IdentityError {
             Self::BadHubSignature(_) => "bad_hub_signature",
             Self::DuplicateHub(_) => "duplicate_hub",
             Self::HubCount(_) => "hub_count",
-            Self::HubsNotSorted => "hubs_not_sorted",
-            Self::UserRootIsHub => "user_root_is_hub",
-            Self::InvalidChallengeLifetime => "invalid_challenge_lifetime",
+            Self::UnsortedHubs => "unsorted_hubs",
+            Self::UserKeyIsHubKey => "user_key_is_hub_key",
+            Self::InvalidValidityWindow => "invalid_validity_window",
+            Self::LifetimeTooLong => "lifetime_too_long",
         }
     }
 }

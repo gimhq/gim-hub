@@ -8,7 +8,7 @@ pub const AUTH_RESPONSE_CONTEXT: &[u8] = b"gim/auth-response/v1";
 
 /// Longest accepted challenge lifetime, `expires_at - issued_at`, in
 /// milliseconds.
-pub const MAX_CHALLENGE_LIFETIME_MS: u64 = 300_000;
+pub const AUTH_CHALLENGE_MAX_LIFETIME_MS: u64 = 300_000;
 
 /// An unsigned `AuthChallenge`. The hub that issues it must remember it and
 /// accept its nonce at most once; that store is not part of this crate.
@@ -75,22 +75,23 @@ impl AuthChallenge {
 
     /// Checks the challenge for the hub `expected_audience` at `now` (Unix
     /// milliseconds): the audience, then `issued_at < expires_at` with a
-    /// lifetime of at most [`MAX_CHALLENGE_LIFETIME_MS`], then
+    /// lifetime of at most [`AUTH_CHALLENGE_MAX_LIFETIME_MS`], then
     /// `issued_at <= now < expires_at`.
     pub fn check(&self, expected_audience: &HubId, now: u64) -> Result<(), IdentityError> {
         if self.audience != expected_audience.as_str() {
             return Err(IdentityError::AudienceMismatch);
         }
-        if self.issued_at >= self.expires_at
-            || self.expires_at - self.issued_at > MAX_CHALLENGE_LIFETIME_MS
-        {
-            return Err(IdentityError::InvalidChallengeLifetime);
+        if self.issued_at >= self.expires_at {
+            return Err(IdentityError::InvalidValidityWindow);
         }
-        if now >= self.expires_at {
-            return Err(IdentityError::Expired);
+        if self.expires_at - self.issued_at > AUTH_CHALLENGE_MAX_LIFETIME_MS {
+            return Err(IdentityError::LifetimeTooLong);
         }
         if now < self.issued_at {
             return Err(IdentityError::NotYetValid);
+        }
+        if now >= self.expires_at {
+            return Err(IdentityError::Expired);
         }
         Ok(())
     }
@@ -256,20 +257,25 @@ mod tests {
         let check = |issued_at, expires_at, now| {
             AuthChallenge::new(&hub_id(9), NONCE, issued_at, expires_at).check(&hub_id(9), now)
         };
-        let max = MAX_CHALLENGE_LIFETIME_MS;
+        let max = AUTH_CHALLENGE_MAX_LIFETIME_MS;
         assert_eq!(check(1000, 1000 + max, 1000), Ok(()));
         assert_eq!(check(1000, 1000 + max, 999 + max), Ok(()));
         assert_eq!(
             check(1000, 1001 + max, 1000),
-            Err(IdentityError::InvalidChallengeLifetime)
+            Err(IdentityError::LifetimeTooLong)
         );
         assert_eq!(
             check(1000, 1000, 1000),
-            Err(IdentityError::InvalidChallengeLifetime)
+            Err(IdentityError::InvalidValidityWindow)
+        );
+        // The window is checked before the times.
+        assert_eq!(
+            check(1000, 999, 5000),
+            Err(IdentityError::InvalidValidityWindow)
         );
         assert_eq!(
-            check(1000, 999, 999),
-            Err(IdentityError::InvalidChallengeLifetime)
+            check(1000, 1001 + max, 5 * max),
+            Err(IdentityError::LifetimeTooLong)
         );
         assert_eq!(check(1000, 2000, 2000), Err(IdentityError::Expired));
         assert_eq!(check(1000, 2000, 999), Err(IdentityError::NotYetValid));
@@ -288,7 +294,7 @@ mod tests {
                 150,
                 &list
             ),
-            Err(IdentityError::InvalidChallengeLifetime)
+            Err(IdentityError::LifetimeTooLong)
         );
         let response = respond(&challenge(&hub_id(9)), list.user_id(), &key(2));
         assert_eq!(
