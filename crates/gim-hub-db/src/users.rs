@@ -100,6 +100,53 @@ pub fn put_device(tx: &Transaction<'_>, device: &Device, now: i64) -> Result<(),
     Ok(())
 }
 
+/// Makes `active` (device ID, signing key) the only active devices of
+/// `user_id`: upserts them as active, marks every other stored device of the
+/// user inactive and deletes the sessions of every inactive device. Returns
+/// the IDs of devices that were active before and are not anymore.
+pub fn set_active_devices(
+    tx: &Transaction<'_>,
+    user_id: &str,
+    active: &[(String, Vec<u8>)],
+    now: i64,
+) -> Result<Vec<String>, DbError> {
+    let mut deactivated = active_device_ids(tx, user_id)?;
+    deactivated.retain(|id| !active.iter().any(|(active_id, _)| active_id == id));
+    tx.execute(
+        "UPDATE devices SET active = 0, updated_at = ?2 WHERE user_id = ?1 AND active = 1",
+        params![user_id, now],
+    )?;
+    for (device_id, sig_pubkey) in active {
+        put_device(
+            tx,
+            &Device {
+                user_id: user_id.to_owned(),
+                device_id: device_id.clone(),
+                sig_pubkey: sig_pubkey.clone(),
+                active: true,
+            },
+            now,
+        )?;
+    }
+    tx.execute(
+        "DELETE FROM sessions WHERE user_id = ?1 AND device_id IN \
+         (SELECT device_id FROM devices WHERE user_id = ?1 AND active = 0)",
+        [user_id],
+    )?;
+    Ok(deactivated)
+}
+
+/// IDs of the active devices of `user_id`, ascending.
+pub fn active_device_ids(conn: &Connection, user_id: &str) -> Result<Vec<String>, DbError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT device_id FROM devices WHERE user_id = ?1 AND active = 1 ORDER BY device_id",
+    )?;
+    let ids = stmt
+        .query_map([user_id], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +173,41 @@ mod tests {
             db.read(|conn| get_device_list(conn, "u2")).await.unwrap(),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn set_active_devices_deactivates_the_rest() {
+        let db = Db::open_in_memory().unwrap();
+        let key = |id: &str| (id.to_owned(), vec![9; 32]);
+        let first = db
+            .write(move |tx| {
+                put_device_list(tx, &list(1))?;
+                set_active_devices(tx, "u1", &[key("d1"), key("d2")], 10)
+            })
+            .await
+            .unwrap();
+        assert!(first.is_empty());
+        let deactivated = db
+            .write(move |tx| {
+                tx.execute(
+                    "INSERT INTO sessions (token_hash, user_id, device_id, created_at, \
+                     expires_at) VALUES (x'01', 'u1', 'd2', 0, 100)",
+                    [],
+                )?;
+                set_active_devices(tx, "u1", &[key("d1"), key("d3")], 20)
+            })
+            .await
+            .unwrap();
+        assert_eq!(deactivated, ["d2"]);
+        let (active, sessions) = db
+            .read(|conn| {
+                let sessions: i64 =
+                    conn.query_row("SELECT count(*) FROM sessions", [], |row| row.get(0))?;
+                Ok::<_, DbError>((active_device_ids(conn, "u1")?, sessions))
+            })
+            .await
+            .unwrap();
+        assert_eq!(active, ["d1", "d3"]);
+        assert_eq!(sessions, 0);
     }
 }
