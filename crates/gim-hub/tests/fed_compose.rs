@@ -20,13 +20,16 @@ mod mls_support;
 use std::time::{Duration, Instant};
 
 use hyper::{Method, StatusCode};
-use openmls::prelude::{LeafNodeParameters, MlsGroup, OpenMlsProvider};
+use openmls::prelude::{
+    tls_codec::Deserialize, LeafNodeParameters, MlsGroup, MlsMessageIn, OpenMlsProvider,
+    ProcessedMessageContent,
+};
 use serde_json::{json, Value};
 
 use compose_support::{
     application, commit_body, eventually, leaf_of, sorted, with_welcome, Hub, User, CONVERGE,
 };
-use mls_support::{b64, code, device_list, group_path};
+use mls_support::{b64, code, device_list, group_path, unb64};
 
 /// Prints a step result with the time since `start`.
 fn ok(step: &str, start: Instant) {
