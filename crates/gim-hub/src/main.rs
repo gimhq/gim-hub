@@ -9,7 +9,10 @@ use std::{
 
 use gim_hub_api::{AppState, Clock, Config, HubIdentity};
 use gim_hub_db::Db;
-use gim_hub_s2s::{FederationConfig, FederationService, Hosting, HostingSettings};
+use gim_hub_s2s::{
+    outbox::NoSource, FederationConfig, FederationService, Hosting, HostingSettings, Outbox,
+    OutboxConfig,
+};
 use tracing_subscriber::EnvFilter;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
@@ -53,6 +56,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let republish = federation
         .as_ref()
         .and_then(|service| enable_federation(&mut state, service, &federation_config));
+    let outbox = federation
+        .as_ref()
+        .map(|federation| start_outbox(&federation_config, &state, federation));
+    if let Some(outbox) = &outbox {
+        state.outbox = Arc::new(outbox.clone());
+    }
 
     let listener = tokio::net::TcpListener::bind(state.config.listen).await?;
     tracing::info!(listen = %state.config.listen, "gim-hub listening");
@@ -64,6 +73,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     pruning.abort();
     if let Some(republish) = republish {
         republish.abort();
+    }
+    if let Some(outbox) = outbox {
+        outbox.shutdown();
     }
     if let Some(federation) = federation {
         federation.shutdown();
@@ -119,6 +131,22 @@ fn enable_federation(
     );
     state.hosting.register(service);
     state.hosting.spawn_republisher()
+}
+
+/// Starts the S2S outbox worker, sending through `federation`.
+fn start_outbox(
+    config: &FederationConfig,
+    state: &AppState,
+    federation: &FederationService,
+) -> Outbox {
+    let outbox = Outbox::new(
+        state.db.clone(),
+        Arc::new(federation.clone()),
+        Arc::new(NoSource),
+        OutboxConfig::from(config),
+    );
+    outbox.start(Some(federation.transport().subscribe()));
+    outbox
 }
 
 /// Deletes events older than the retention window and expired link bundles,
@@ -355,6 +383,7 @@ mod tests {
         let republish = enable_federation(&mut state, &federation, &config(&allowlist)).unwrap();
         assert!(state.federation.is_enabled());
         republish.abort();
+        start_outbox(&config(&allowlist), &hub.state, &federation).shutdown();
         federation.shutdown();
     }
 

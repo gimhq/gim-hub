@@ -9,7 +9,7 @@ use std::{
 };
 
 use gim_hub_db::Db;
-use gim_hub_s2s::{Disabled, Federation, Hosting};
+use gim_hub_s2s::{Disabled, Federation, Hosting, OutboxSender};
 
 use crate::{config::Config, hub::HubIdentity, notifier::Notifier};
 
@@ -23,6 +23,9 @@ pub struct AppState {
     pub clock: Clock,
     /// Hub-to-hub federation; [`Disabled`] unless `GIM_HUB_FEDERATION=true`.
     pub federation: Arc<dyn Federation>,
+    /// Durable S2S outbound queue; [`Disabled`] (a no-op) unless federation
+    /// is enabled.
+    pub outbox: Arc<dyn OutboxSender>,
     /// Hosting records: local records, the remote cache and resolution.
     pub hosting: Hosting,
 }
@@ -38,6 +41,7 @@ impl AppState {
             notifier: Notifier::default(),
             clock,
             federation: Arc::new(Disabled),
+            outbox: Arc::new(Disabled),
             hosting,
         }
     }

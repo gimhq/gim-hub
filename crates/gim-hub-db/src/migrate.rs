@@ -9,6 +9,7 @@ use crate::DbError;
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_hosting.sql"),
+    include_str!("../migrations/0004_outbox.sql"),
 ];
 
 /// Schema version after all migrations.
@@ -74,6 +75,8 @@ mod tests {
                 "pending_welcomes",
                 "push_registrations",
                 "recovery_backups",
+                "s2s_outbox",
+                "s2s_peers",
                 "sessions",
                 "users",
             ]

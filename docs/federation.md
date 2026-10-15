@@ -861,6 +861,41 @@ has caught up and acks them, or until they expire (§7.5).
 - A member hub whose owner is down cannot submit (503) but keeps serving reads from replicas.
   Owner HA is out of scope (arch §10).
 
+### 7.7 Implementation notes (Resolved in H3-T4)
+
+Gaps in §7.1-§7.6 closed by the smallest consistent choice:
+
+- **Enqueue API.** `gim_hub_s2s::OutboxSender::enqueue_in_tx(tx, peer_hub_id, NewEntry)` with
+  `NewEntry::{Deliver{gid, seq, size}, DeliverWelcome{gid, payload}, DeviceList{user_id}}`
+  (`gim_hub_db::outbox::NewEntry`). It inserts, enforces the cap in the same transaction and
+  wakes the worker. `gim_hub_s2s::Disabled` implements it as a no-op.
+- **Building requests.** The tables a request is rebuilt from belong to other subtasks, so the
+  worker calls an `OutboxSource` (`deliver_messages`, `device_list`, `resync_nudge`, and
+  `refresh_peer` for the `UNAUTHORIZED` refresh). An entry whose message or DeviceList no longer
+  exists, or whose stored `DeliverWelcomeRequest` does not decode, is dropped (reason
+  `unbuildable`). A source error is retried with the peer's backoff.
+- **Backoff.** `failures` counts consecutive failures before the current one, so the first
+  retry is after 1 s. A `Deliver` response that leaves batch entries unacknowledged counts as a
+  failure for the peer.
+- **Permanent errors on a batch.** A permanent error on a multi-entry `Deliver` does not drop
+  the batch: its entries are resent one at a time, so only the offending entry is dropped.
+  The single `UNAUTHORIZED` refresh is per drain run of a peer.
+- **Cap.** A `deliver` entry that does not fit even after evicting every older `deliver` entry
+  is evicted itself (the peer is marked `needs_resync`). `deliver_welcome` and `device_list`
+  entries are queued beyond the cap. A `device_list` entry counts `len(user_id)` bytes.
+- **Resync nudge.** Sent in batches of the §7.2 limits. A permanent rejection of the nudge
+  still clears `needs_resync`; a retryable failure keeps it and backs off.
+- **`s2s_peers`.** The outbox maintains `failures`, `next_attempt_at`, `needs_resync`,
+  `last_connected_at` (on `PeerEvent::Up`) and `updated_at`. `peer_id`, `runtime_cert`,
+  `cert_not_after` and `addrs` stay `NULL`: `PeerEvent` carries only the `hub_id` and the
+  transport keeps its own address book.
+- **Retention and metrics.** The worker deletes expired entries every 60 s (there is no
+  separate retention task). The hub has no metrics exporter yet, so the §7.5 metrics are log
+  fields: `s2s_outbox_entries`/`s2s_outbox_bytes` on every deferral and on the 80 % alert, and
+  a `warn` line `s2s_outbox_dropped_total` with `peer`, `reason`
+  (`evicted`/`expired`/`rejected`/`unbuildable`) and `count`; `Outbox::dropped_total` exposes
+  the counters in process.
+
 ## 8. Database migrations
 
 New migrations, appended to `MIGRATIONS` in `crates/gim-hub-db/src/migrate.rs` in this order (the
