@@ -99,6 +99,9 @@ hosting record". Hosting entries carry hub root keys, not PeerIds; this document
 - Rotating the runtime key (new PeerId) is an operator action: stop the hub, delete
   `runtime_key` and `runtime_cert`, start. gids, hosting records and allowlists are unaffected
   because they name `hub_id`, never a PeerId.
+- Resolved in H3-T1: a new certificate's `not_before` is set 5 minutes before issuance, so peers
+  whose clocks are slightly behind accept it immediately (step 2 of §3.2 checks
+  `not_before <= now`). `not_after` is issuance + `GIM_HUB_RUNTIME_CERT_DAYS`.
 
 ### 3.2 Binding a PeerId to a hub_id: `Hello`
 
@@ -210,6 +213,15 @@ Bootstrap: `GIM_HUB_P2P_BOOTSTRAP` multiaddrs (with or without `/p2p/<PeerId>`) 
 allowlist's static addresses are dialed at startup and every 5 minutes while the routing table is
 empty.
 
+Resolved in H3-T1:
+
+- Step 2 uses an in-memory table of the last PeerId and addresses per bound hub (from `Hello` and
+  the dialed address) until H3-T4 adds `s2s_peers`; nothing is persisted yet.
+- The locator is published at startup, hourly, after a certificate renewal, and as soon as the
+  first peer is bound when an earlier put found no peer.
+- "Routing table empty" is read as "no hub currently bound" (peers enter the routing table only
+  after binding, §3.4).
+
 ### 3.6 `FederationPolicy`
 
 ```rust
@@ -231,6 +243,10 @@ pub trait FederationPolicy: Send + Sync + 'static {
 
 - `AllowlistPolicy`: `allow_hub`/`may_contact` = membership in the allowlist; `admit` = `Allow`
   except the per-op rate limits of §6.8.
+- Resolved in H3-T1: the trait has one more method with a default,
+  `fn known_hubs(&self) -> Vec<HubId>` (empty by default; the allowlist's hubs for
+  `AllowlistPolicy`), so bootstrap (§3.5) can dial the static addresses of every allowed hub.
+  `Multiaddr` is the transport module's re-export, so callers still do not import libp2p.
 - Open federation (extension point, not implemented): an `OpenPolicy` would allow any hub with a
   valid certificate, consult a blocklist and reputation in `allow_hub`, and apply per-hub token
   buckets in `admit`. No protocol change is needed: the decision points above are the only places
@@ -691,6 +707,11 @@ Per caller hub, token buckets in `AllowlistPolicy::admit` (constants in M2b, con
 caller; `GetDeviceList`/`GetHostingRecord` 600/min per caller; everything else unlimited in
 closed federation. Exceeding → `RATE_LIMITED`.
 
+Resolved in H3-T1: `admit(hub_id, op)` sees no request fields, so `AllowlistPolicy::admit`
+enforces only the per-caller buckets (`ClaimKeyPackage` 600/min; `GetDeviceList` and
+`GetHostingRecord` 600/min together). The 10/min limit per `(caller, requester_user_id,
+target_user_id)` is enforced by the `ClaimKeyPackage` handler (H3-T3), answering `RATE_LIMITED`.
+
 ## 7. Durable outbound queue
 
 Used for owner → member traffic only (`Deliver`, `DeliverWelcome`) and `NotifyDeviceList`.
@@ -817,7 +838,8 @@ lists (acceptable: no federation existed when they were sequenced).
 ### 9.1 Proposed `proto/s2s.proto` diff
 
 Additive within `gim.s2s.v1` (no field renumbering, no type changes), except the semantic change
-to membership notices described after the diff. Not applied in this task.
+to membership notices described after the diff. Applied in H3-T1 (together with the header comment
+of `s2s.proto`, which now names the gid owner by `hub_id`), and `s2s.md` updated accordingly.
 
 ```diff
 @@ message S2sRequest
