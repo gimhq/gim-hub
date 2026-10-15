@@ -463,7 +463,9 @@ async fn events_paginate_with_limit() {
     assert_eq!(first["events"].as_array().unwrap().len(), 2);
     let next = first["next_cursor"].as_u64().unwrap();
     assert_eq!(Some(next), first["events"][1]["cursor"].as_u64());
-    let rest = events(&f.hub, &f.bob, &format!("cursor={next}")).await.json();
+    let rest = events(&f.hub, &f.bob, &format!("cursor={next}"))
+        .await
+        .json();
     assert_eq!(rest["events"].as_array().unwrap().len(), 1);
     assert_eq!(rest["events"][0]["data"]["seq"], 3);
 }
@@ -474,8 +476,12 @@ async fn pruned_cursor_is_gone() {
     let mls = f.mls.application(b"old");
     send(&f.hub, GID_EXAMPLE, &f.alice, "c1", &mls).await;
     f.hub.state.clock.advance(8 * DAY_MS);
+    // Test sessions live one day; sign in again.
+    f.alice = f.hub.create_session("u1", "d1").await;
+    f.bob = f.hub.create_session("u2", "d1").await;
     let mls = f.mls.application(b"new");
-    send(&f.hub, GID_EXAMPLE, &f.alice, "c2", &mls).await;
+    let reply = send(&f.hub, GID_EXAMPLE, &f.alice, "c2", &mls).await;
+    assert_eq!(reply.status, StatusCode::CREATED);
 
     let cutoff = f.hub.state.clock.now_ms() - 7 * DAY_MS;
     let pruned = f
@@ -506,9 +512,8 @@ async fn pruned_cursor_is_gone() {
 // WebSocket stream
 // ---------------------------------------------------------------------------
 
-type Ws = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn serve(hub: &TestHub) -> std::net::SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -673,11 +678,27 @@ async fn pending_welcomes_list_and_ack() {
     }
 
     for _ in 0..2 {
-        let reply = call(&hub, Method::POST, "/v2/welcomes/g%2F1/ack", &bob, &[], Body::empty()).await;
+        let reply = call(
+            &hub,
+            Method::POST,
+            "/v2/welcomes/g%2F1/ack",
+            &bob,
+            &[],
+            Body::empty(),
+        )
+        .await;
         assert_eq!(reply.status, StatusCode::NO_CONTENT);
         assert!(reply.body.is_empty());
     }
-    let reply = call(&hub, Method::POST, "/v2/welcomes/unknown/ack", &bob, &[], Body::empty()).await;
+    let reply = call(
+        &hub,
+        Method::POST,
+        "/v2/welcomes/unknown/ack",
+        &bob,
+        &[],
+        Body::empty(),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     assert_eq!(
         get(&hub, "/v2/welcomes/pending", &bob).await.json(),
@@ -717,7 +738,9 @@ async fn blob_roundtrip_with_ranges() {
     assert!(hub.state.config.blobs_dir().join(&blob_id).is_file());
     // No temp files are left behind.
     assert_eq!(
-        std::fs::read_dir(hub.state.config.blobs_dir()).unwrap().count(),
+        std::fs::read_dir(hub.state.config.blobs_dir())
+            .unwrap()
+            .count(),
         1
     );
 
@@ -730,7 +753,17 @@ async fn blob_roundtrip_with_ranges() {
 
     let range = |value: &'static str| {
         let (hub, bob, uri) = (&hub, bob.clone(), uri.clone());
-        async move { call(hub, Method::GET, &uri, &bob, &[(header::RANGE, value)], Body::empty()).await }
+        async move {
+            call(
+                hub,
+                Method::GET,
+                &uri,
+                &bob,
+                &[(header::RANGE, value)],
+                Body::empty(),
+            )
+            .await
+        }
     };
     let reply = range("bytes=10-19").await;
     assert_eq!(reply.status, StatusCode::PARTIAL_CONTENT);
@@ -790,7 +823,9 @@ async fn blob_size_limit() {
     assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
     // Only the first, accepted blob remains; the partial upload was removed.
     assert_eq!(
-        std::fs::read_dir(hub.state.config.blobs_dir()).unwrap().count(),
+        std::fs::read_dir(hub.state.config.blobs_dir())
+            .unwrap()
+            .count(),
         1
     );
 }

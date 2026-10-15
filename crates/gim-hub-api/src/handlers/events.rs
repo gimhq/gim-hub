@@ -78,7 +78,9 @@ pub async fn list_events(
     }
     let next_cursor = events.last().map_or(cursor, |(cursor, _)| *cursor);
     let events: Vec<Value> = events.into_iter().map(|(_, event)| event).collect();
-    Ok(Json(json!({ "events": events, "next_cursor": next_cursor })))
+    Ok(Json(
+        json!({ "events": events, "next_cursor": next_cursor }),
+    ))
 }
 
 #[utoipa::path(
@@ -145,10 +147,8 @@ async fn run_stream(
         return;
     };
     let mut wake = state.notifier.subscribe(&auth.user_id, &auth.device_id);
-    let mut ping = tokio::time::interval_at(
-        tokio::time::Instant::now() + PING_INTERVAL,
-        PING_INTERVAL,
-    );
+    let mut ping =
+        tokio::time::interval_at(tokio::time::Instant::now() + PING_INTERVAL, PING_INTERVAL);
     loop {
         // Drain everything after `cursor`; the subscription above catches
         // events committed while draining.

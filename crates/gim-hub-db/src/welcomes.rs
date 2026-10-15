@@ -88,10 +88,7 @@ mod tests {
         .await
         .unwrap();
 
-        let listed = db
-            .read(|c| list_pending(c, "u1", "d1", 10))
-            .await
-            .unwrap();
+        let listed = db.read(|c| list_pending(c, "u1", "d1", 10)).await.unwrap();
         assert_eq!(
             listed.iter().map(|w| w.gid.as_str()).collect::<Vec<_>>(),
             ["g1", "g2"]
@@ -114,10 +111,7 @@ mod tests {
             db.write(|tx| ack(tx, "u1", "d1", "g1", 40)).await.unwrap(),
             0
         );
-        let listed = db
-            .read(|c| list_pending(c, "u1", "d1", 10))
-            .await
-            .unwrap();
+        let listed = db.read(|c| list_pending(c, "u1", "d1", 10)).await.unwrap();
         assert_eq!(
             listed.iter().map(|w| w.gid.as_str()).collect::<Vec<_>>(),
             ["g2"]
