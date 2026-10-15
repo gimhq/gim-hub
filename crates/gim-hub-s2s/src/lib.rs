@@ -13,10 +13,13 @@
 //! - [`outbox`]: the durable outbound queue and its per-peer worker (§7).
 //! - [`ops`]: remote DeviceLists and cross-hub KeyPackage claims (§5.1,
 //!   §5.2), and group federation (§5.3, §5.4, §6).
+//! - [`multihoming`]: the multi-homing push gate and co-host liveness
+//!   (docs/multihoming.md §8).
 
 pub mod config;
 pub mod federation;
 pub mod hosting;
+pub mod multihoming;
 pub mod ops;
 pub mod outbox;
 pub mod policy;
@@ -27,6 +30,7 @@ pub use federation::{
     error, BoxFuture, Disabled, Federation, FederationService, OpHandler, OpResult, StartError,
 };
 pub use hosting::{Hosting, HostingError, HostingSettings, Purpose};
+pub use multihoming::{PeerLiveness, PushGate};
 pub use ops::{
     claim::{ClaimOutcome, ClaimService, LocalClaims},
     deliver::GroupSource,
@@ -38,6 +42,6 @@ pub use ops::{
 pub use outbox::{Outbox, OutboxConfig, OutboxSender, OutboxSource};
 pub use policy::{AllowlistPolicy, Decision, FederationPolicy, OpKind, PolicyError};
 pub use transport::{
-    InboundRequest, Multiaddr, PeerEvent, RecordDecision, RecordValidator, Responder, SendError,
-    Transport,
+    InboundRequest, Liveness, Multiaddr, PeerEvent, RecordDecision, RecordValidator, Responder,
+    SendError, Transport,
 };

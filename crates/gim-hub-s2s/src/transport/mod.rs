@@ -9,9 +9,12 @@
 //!   inbound op from an unbound PeerId gets `HELLO_REQUIRED`.
 //! - Outbound requests resolve `hub_id` → address (§3.5), dial, `Hello`, and
 //!   retry once on `HELLO_REQUIRED`.
+//! - libp2p ping on every connection; pings and S2S exchanges with bound
+//!   hubs feed [`Liveness`] (docs/multihoming.md §8).
 
 mod binding;
 mod codec;
+pub mod liveness;
 mod records;
 mod runtime;
 mod swarm;
@@ -43,6 +46,7 @@ use tokio::{
 
 pub use codec::MAX_FRAME_BYTES;
 pub use libp2p::Multiaddr;
+pub use liveness::Liveness;
 pub use records::{RecordDecision, RecordValidator};
 pub use runtime::{needs_renewal, RuntimeIdentity, CERT_BACKDATE_MS};
 
@@ -126,6 +130,10 @@ pub struct TransportConfig {
     pub bootstrap: Vec<Multiaddr>,
     pub timeout: Duration,
     pub psk: Option<Psk>,
+    /// A bound hub without a successful ping or exchange for this long is
+    /// down in [`Transport::liveness`]; also shortens the ping interval
+    /// ([`liveness::ping_interval`]).
+    pub failover: Duration,
 }
 
 impl std::fmt::Debug for swarm::Command {
@@ -140,11 +148,20 @@ pub(crate) struct Shared {
     validators: Validators,
     state: Mutex<State>,
     peer_events: broadcast::Sender<PeerEvent>,
+    liveness: Arc<Liveness>,
 }
 
 impl Shared {
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().expect("transport state lock")
+    }
+
+    /// Records a successful exchange with `peer` if it is bound.
+    fn alive(&self, peer: &PeerId) {
+        let hub = self.state().bound_hub(peer, now_ms(), self.policy.as_ref());
+        if let Some(hub) = hub {
+            self.liveness.alive(&hub);
+        }
     }
 }
 
@@ -195,8 +212,13 @@ impl Transport {
                 "transport and policy disagree on the PSK".into(),
             ));
         }
-        let swarm = swarm::build_swarm(runtime.keypair(), config.psk, config.timeout)
-            .map_err(|err| SendError::Transport(err.to_string()))?;
+        let swarm = swarm::build_swarm(
+            runtime.keypair(),
+            config.psk,
+            config.timeout,
+            liveness::ping_interval(config.failover),
+        )
+        .map_err(|err| SendError::Transport(err.to_string()))?;
         let (peer_events, _) = broadcast::channel(256);
         let shared = Arc::new(Shared {
             hub_id,
@@ -208,6 +230,7 @@ impl Transport {
                 ..State::default()
             }),
             peer_events,
+            liveness: Arc::new(Liveness::new(config.failover, liveness::monotonic())),
         });
         let (commands, command_rx) = mpsc::unbounded_channel();
         let (inbound_tx, inbound_rx) = mpsc::channel(INBOUND_QUEUE);
@@ -301,6 +324,23 @@ impl Transport {
     /// Notifications when peer hubs come up or go down.
     pub fn subscribe(&self) -> broadcast::Receiver<PeerEvent> {
         self.shared().peer_events.subscribe()
+    }
+
+    /// Reachability of peer hubs for the push rule (docs/multihoming.md §8).
+    pub fn liveness(&self) -> Arc<Liveness> {
+        self.shared().liveness.clone()
+    }
+
+    /// Makes sure a bound connection to `hub_id` is open, resolving and
+    /// dialing it if needed (§3.5); pings then run on it.
+    pub async fn keep_connected(&self, hub_id: &HubId) -> Result<(), SendError> {
+        if hub_id == self.hub_id() {
+            return Err(SendError::PeerRefused("cannot connect to this hub".into()));
+        }
+        if !self.shared().policy.may_contact(hub_id) {
+            return Err(SendError::PeerRefused("hub not allowlisted".into()));
+        }
+        self.ensure_bound(hub_id).await.map(|_| ())
     }
 
     /// Registers the DHT validator for keys starting with `prefix`.
