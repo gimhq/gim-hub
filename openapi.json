@@ -1114,13 +1114,35 @@
         ]
       }
     },
+    "/v2/hub": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "This hub's identity",
+        "description": "Unauthenticated. Lets a client check that a URL belongs to the `hub_id` listed in its hosting record before signing in.",
+        "operationId": "get_hub",
+        "responses": {
+          "200": {
+            "description": "Hub identity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v2/keypackages": {
       "post": {
         "tags": [
           "keypackages"
         ],
         "summary": "Upload KeyPackages for the calling device",
-        "description": "Adds one-time KeyPackages, or with `last_resort: true` replaces the device's last-resort KeyPackage (exactly one package). Each hub of a multi-homed user holds its own disjoint set. Every leaf must carry the calling device's gim-core credential (type 0xF001), valid against the caller's stored DeviceList, with the certified device key as its signature key; otherwise the whole upload is rejected.",
+        "description": "Adds one-time KeyPackages, or with `last_resort: true` replaces the device's last-resort KeyPackage (exactly one package). Each hub of a multi-homed user holds its own disjoint set. Every leaf must carry the calling device's gim-core credential (type 0xF001), valid against the caller's stored DeviceList, with the certified device key as its signature key; otherwise the whole upload is rejected. A KeyPackage is uploaded to at most one hub, ever: an upload containing a KeyPackage this hub already claimed from another hub on a client's behalf is rejected as a whole.",
         "operationId": "upload_key_packages",
         "requestBody": {
           "content": {
@@ -1163,6 +1185,16 @@
               }
             }
           },
+          "409": {
+            "description": "A KeyPackage was already claimed from another hub through this hub (`duplicate_key_package`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Payload too large (`payload_too_large`)",
             "content": {
@@ -1187,7 +1219,7 @@
           "keypackages"
         ],
         "summary": "Claim one KeyPackage per active device",
-        "description": "For each target, atomically removes and returns one one-time KeyPackage per active device of the user's DeviceList (or only the given device). The device's last-resort KeyPackage is returned (and kept) only when its one-time packages are exhausted. Emits `keypackages.low` to a device whose one-time count drops below the threshold.\n\nWith federation, a target hosted on another hub (per its hosting record) is claimed from that hub on the caller's behalf; targets whose hub could not be reached, refused or timed out are listed in `unavailable` (retryable). Claiming from another hub requires the caller to have a valid hosting record listing this hub.",
+        "description": "For each target, atomically removes and returns one one-time KeyPackage per active device of the user's DeviceList (or only the given device). The device's last-resort KeyPackage is returned (and kept) only when its one-time packages are exhausted. Emits `keypackages.low` to a device whose one-time count drops below the threshold.\n\nWith federation, a target hosted on other hubs (per its hosting record) is claimed from its listed hubs in `(priority, hub_id)` order on the caller's behalf, moving to the next hub when one is unavailable or has no package; devices the first answering hub did not return are requested from the following hubs. Targets for which no hub answered and a hub could not be reached, refused or timed out are listed in `unavailable` (retryable). Claiming from another hub requires the caller to have a valid hosting record listing this hub. Claim and commit through the same hub.",
         "operationId": "claim_key_packages",
         "requestBody": {
           "content": {
@@ -1480,7 +1512,7 @@
           "push"
         ],
         "summary": "Register the calling device for push",
-        "description": "Replaces the calling device's push registration.",
+        "description": "Replaces the calling device's push registration. `unifiedpush` requires `p256dh` and `auth` (RFC 8291 encryption keys); other providers ignore them.",
         "operationId": "put_push_registration",
         "requestBody": {
           "content": {
@@ -1610,7 +1642,7 @@
           "identity"
         ],
         "summary": "Get a user",
-        "description": "For a user of another hub, the DeviceList comes from the cache of remote DeviceLists (fetched from the user's hub when missing or stale) and `handle` is absent.",
+        "description": "No authentication (a bearer token, if sent, is ignored); returns only public data: the self-certifying DeviceList and the handle. Rate limited per client IP and per `user_id`, shared with `GET /v2/users/{user_id}/device-list`. For a user of another hub, the DeviceList comes from the cache of remote DeviceLists (fetched from the user's hub when missing or stale) and `handle` is absent.",
         "operationId": "get_user",
         "parameters": [
           {
@@ -1635,8 +1667,8 @@
               }
             }
           },
-          "401": {
-            "description": "Missing or invalid bearer token (`unauthorized`)",
+          "404": {
+            "description": "Not found (`not_found`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1645,8 +1677,8 @@
               }
             }
           },
-          "404": {
-            "description": "Not found (`not_found`)",
+          "429": {
+            "description": "Over the per-client-IP or per-user limit of unauthenticated reads (`rate_limited`); retry after `Retry-After` seconds",
             "content": {
               "application/json": {
                 "schema": {
@@ -1665,12 +1697,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
+        }
       }
     },
     "/v2/users/{user_id}/device-list": {
@@ -1679,7 +1706,7 @@
           "identity"
         ],
         "summary": "Get a user's DeviceList",
-        "description": "For a user of another hub, the hub answers from its cache of remote DeviceLists, fetching the list from the user's hub when it is not cached or older than `GIM_HUB_DEVICE_LIST_CACHE_HOURS`. A stale cached copy is returned if the user's hub cannot be reached.",
+        "description": "No authentication (a bearer token, if sent, is ignored): the DeviceList is self-certifying public data, and a device restoring from a recovery code reads it before it can sign in. Rate limited per client IP and per `user_id`, shared with `GET /v2/users/{user_id}`. For a user of another hub, the hub answers from its cache of remote DeviceLists, fetching the list from the user's hub when it is not cached or older than `GIM_HUB_DEVICE_LIST_CACHE_HOURS`. A stale cached copy is returned if the user's hub cannot be reached.",
         "operationId": "get_device_list",
         "parameters": [
           {
@@ -1704,8 +1731,8 @@
               }
             }
           },
-          "401": {
-            "description": "Missing or invalid bearer token (`unauthorized`)",
+          "404": {
+            "description": "Not found (`not_found`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1714,8 +1741,8 @@
               }
             }
           },
-          "404": {
-            "description": "Not found (`not_found`)",
+          "429": {
+            "description": "Over the per-client-IP or per-user limit of unauthenticated reads (`rate_limited`); retry after `Retry-After` seconds",
             "content": {
               "application/json": {
                 "schema": {
@@ -1734,12 +1761,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
+        }
       },
       "put": {
         "tags": [
@@ -1971,7 +1993,7 @@
           "hosting"
         ],
         "summary": "Upload the user's signed hosting record",
-        "description": "No authentication: the record is self-certifying. Checks, in order: the record verifies for `user_id` (gim-core \"Hosting record\" verification; 400 `invalid_hosting_record` naming the gim-core error code); `user_id` is a user of this hub (404); the lifetime `expires_at - now` is between 1 hour and 30 days (400 `invalid_hosting_record`, `lifetime_out_of_range`); the seq rules against the stored record: a lower `seq`, or the same `seq` with a different body, is 409 `stale_hosting_record`, the identical record is 200 unchanged. A record listing this hub is published to the federation DHT. A record that does not list this hub is stored too; the hub then stops acting for the user in federation.",
+        "description": "No authentication: the record is self-certifying. Checks, in order: the record verifies for `user_id` (gim-core \"Hosting record\" verification; 400 `invalid_hosting_record` naming the gim-core error code); `user_id` is a user of this hub (404); the lifetime `expires_at - now` is between 1 hour and 30 days (400 `invalid_hosting_record`, `lifetime_out_of_range`); the seq rules against the stored record: a lower `seq`, or the same `seq` with a different body, is 409 `stale_hosting_record`, the identical record is 200 unchanged. A record listing this hub is published to the federation DHT. A record that does not list this hub is stored too; the hub then stops acting for the user in federation. With federation, a record that changes the listed hubs or priorities emits `hosting_record.updated` to the user's devices and is propagated to the user's other hubs, removed hubs and the hubs sharing groups with the user; a record that stops listing this hub removes the user here (writes refused with 403 `hosting_record_required`, data purged after `GIM_HUB_UNHOSTED_GRACE_HOURS`) until a later record lists it again.",
         "operationId": "put_hosting_record",
         "parameters": [
           {
@@ -2704,6 +2726,9 @@
           },
           {
             "$ref": "#/components/schemas/HostingRecordExpiringEvent"
+          },
+          {
+            "$ref": "#/components/schemas/HostingRecordUpdatedEvent"
           }
         ],
         "description": "An entry of the calling device's event stream, ordered by `cursor`.",
@@ -2714,6 +2739,7 @@
             "group.member_added": "#/components/schemas/MemberAddedEvent",
             "group.member_removed": "#/components/schemas/MemberRemovedEvent",
             "hosting_record.expiring": "#/components/schemas/HostingRecordExpiringEvent",
+            "hosting_record.updated": "#/components/schemas/HostingRecordUpdatedEvent",
             "keypackages.low": "#/components/schemas/KeyPackagesLowEvent",
             "message": "#/components/schemas/MessageEvent",
             "welcome": "#/components/schemas/WelcomeEvent"
@@ -3007,6 +3033,124 @@
             "enum": [
               "hosting_record.expiring"
             ]
+          }
+        }
+      },
+      "HostingRecordHub": {
+        "type": "object",
+        "description": "A hub entry of a hosting record.",
+        "required": [
+          "hub_id",
+          "priority"
+        ],
+        "properties": {
+          "hub_id": {
+            "type": "string",
+            "example": "hciqgrcknldyy6lbu2splf5frcdqeftipgfikjxbzeq6x6y55lggapay"
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lower is preferred.",
+            "maximum": 255,
+            "minimum": 0
+          }
+        }
+      },
+      "HostingRecordUpdated": {
+        "type": "object",
+        "description": "The receiving user's hosting record as stored by this hub.",
+        "required": [
+          "user_id",
+          "seq",
+          "expires_at",
+          "hosted",
+          "hubs"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the stored record expires (ms since the Unix epoch).",
+            "example": 1760479200000,
+            "minimum": 0
+          },
+          "hosted": {
+            "type": "boolean",
+            "description": "Whether the record lists this hub."
+          },
+          "hubs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostingRecordHub"
+            },
+            "description": "The listed hubs."
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`seq` of the stored record; dedup across hubs by it.",
+            "minimum": 0
+          },
+          "user_id": {
+            "type": "string",
+            "example": "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa"
+          }
+        }
+      },
+      "HostingRecordUpdatedEvent": {
+        "type": "object",
+        "description": "Emitted to the user's active devices on this hub when a stored record\nchanges the listed hubs or their priorities (renewals with the same\nentries emit nothing). Multi-homing (H4), emitted with federation.",
+        "required": [
+          "cursor",
+          "created_at",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "example": 1760479200000
+          },
+          "cursor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "data": {
+            "$ref": "#/components/schemas/HostingRecordUpdated"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "hosting_record.updated"
+            ]
+          }
+        }
+      },
+      "HubInfo": {
+        "type": "object",
+        "description": "This hub's identity, so a client can check that a URL belongs to the\n`hub_id` listed in its hosting record before signing in.",
+        "required": [
+          "hub_id",
+          "hub_root_pubkey",
+          "version"
+        ],
+        "properties": {
+          "hub_id": {
+            "type": "string",
+            "example": "hciqgrcknldyy6lbu2splf5frcdqeftipgfikjxbzeq6x6y55lggapay"
+          },
+          "hub_root_pubkey": {
+            "type": "string",
+            "description": "The hub's 32-byte Ed25519 root public key, base64; `hub_id` is\nderived from it.",
+            "contentEncoding": "base64"
+          },
+          "version": {
+            "type": "string",
+            "description": "Hub version.",
+            "example": "0.1.0"
           }
         }
       },
@@ -3431,6 +3575,22 @@
             ],
             "description": "APNs topic (app bundle ID) or FCM app ID; ignored by other providers.",
             "example": "im.g.apps"
+          },
+          "auth": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "UnifiedPush only (required there, ignored otherwise): the RFC 8291\nauthentication secret, base64url of 16 bytes.",
+            "example": "BTBZMqHH6r4Tts7J_aSIgg"
+          },
+          "p256dh": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "UnifiedPush only (required there, ignored otherwise): the device's\nRFC 8291 Web Push public key, base64url of the 65-byte uncompressed\nP-256 point.",
+            "example": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
           },
           "provider": {
             "$ref": "#/components/schemas/PushProvider"

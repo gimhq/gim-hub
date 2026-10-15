@@ -12,7 +12,10 @@ use gim_hub_db::Db;
 use gim_hub_push::{Dispatcher, DispatcherSettings, LogProvider, PushLog};
 use gim_hub_s2s::{DeviceLists, Disabled, Federation, Hosting, OutboxSender};
 
-use crate::{config::Config, handlers::IdentityEvents, hub::HubIdentity, notifier::Notifier};
+use crate::{
+    config::Config, handlers::IdentityEvents, hub::HubIdentity, notifier::Notifier,
+    ratelimit::PublicReadLimits,
+};
 
 /// State shared by all handlers (cheap to clone).
 #[derive(Clone)]
@@ -35,6 +38,8 @@ pub struct AppState {
     /// provider that is not started; the binary replaces it with the
     /// configured providers and starts it.
     pub push: Dispatcher,
+    /// Rate limits of the unauthenticated user reads, from the config.
+    pub public_reads: PublicReadLimits,
 }
 
 impl AppState {
@@ -60,6 +65,11 @@ impl AppState {
             DispatcherSettings::from(&config.push),
             0,
         );
+        let public_reads = PublicReadLimits::new(
+            config.public_read_per_ip_per_min,
+            config.public_read_per_user_per_min,
+            config.trust_forwarded_for,
+        );
         Self {
             db,
             config: Arc::new(config),
@@ -71,6 +81,7 @@ impl AppState {
             hosting,
             device_lists,
             push,
+            public_reads,
         }
     }
 }

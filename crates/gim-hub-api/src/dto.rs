@@ -90,6 +90,21 @@ pub struct Health {
     pub version: String,
 }
 
+/// This hub's identity, so a client can check that a URL belongs to the
+/// `hub_id` listed in its hosting record before signing in.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HubInfo {
+    #[schema(example = json!(HUB_ID_EXAMPLE))]
+    pub hub_id: String,
+    /// The hub's 32-byte Ed25519 root public key, base64; `hub_id` is
+    /// derived from it.
+    #[schema(content_encoding = "base64")]
+    pub hub_root_pubkey: String,
+    /// Hub version.
+    #[schema(example = "0.1.0")]
+    pub version: String,
+}
+
 // ---------------------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------------------
@@ -617,6 +632,7 @@ pub struct EventList {
     ("keypackages.low" = "#/components/schemas/KeyPackagesLowEvent"),
     ("device_list.updated" = "#/components/schemas/DeviceListUpdatedEvent"),
     ("hosting_record.expiring" = "#/components/schemas/HostingRecordExpiringEvent"),
+    ("hosting_record.updated" = "#/components/schemas/HostingRecordUpdatedEvent"),
 )))]
 pub enum Event {
     Message(MessageEvent),
@@ -626,6 +642,7 @@ pub enum Event {
     KeyPackagesLow(KeyPackagesLowEvent),
     DeviceListUpdated(DeviceListUpdatedEvent),
     HostingRecordExpiring(HostingRecordExpiringEvent),
+    HostingRecordUpdated(HostingRecordUpdatedEvent),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
@@ -833,6 +850,51 @@ pub struct HostingRecordExpiringEvent {
     pub data: HostingRecordExpiring,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+pub enum HostingRecordUpdatedEventType {
+    #[serde(rename = "hosting_record.updated")]
+    Tag,
+}
+
+/// A hub entry of a hosting record.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HostingRecordHub {
+    #[schema(example = json!(HUB_ID_EXAMPLE))]
+    pub hub_id: String,
+    /// Lower is preferred.
+    #[schema(minimum = 0, maximum = 255)]
+    pub priority: u8,
+}
+
+/// The receiving user's hosting record as stored by this hub.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HostingRecordUpdated {
+    #[schema(example = json!(USER_ID_EXAMPLE))]
+    pub user_id: String,
+    /// `seq` of the stored record; dedup across hubs by it.
+    pub seq: u64,
+    /// When the stored record expires (ms since the Unix epoch).
+    #[schema(example = json!(TIMESTAMP_EXAMPLE))]
+    pub expires_at: u64,
+    /// Whether the record lists this hub.
+    pub hosted: bool,
+    /// The listed hubs.
+    pub hubs: Vec<HostingRecordHub>,
+}
+
+/// Emitted to the user's active devices on this hub when a stored record
+/// changes the listed hubs or their priorities (renewals with the same
+/// entries emit nothing). Multi-homing (H4), emitted with federation.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HostingRecordUpdatedEvent {
+    pub cursor: u64,
+    #[schema(example = json!(TIMESTAMP_EXAMPLE))]
+    pub created_at: i64,
+    #[schema(inline)]
+    pub r#type: HostingRecordUpdatedEventType,
+    pub data: HostingRecordUpdated,
+}
+
 // ---------------------------------------------------------------------------
 // Blobs
 // ---------------------------------------------------------------------------
@@ -881,4 +943,17 @@ pub struct PushRegistration {
     #[serde(default)]
     #[schema(default = false)]
     pub sandbox: bool,
+    /// UnifiedPush only (required there, ignored otherwise): the device's
+    /// RFC 8291 Web Push public key, base64url of the 65-byte uncompressed
+    /// P-256 point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(
+        example = "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+    )]
+    pub p256dh: Option<String>,
+    /// UnifiedPush only (required there, ignored otherwise): the RFC 8291
+    /// authentication secret, base64url of 16 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "BTBZMqHH6r4Tts7J_aSIgg")]
+    pub auth: Option<String>,
 }

@@ -11,8 +11,8 @@ use gim_hub_api::{AppState, Clock, Config, HubIdentity};
 use gim_hub_db::Db;
 use gim_hub_push::{Dispatcher, DispatcherSettings, PushLog};
 use gim_hub_s2s::{
-    FederationConfig, FederationService, GroupService, GroupSource, Hosting, HostingSettings,
-    Outbox, OutboxConfig,
+    ops::hosting_record::HostingRecordService, FederationConfig, FederationService, GroupService,
+    GroupSource, Hosting, HostingSettings, Outbox, OutboxConfig,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -36,10 +36,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             return Ok(());
         }
+        Some("version" | "--version") => {
+            println!(
+                "gim-hub {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                option_env!("GIM_HUB_BUILD_REV").unwrap_or("unknown")
+            );
+            return Ok(());
+        }
         Some(other) => {
-            return Err(
-                format!("unknown command {other:?}; usage: gim-hub [healthcheck|hub-id]").into(),
+            return Err(format!(
+                "unknown command {other:?}; usage: gim-hub [healthcheck|hub-id|version]"
             )
+            .into())
         }
     }
 
@@ -71,9 +80,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(listen = %state.config.listen, "gim-hub listening");
 
     let pruning = tokio::spawn(prune_periodically(state.clone()));
-    axum::serve(listener, gim_hub_api::router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        gim_hub_api::router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     pruning.abort();
     for task in push {
         task.abort();
@@ -169,17 +181,23 @@ fn enable_federation(
 }
 
 /// Registers the remote identity ops (`GetDeviceList`, `NotifyDeviceList`,
-/// `ClaimKeyPackage`) and the group ops (`SubmitCommit`, `SubmitMessage`,
-/// `Deliver`, `DeliverWelcome`, `FetchLog`) with handlers on `state`.
-/// Returns the claim and group handlers, which must be kept alive.
+/// `ClaimKeyPackage`), the group ops (`SubmitCommit`, `SubmitMessage`,
+/// `Deliver`, `DeliverWelcome`, `FetchLog`) and `NotifyHostingRecord` with
+/// handlers on `state`. Returns the claim, group and hosting record
+/// handlers, which must be kept alive.
 fn register_ops(
     state: &AppState,
     service: &FederationService,
-) -> (Arc<gim_hub_s2s::ClaimService>, Arc<GroupService>) {
+) -> (
+    Arc<gim_hub_s2s::ClaimService>,
+    Arc<GroupService>,
+    Arc<HostingRecordService>,
+) {
     gim_hub_api::handlers::register_device_list_ops(state, service);
     (
         gim_hub_api::handlers::register_claim_op(state, service),
         gim_hub_api::handlers::register_group_ops(state, service),
+        gim_hub_api::handlers::register_hosting_record_op(state, service),
     )
 }
 
@@ -201,8 +219,9 @@ fn start_outbox(
 }
 
 /// Deletes events older than the retention window and expired link bundles,
-/// expires hosting records and emits `hosting_record.expiring`, now and then
-/// hourly.
+/// expires hosting records and emits `hosting_record.expiring`, and purges
+/// users removed longer than `GIM_HUB_UNHOSTED_GRACE_HOURS` ago, now and
+/// then hourly.
 async fn prune_periodically(state: AppState) {
     let mut interval = tokio::time::interval(PRUNE_INTERVAL);
     loop {
@@ -223,6 +242,11 @@ async fn prune_periodically(state: AppState) {
                 tracing::info!(expired, notified, "hosting records checked")
             }
             Err(err) => tracing::error!(%err, "hosting record check failed"),
+        }
+        match gim_hub_api::handlers::purge_removed_users(&state).await {
+            Ok(0) => {}
+            Ok(users) => tracing::info!(users, "removed users purged"),
+            Err(err) => tracing::error!(%err, "purging removed users failed"),
         }
     }
 }

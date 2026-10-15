@@ -31,7 +31,7 @@ fn provider_name(provider: PushProvider) -> &'static str {
     path = "/v2/push/registration",
     tag = "push",
     summary = "Register the calling device for push",
-    description = "Replaces the calling device's push registration.",
+    description = "Replaces the calling device's push registration. `unifiedpush` requires `p256dh` and `auth` (RFC 8291 encryption keys); other providers ignore them.",
     request_body = PushRegistration,
     security(("bearerAuth" = [])),
     responses(
@@ -49,6 +49,10 @@ pub async fn put_push_registration(
     let provider = provider_name(body.provider);
     let token = gim_hub_push::validate_registration(provider, &body.token, body.app_id.as_deref())
         .map_err(ApiError::ValidationFailed)?;
+    let keys =
+        gim_hub_push::validate_webpush_keys(provider, body.p256dh.as_deref(), body.auth.as_deref())
+            .map_err(ApiError::ValidationFailed)?;
+    let (p256dh, webpush_auth) = keys.unzip();
     let registration = Registration {
         user_id: auth.user_id,
         device_id: auth.device_id,
@@ -56,6 +60,8 @@ pub async fn put_push_registration(
         token,
         app_id: body.app_id,
         sandbox: body.sandbox,
+        p256dh,
+        auth: webpush_auth,
         updated_at: state.clock.now_ms(),
     };
     state
