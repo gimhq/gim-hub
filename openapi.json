@@ -1142,7 +1142,7 @@
           "keypackages"
         ],
         "summary": "Upload KeyPackages for the calling device",
-        "description": "Adds one-time KeyPackages, or with `last_resort: true` replaces the device's last-resort KeyPackage (exactly one package). Each hub of a multi-homed user holds its own disjoint set. Every leaf must carry the calling device's gim-core credential (type 0xF001), valid against the caller's stored DeviceList, with the certified device key as its signature key; otherwise the whole upload is rejected.",
+        "description": "Adds one-time KeyPackages, or with `last_resort: true` replaces the device's last-resort KeyPackage (exactly one package). Each hub of a multi-homed user holds its own disjoint set. Every leaf must carry the calling device's gim-core credential (type 0xF001), valid against the caller's stored DeviceList, with the certified device key as its signature key; otherwise the whole upload is rejected. A KeyPackage is uploaded to at most one hub, ever: an upload containing a KeyPackage this hub already claimed from another hub on a client's behalf is rejected as a whole.",
         "operationId": "upload_key_packages",
         "requestBody": {
           "content": {
@@ -1185,6 +1185,16 @@
               }
             }
           },
+          "409": {
+            "description": "A KeyPackage was already claimed from another hub through this hub (`duplicate_key_package`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Payload too large (`payload_too_large`)",
             "content": {
@@ -1209,7 +1219,7 @@
           "keypackages"
         ],
         "summary": "Claim one KeyPackage per active device",
-        "description": "For each target, atomically removes and returns one one-time KeyPackage per active device of the user's DeviceList (or only the given device). The device's last-resort KeyPackage is returned (and kept) only when its one-time packages are exhausted. Emits `keypackages.low` to a device whose one-time count drops below the threshold.\n\nWith federation, a target hosted on another hub (per its hosting record) is claimed from that hub on the caller's behalf; targets whose hub could not be reached, refused or timed out are listed in `unavailable` (retryable). Claiming from another hub requires the caller to have a valid hosting record listing this hub.",
+        "description": "For each target, atomically removes and returns one one-time KeyPackage per active device of the user's DeviceList (or only the given device). The device's last-resort KeyPackage is returned (and kept) only when its one-time packages are exhausted. Emits `keypackages.low` to a device whose one-time count drops below the threshold.\n\nWith federation, a target hosted on other hubs (per its hosting record) is claimed from its listed hubs in `(priority, hub_id)` order on the caller's behalf, moving to the next hub when one is unavailable or has no package; devices the first answering hub did not return are requested from the following hubs. Targets for which no hub answered and a hub could not be reached, refused or timed out are listed in `unavailable` (retryable). Claiming from another hub requires the caller to have a valid hosting record listing this hub. Claim and commit through the same hub.",
         "operationId": "claim_key_packages",
         "requestBody": {
           "content": {
