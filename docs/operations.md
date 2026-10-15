@@ -17,6 +17,9 @@ the variable.
 | `GIM_HUB_MAX_BLOB_BYTES` | `104857600` | Largest accepted blob (minimum 1) |
 | `GIM_HUB_LONGPOLL_MAX_WAIT_SECONDS` | `30` | Upper bound for long-poll `wait` |
 | `GIM_HUB_SESSION_TTL_DAYS` | `30` | Lifetime of device bearer tokens (minimum 1) |
+| `GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN` | `120` | Unauthenticated `GET /v2/users/{user_id}` and `.../device-list` requests per client IP (IPv6: per /64) per minute (minimum 1) |
+| `GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN` | `60` | Unauthenticated reads of one `user_id` per minute, across all clients (minimum 1) |
+| `GIM_HUB_TRUST_FORWARDED_FOR` | `false` | `true` keys the per-IP limit by the left-most `X-Forwarded-For` address; set only behind a reverse proxy that overwrites the header |
 | `RUST_LOG` | `info` | Log filter (`tracing_subscriber` `EnvFilter` syntax, e.g. `gim_hub_api=debug,info`) |
 
 ### Federation
@@ -97,6 +100,7 @@ them, e.g. under `/run/secrets`).
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `GIM_HUB_PUSH_MEMBER_EVENTS` | `false` | Also push `group.member_added` / `group.member_removed` (silent) |
+| `GIM_HUB_PUSH_MINIMAL` | `false` | `true` sends minimal wake-up payloads `{"v":1,"type":"wake","collapse_id"}` only (no group, sequence or MLS message; see `push.md`) |
 | `GIM_HUB_PUSH_QUEUE_CAPACITY` | `10000` | Most devices with a queued push; further pushes are dropped (minimum 1) |
 | `GIM_HUB_PUSH_LOG_ENDPOINT` | `false` | Serve the unauthenticated, test-only `GET /v2/debug/push-log`; never enable in production |
 | `GIM_HUB_PUSH_APNS_TEAM_ID` | unset | APNs team ID; the four `APNS` variables below enable APNs together |
@@ -162,6 +166,19 @@ docker run -d --name gim-hub -p 8080:8080 -v gim-hub-data:/data \
 
 `scripts/docker-smoke.sh` builds the image and checks a running container; CI
 runs it on every push.
+
+Build notes:
+
+- The builder caches only the cargo registry and git checkouts. `target/` is
+  not cached: a BuildKit cache mount is shared by every checkout built on the
+  same daemon, and cargo judges freshness by mtime, so a shared `target/` can
+  yield a binary built from another checkout's sources. Docker's layer cache
+  is keyed on the build context content and stays safe.
+- `gim-hub version` prints the package version and the `GIM_HUB_BUILD_REV`
+  build argument (`unknown` if unset). `scripts/docker-build.sh IMAGE`, used by
+  `docker-smoke.sh` and `fed-test.sh`, passes the checkout's revision (with a
+  `-dirty-<hash>` suffix for uncommitted changes to tracked files) and fails
+  unless the built image reports exactly that revision.
 
 ## Shutdown
 

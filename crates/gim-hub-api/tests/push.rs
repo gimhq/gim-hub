@@ -15,6 +15,12 @@ use tower::ServiceExt;
 
 use gim_hub_api::{dto::GID_EXAMPLE, testing::TestHub};
 use gim_hub_db::push::{self, Registration};
+use gim_hub_push::{Dispatcher, DispatcherSettings, LogProvider, PushLog};
+
+/// RFC 8291 Appendix A user agent public key and authentication secret.
+const P256DH: &str =
+    "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4";
+const AUTH: &str = "BTBZMqHH6r4Tts7J_aSIgg";
 
 async fn call(
     hub: &TestHub,
@@ -87,18 +93,31 @@ async fn registration_validates_replaces_and_deletes() {
     assert!(registration.sandbox);
 
     // One registration per device: a new one replaces it.
+    assert_eq!((registration.p256dh, registration.auth), (None, None));
     let (status, _) = register(
         &hub,
         &token,
-        json!({ "provider": "unifiedpush", "token": "https://push.example.eu/up/abc" }),
+        json!({
+            "provider": "unifiedpush", "token": "https://push.example.eu/up/abc",
+            "p256dh": P256DH, "auth": AUTH,
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let registration = stored(&hub, "u1", "d1").await.unwrap();
     assert_eq!(registration.provider, "unifiedpush");
     assert!(!registration.sandbox);
+    assert_eq!(registration.p256dh.as_ref().map(Vec::len), Some(65));
+    assert_eq!(registration.auth.as_ref().map(Vec::len), Some(16));
 
+    let up = "https://push.example.eu/up/abc";
     for body in [
+        json!({ "provider": "unifiedpush", "token": up }),
+        json!({ "provider": "unifiedpush", "token": up, "p256dh": P256DH }),
+        json!({ "provider": "unifiedpush", "token": up, "auth": AUTH }),
+        json!({ "provider": "unifiedpush", "token": up, "p256dh": &P256DH[..86], "auth": AUTH }),
+        json!({ "provider": "unifiedpush", "token": up, "p256dh": P256DH, "auth": &AUTH[..20] }),
+        json!({ "provider": "unifiedpush", "token": up, "p256dh": "!!", "auth": AUTH }),
         json!({ "provider": "apns", "token": "not-hex" }),
         json!({ "provider": "fcm", "token": "short" }),
         json!({ "provider": "unifiedpush", "token": "http://push.example.eu/up" }),
@@ -128,6 +147,21 @@ async fn registration_validates_replaces_and_deletes() {
         assert_eq!(status, StatusCode::NO_CONTENT);
     }
     assert!(stored(&hub, "u1", "d1").await.is_none());
+}
+
+#[tokio::test]
+async fn webpush_keys_are_ignored_for_other_providers() {
+    let hub = TestHub::new();
+    let token = hub.create_session("u1", "d1").await;
+    let (status, _) = register(
+        &hub,
+        &token,
+        json!({ "provider": "log", "token": "t", "p256dh": "bad", "auth": AUTH }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let registration = stored(&hub, "u1", "d1").await.unwrap();
+    assert_eq!((registration.p256dh, registration.auth), (None, None));
 }
 
 #[tokio::test]
@@ -287,7 +321,6 @@ async fn messages_push_to_other_members_with_inline_payload_by_size() {
             "gid": GID_EXAMPLE,
             "seq": 1,
             "message_id": id,
-            "sender_user_id": "u1",
             "collapse_id": id,
             "mls_message": message["mls_message"],
         })
@@ -336,4 +369,35 @@ async fn messages_push_to_other_members_with_inline_payload_by_size() {
     )
     .await;
     assert_eq!(body["notifications"], json!([]));
+}
+
+#[tokio::test]
+async fn minimal_mode_pushes_only_wake_ups() {
+    let mut hub = TestHub::new();
+    let log = PushLog::default();
+    hub.state.push = Dispatcher::new(
+        hub.state.db.clone(),
+        vec![Arc::new(LogProvider::new(log.clone()))],
+        log.clone(),
+        DispatcherSettings {
+            minimal: true,
+            ..DispatcherSettings::default()
+        },
+        0,
+    );
+    let alice = hub.create_session("u1", "d1").await;
+    let bob = hub.create_session("u2", "d1").await;
+    seed_group(&hub, GID_EXAMPLE, &[("u1", "d1"), ("u2", "d1")]).await;
+    let (status, _) = register(&hub, &bob, json!({ "provider": "log", "token": "t" })).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let mut mls = MlsSender::new(GID_EXAMPLE);
+    send_message(&hub, &alice, "c1", &mls.application(b"hi")).await;
+    assert_eq!(hub.deliver_pushes().await, 1);
+    let pushes = log.recent(Some("d1"));
+    assert_eq!(pushes.len(), 1);
+    assert_eq!(
+        pushes[0].payload,
+        json!({ "v": 1, "type": "wake", "collapse_id": message_id(&hub, 1).await })
+    );
 }

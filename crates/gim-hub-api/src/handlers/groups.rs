@@ -32,7 +32,10 @@ use prost::Message as _;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::{identity::json_body, messages as message_handlers, welcomes as welcome_handlers};
+use super::{
+    identity::json_body, keypackages as keypackage_handlers, messages as message_handlers,
+    welcomes as welcome_handlers,
+};
 use crate::{
     auth::AuthDevice,
     dto::{
@@ -658,6 +661,7 @@ async fn sequence_commit(
         .db
         .read(move |conn| added_identities(conn, &parsed, origin))
         .await?;
+    keypackage_handlers::burn_added(state, &commit.parsed).await?;
     if federated {
         prepare_commit(state, &commit, &sender, &identities).await?;
     }
@@ -781,8 +785,7 @@ fn apply_commit(
 
     let mut added = Vec::new();
     for ((_, leaf), identity) in parsed.added.iter().zip(identities) {
-        let (user_id, device_id) = identity
-            .ok_or_else(|| invalid("Add proposal uses a KeyPackage not claimed on this hub"))?;
+        let (user_id, device_id) = identity.ok_or_else(|| invalid(mls::KP_NOT_CLAIMED))?;
         if remaining
             .iter()
             .any(|m| m.user_id == user_id && m.device_id == device_id)
@@ -1028,24 +1031,20 @@ async fn forward_commit(
     let gid = commit.gid.clone();
     let parsed = commit.parsed.clone();
     let member = sender.clone();
-    state
+    let identities = state
         .db
         .read(move |conn| {
             groups::get(conn, &gid)?.ok_or(ApiError::NotFound)?;
             if !groups::is_member(conn, &gid, &member.user_id, &member.device_id)? {
                 return Err(ApiError::NotMember);
             }
-            if added_identities(conn, &parsed, Origin::Client)?
-                .iter()
-                .any(Option::is_none)
-            {
-                return Err(invalid(
-                    "Add proposal uses a KeyPackage not claimed on this hub",
-                ));
-            }
-            Ok(())
+            added_identities(conn, &parsed, Origin::Client)
         })
         .await?;
+    keypackage_handlers::burn_added(state, &commit.parsed).await?;
+    if identities.iter().any(Option::is_none) {
+        return Err(invalid(mls::KP_NOT_CLAIMED));
+    }
     state
         .hosting
         .require_hosting_record(&sender.user_id)

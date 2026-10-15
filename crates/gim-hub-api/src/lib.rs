@@ -11,6 +11,7 @@ pub mod handlers;
 pub mod hub;
 pub mod mls;
 pub mod notifier;
+pub mod ratelimit;
 pub mod state;
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -49,6 +50,7 @@ opaque strings whose format is owned by gim-core. Every non-2xx JSON response ha
     ),
     paths(
         h::healthz,
+        h::get_hub,
         h::create_auth_challenge,
         h::create_session,
         h::put_device_list,
@@ -133,6 +135,7 @@ pub fn openapi_json() -> String {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(h::healthz))
+        .route("/v2/hub", get(h::get_hub))
         .route("/v2/auth/challenge", post(h::create_auth_challenge))
         .route("/v2/auth/session", post(h::create_session))
         .route(
