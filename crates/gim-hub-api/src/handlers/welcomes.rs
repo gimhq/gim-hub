@@ -74,7 +74,7 @@ pub async fn list_pending_welcomes(
     description = "Marks the pending Welcome(s) for `gid` as processed for the calling device; they \
 are no longer returned by GET /v2/welcomes/pending. Idempotent: returns 204 also when nothing is \
 pending for `gid` (already acknowledged, or the group was deleted).",
-    params(("gid" = String, Path, description = "Group ID, percent-encoded (`/` as `%2F`)", example = "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA%2Fhf4caruf7nbxzmwh5wvgefz6pa")),
+    params(("gid" = String, Path, description = "Group ID, percent-encoded (`/` as `%2F`)", example = "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq%2Fhf4caruf7nbxzmwh5wvgefz6pa")),
     security(("bearerAuth" = [])),
     responses(
         (status = 204, description = "Acknowledged (or nothing pending for `gid`)"),

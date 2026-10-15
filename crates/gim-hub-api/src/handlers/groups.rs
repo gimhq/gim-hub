@@ -8,7 +8,7 @@ use axum::{
     Json,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use gim_hub_db::{events, groups, keypackages, messages, Transaction};
+use gim_hub_db::{events, groups, keypackages, messages, welcomes, Transaction};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -94,8 +94,8 @@ fn is_member(members: &[groups::Member], user_id: &str, device_id: &str) -> bool
     path = "/v2/groups",
     tag = "groups",
     summary = "Create a group",
-    description = "Assigns a new `gid = <owner_peer_id>/<random_128 base32>` (this hub's PeerID) at \
-epoch 0 with the calling device as the only member. Further members are added by Commits.",
+    description = "Assigns a new `gid = <owner hub_id>/<random_128 base32lower>` (this hub's \
+`hub_id`, stable across runtime-key rotation) at epoch 0 with the calling device as the only member. Further members are added by Commits.",
     request_body = CreateGroupRequest,
     security(("bearerAuth" = [])),
     responses(
@@ -167,7 +167,7 @@ pub async fn list_groups(
     path = "/v2/groups/{gid}",
     tag = "groups",
     summary = "Get a group",
-    params(("gid" = String, Path, description = "Group ID, percent-encoded (`/` as `%2F`)", example = "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA%2Fhf4caruf7nbxzmwh5wvgefz6pa")),
+    params(("gid" = String, Path, description = "Group ID, percent-encoded (`/` as `%2F`)", example = "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq%2Fhf4caruf7nbxzmwh5wvgefz6pa")),
     security(("bearerAuth" = [])),
     responses(
         (status = 200, description = "Group", body = Group),
@@ -209,7 +209,7 @@ ID from their credentials, and `group.member_added` / `group.member_removed` eve
 optional Welcome is delivered as a `welcome` event to `welcome_recipients`.\n\n\
 Resubmitting the same Commit (same hash) returns the original result with `duplicate: true` \
 and emits nothing. Any other Commit for a past epoch fails with 409 `stale_epoch`.",
-    params(("gid" = String, Path, description = "Group ID, percent-encoded (`/` as `%2F`)", example = "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA%2Fhf4caruf7nbxzmwh5wvgefz6pa")),
+    params(("gid" = String, Path, description = "Group ID, percent-encoded (`/` as `%2F`)", example = "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq%2Fhf4caruf7nbxzmwh5wvgefz6pa")),
     request_body = SubmitCommitRequest,
     security(("bearerAuth" = [])),
     responses(
@@ -550,7 +550,7 @@ fn apply_commit(
             ratchet_tree: welcome.ratchet_tree,
         })?;
         for recipient in &welcome.recipients {
-            groups::insert_pending_welcome(
+            welcomes::insert_pending(
                 tx,
                 &recipient.user_id,
                 &recipient.device_id,

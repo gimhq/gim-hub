@@ -14,9 +14,9 @@ pub const USER_ID_EXAMPLE: &str = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbw
 pub const DEVICE_ID_EXAMPLE: &str = "d54ta5gvdyzz26janc6rgmbeagy";
 /// Example hub ID (format owned by gim-core).
 pub const HUB_ID_EXAMPLE: &str = "hciqgrcknldyy6lbu2splf5frcdqeftipgfikjxbzeq6x6y55lggapay";
-/// Example group ID: `<owner_peer_id>/<random_128 base32>`.
+/// Example group ID: `<owner hub_id>/<random_128 base32lower>`.
 pub const GID_EXAMPLE: &str =
-    "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA/hf4caruf7nbxzmwh5wvgefz6pa";
+    "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq/hf4caruf7nbxzmwh5wvgefz6pa";
 /// Example link ID.
 pub const LINK_ID_EXAMPLE: &str = "wgy33neayyoqouya3g77pwolne";
 /// Example client idempotency key.
@@ -387,7 +387,8 @@ pub struct CreateGroupRequest {
 /// A group as tracked by its delivery service.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Group {
-    /// Group ID `<owner_peer_id>/<random_128 base32>`, assigned by the hub.
+    /// Group ID `<owner hub_id>/<random_128 base32lower>`, assigned by the hub. Clients use its
+    /// UTF-8 bytes as the MLS group ID.
     #[schema(example = json!(GID_EXAMPLE))]
     pub gid: String,
     pub kind: GroupKind,

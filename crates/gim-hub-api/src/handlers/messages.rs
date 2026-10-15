@@ -8,7 +8,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use gim_hub_db::{
-    events,
+    events, groups,
     messages::{self, NewMessage, StoredMessage},
     Transaction,
 };
@@ -41,7 +41,7 @@ to every member device except the sender. The epoch is read from the MLS framing
 another epoch fails with 409 `stale_epoch`.\n\n\
 Resending the same `client_id` from the same device returns the stored message with 200 and \
 emits nothing. A decoded message larger than the hub limit (default 262144 bytes) fails with 413.",
-    params(("gid" = String, Path, description = "Group ID, percent-encoded (`/` as `%2F`)", example = "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA%2Fhf4caruf7nbxzmwh5wvgefz6pa")),
+    params(("gid" = String, Path, description = "Group ID, percent-encoded (`/` as `%2F`)", example = "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq%2Fhf4caruf7nbxzmwh5wvgefz6pa")),
     request_body = SendMessageRequest,
     security(("bearerAuth" = [])),
     responses(
@@ -92,8 +92,8 @@ pub async fn send_message(
     let (outcome, recipients) = state
         .db
         .write(move |tx| {
-            let current_epoch = messages::group_epoch(tx, &gid)?.ok_or(ApiError::NotFound)?;
-            if !messages::is_member(tx, &gid, &auth.user_id, &auth.device_id)? {
+            let current_epoch = groups::group_epoch(tx, &gid)?.ok_or(ApiError::NotFound)?;
+            if !groups::is_member(tx, &gid, &auth.user_id, &auth.device_id)? {
                 return Err(ApiError::NotMember);
             }
             if let Some(stored) =
@@ -152,7 +152,7 @@ enum Outcome {
     summary = "List group messages",
     description = "Commits and application messages with `seq >= from_seq`, ascending.",
     params(
-        ("gid" = String, Path, description = "Group ID, percent-encoded (`/` as `%2F`)", example = "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA%2Fhf4caruf7nbxzmwh5wvgefz6pa"),
+        ("gid" = String, Path, description = "Group ID, percent-encoded (`/` as `%2F`)", example = "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq%2Fhf4caruf7nbxzmwh5wvgefz6pa"),
         MessagesQuery,
     ),
     security(("bearerAuth" = [])),
@@ -184,8 +184,8 @@ pub async fn list_messages(
     let mut stored = state
         .db
         .read(move |conn| {
-            messages::group_epoch(conn, &gid)?.ok_or(ApiError::NotFound)?;
-            if !messages::is_member(conn, &gid, &auth.user_id, &auth.device_id)? {
+            groups::group_epoch(conn, &gid)?.ok_or(ApiError::NotFound)?;
+            if !groups::is_member(conn, &gid, &auth.user_id, &auth.device_id)? {
                 return Err(ApiError::NotMember);
             }
             Ok(messages::list_from(conn, &gid, from_seq, limit + 1)?)
@@ -259,7 +259,7 @@ pub(crate) fn emit_message_events(
 ) -> Result<Vec<(String, String)>, ApiError> {
     let payload = serde_json::to_string(&message_dto(stored.clone()))
         .map_err(|err| ApiError::Internal(err.to_string()))?;
-    let mut recipients = messages::member_devices(tx, &stored.gid)?;
+    let mut recipients = groups::member_devices(tx, &stored.gid)?;
     recipients.retain(|(user_id, device_id)| {
         (user_id, device_id) != (&stored.sender_user_id, &stored.sender_device_id)
     });

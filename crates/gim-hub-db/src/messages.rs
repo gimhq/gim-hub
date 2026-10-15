@@ -55,45 +55,6 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<StoredMessage> {
     })
 }
 
-/// Current epoch of a group, or `None` if the group does not exist.
-pub fn group_epoch(conn: &Connection, gid: &str) -> Result<Option<i64>, DbError> {
-    let epoch = conn
-        .query_row("SELECT epoch FROM groups WHERE gid = ?1", [gid], |row| {
-            row.get(0)
-        })
-        .optional()?;
-    Ok(epoch)
-}
-
-/// Whether a device is a member of a group.
-pub fn is_member(
-    conn: &Connection,
-    gid: &str,
-    user_id: &str,
-    device_id: &str,
-) -> Result<bool, DbError> {
-    let found = conn
-        .query_row(
-            "SELECT 1 FROM group_members WHERE gid = ?1 AND user_id = ?2 AND device_id = ?3",
-            params![gid, user_id, device_id],
-            |_| Ok(()),
-        )
-        .optional()?;
-    Ok(found.is_some())
-}
-
-/// Member devices of a group as `(user_id, device_id)`, ordered.
-pub fn member_devices(conn: &Connection, gid: &str) -> Result<Vec<(String, String)>, DbError> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT user_id, device_id FROM group_members WHERE gid = ?1 \
-         ORDER BY user_id, device_id",
-    )?;
-    let members = stmt
-        .query_map([gid], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(members)
-}
-
 /// The message a device sent earlier with `client_id` in a group.
 pub fn find_by_client_id(
     conn: &Connection,
@@ -192,7 +153,10 @@ pub fn find_commit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Db;
+    use crate::{
+        groups::{group_epoch, is_member, member_devices},
+        Db,
+    };
 
     async fn db_with_group() -> Db {
         let db = Db::open_in_memory().unwrap();
