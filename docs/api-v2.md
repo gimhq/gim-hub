@@ -81,10 +81,12 @@ On `POST /v2/groups/{gid}/commits` the owning hub:
 
 1. parses the `PublicMessage` and reads the epoch from its framing;
 2. extracts the Add, Remove and Update proposals (inline in the Commit or referenced);
-3. for every added member, validates the gim-core MLS credential (custom credential type
-   `0xF001`, format owned by gim-core `docs/identity.md`) against the member's DeviceList: the
-   device must be active in the user's current DeviceList and the credential's key must match its
-   DeviceCert;
+3. validates gim-core MLS credentials (custom credential type `0xF001`, format owned by gim-core
+   `docs/identity.md` "MLS credential") against DeviceLists stored on this hub, failing closed:
+   - for every Add, the KeyPackage's leaf credential must certify the device that owns the claimed
+     KeyPackage it resolves to, and verify against that user's stored DeviceList;
+   - the leaf of every Update proposal and of the Commit's UpdatePath must certify the committing
+     device itself (a member cannot change identity);
 4. checks group policy (who may add or remove members);
 5. derives the member events (`group.member_added` / `group.member_removed` with `user_id` and
    `device_ids`), the group roster and the fan-out set from the parsed proposals.
@@ -92,8 +94,29 @@ On `POST /v2/groups/{gid}/commits` the owning hub:
 | Rejection | Status | Code |
 |---|---|---|
 | `mls_message` is not a `PublicMessage` Commit/Proposal for this group, or Welcome fields inconsistent | 400 | `validation_failed` |
-| Added member's credential is malformed, not type `0xF001`, or does not match an active device in the member's DeviceList | 400 | `validation_failed` |
+| A checked leaf's credential is invalid or belongs to another device (see *MLS credential checks*) | 400 | `validation_failed` |
 | Sender is not a member, or group policy does not allow the change | 403 | `not_member` / `forbidden` |
+
+### MLS credential checks
+
+`POST /v2/keypackages` applies the same check to every uploaded KeyPackage: its leaf must carry
+the calling device's credential; one failing package rejects the whole upload.
+
+A leaf credential is accepted only if all of these hold, in order:
+
+1. the credential type is `0xF001` and its content decodes (gim-core validation steps 1-2);
+2. the expected user has a valid stored DeviceList on this hub;
+3. the DeviceCert verifies under the credential's root key, the leaf's MLS signature key equals the
+   certified device key, and the stored DeviceList does not revoke the device (gim-core steps 3-5);
+4. the certified `(user_id, device_id)` is the expected device;
+5. the stored DeviceList certifies that device.
+
+The `validation_failed` message names the first failing check by its code: the gim-core
+credential codes (`wrong_credential_type`, `non_canonical_cbor`, `malformed_content`,
+`unsupported_version`, `bad_cert_signature`, `user_id_mismatch`, `device_id_mismatch`,
+`invalid_cert`, `leaf_key_mismatch`, `revoked_device`) or the hub
+codes `no_device_list`, `identity_mismatch` and `unknown_device`, e.g.
+`invalid MLS credential (leaf_key_mismatch)`.
 
 `POST /v2/groups/{gid}/messages` carries only `PrivateMessage` application messages; the hub reads
 the epoch from the framing but cannot see their content.

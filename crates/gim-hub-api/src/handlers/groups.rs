@@ -8,7 +8,7 @@ use axum::{
     Json,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use gim_hub_db::{events, groups, keypackages, messages, welcomes, Transaction};
+use gim_hub_db::{events, groups, keypackages, messages, users, welcomes, Transaction};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -20,7 +20,7 @@ use crate::{
         MembershipChange, StaleEpochError, SubmitCommitRequest, Welcome,
     },
     error::ApiError,
-    mls::{self, AcceptAllCredentials, AddedMember, CredentialPolicy},
+    mls,
     state::AppState,
 };
 
@@ -437,8 +437,17 @@ fn apply_commit(
         })
         .collect();
 
+    // The committer's own leaves keep its identity.
+    if !parsed.own_leaves.is_empty() {
+        let device_list = users::get_device_list(tx, &auth.user_id)?;
+        let device_list = device_list.as_ref().map(|list| list.device_list.as_slice());
+        for leaf in &parsed.own_leaves {
+            mls::check_leaf_credential(leaf, device_list, &auth.user_id, &auth.device_id)?;
+        }
+    }
+
     let mut added = Vec::new();
-    for kp_hash in &parsed.added {
+    for (kp_hash, leaf) in &parsed.added {
         let (user_id, device_id) = keypackages::claimed_owner(tx, kp_hash)?
             .ok_or_else(|| invalid("Add proposal uses a KeyPackage not claimed on this hub"))?;
         if remaining
@@ -450,13 +459,13 @@ fn apply_commit(
                 "Add proposal for a device that is already a member",
             ));
         }
-        AcceptAllCredentials
-            .check_added_member(&AddedMember {
-                gid: &gid,
-                user_id: &user_id,
-                device_id: &device_id,
-            })
-            .map_err(ApiError::ValidationFailed)?;
+        let device_list = users::get_device_list(tx, &user_id)?;
+        mls::check_leaf_credential(
+            leaf,
+            device_list.as_ref().map(|list| list.device_list.as_slice()),
+            &user_id,
+            &device_id,
+        )?;
         added.push((user_id, device_id));
     }
     let occupied: BTreeSet<u32> = remaining.iter().filter_map(|m| m.leaf_index).collect();

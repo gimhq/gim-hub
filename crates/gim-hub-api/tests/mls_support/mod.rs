@@ -1,7 +1,13 @@
 //! Shared helpers of the KeyPackage and group tests: JSON requests, real MLS
-//! clients (openmls) and direct reads of the event stream.
+//! clients (openmls) with gim credentials (type 0xF001) and direct reads of
+//! the event stream.
 
 #![allow(dead_code)]
+
+#[path = "../identity_support/mod.rs"]
+mod identity_support;
+
+pub use identity_support::{device_id, device_list, key, put_device_list, user_id};
 
 use axum::{
     body::{to_bytes, Body},
@@ -9,11 +15,12 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use gim_hub_api::testing::TestHub;
+use gim_hub_identity::{DeviceList, UserId, GIM_CREDENTIAL_TYPE};
 use openmls::prelude::{
     tls_codec::{Deserialize, Serialize},
-    BasicCredential, Ciphersuite, CredentialWithKey, GroupId, KeyPackage, KeyPackageIn, MlsGroup,
-    MlsGroupCreateConfig, MlsMessageOut, OpenMlsProvider, ProtocolVersion, WireFormatPolicy,
-    MIXED_PLAINTEXT_WIRE_FORMAT_POLICY,
+    Capabilities, Ciphersuite, Credential, CredentialType, CredentialWithKey, GroupId, KeyPackage,
+    KeyPackageIn, MlsGroup, MlsGroupCreateConfig, MlsMessageOut, OpenMlsProvider, ProtocolVersion,
+    WireFormatPolicy, MIXED_PLAINTEXT_WIRE_FORMAT_POLICY,
 };
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
@@ -78,6 +85,44 @@ pub fn group_path(gid: &str) -> String {
     format!("/v2/groups/{}", gid.replace('/', "%2F"))
 }
 
+/// The gim MLS credential type.
+pub const GIM_CREDENTIAL: CredentialType = CredentialType::Other(GIM_CREDENTIAL_TYPE);
+
+/// Leaf capabilities whose only supported credential type is `credential_type`.
+pub fn capabilities(credential_type: CredentialType) -> Capabilities {
+    Capabilities::new(None, None, None, None, Some(&[credential_type]))
+}
+
+/// The gim credential of the device `key(device_seed)` of the user with
+/// root key `key(root_seed)`: deterministic CBOR
+/// `[1, root_pubkey, signed_device_cert]`.
+pub fn gim_credential(root_seed: u8, device_seed: u8) -> Credential {
+    let user = UserId::parse(&user_id(root_seed)).unwrap();
+    let list = DeviceList::verify(&device_list(root_seed, 1, &[device_seed], &[]), &user).unwrap();
+    let cert = list.certs()[0].as_bytes();
+    let mut content = vec![0x83, 0x01, 0x58, 0x20];
+    content.extend(key(root_seed).verifying_key().as_bytes());
+    match u8::try_from(cert.len()) {
+        Ok(len) if len >= 24 => content.extend([0x58, len]),
+        _ => {
+            content.push(0x59);
+            content.extend(u16::try_from(cert.len()).unwrap().to_be_bytes());
+        }
+    }
+    content.extend(cert);
+    Credential::new(GIM_CREDENTIAL, content)
+}
+
+/// The openmls signer of the device key `key(device_seed)`.
+pub fn signer(device_seed: u8) -> SignatureKeyPair {
+    let device = key(device_seed);
+    SignatureKeyPair::from_raw(
+        CIPHERSUITE.signature_algorithm(),
+        device.to_bytes().to_vec(),
+        device.verifying_key().to_bytes().to_vec(),
+    )
+}
+
 /// An MLS client signed in to the hub as one device.
 pub struct Client {
     pub user_id: String,
@@ -89,18 +134,30 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn new(hub: &TestHub, user_id: &str, device_id: &str) -> Self {
+    /// The device `key(device_seed)` of the user with root key
+    /// `key(root_seed)`, after uploading a DeviceList (seq 1) that
+    /// certifies just this device.
+    pub async fn new(hub: &TestHub, root_seed: u8, device_seed: u8) -> Self {
+        let list = device_list(root_seed, 1, &[device_seed], &[]);
+        let (status, body) = put_device_list(hub, &user_id(root_seed), &list).await;
+        assert!(status.is_success(), "{body}");
+        Self::signed_in(hub, root_seed, device_seed).await
+    }
+
+    /// Like [`Client::new`], without uploading a DeviceList.
+    pub async fn signed_in(hub: &TestHub, root_seed: u8, device_seed: u8) -> Self {
+        let (user_id, device_id) = (user_id(root_seed), device_id(device_seed));
         let provider = OpenMlsRustCrypto::default();
-        let signer = SignatureKeyPair::new(CIPHERSUITE.signature_algorithm()).unwrap();
+        let signer = signer(device_seed);
         signer.store(provider.storage()).unwrap();
         let credential = CredentialWithKey {
-            credential: BasicCredential::new(format!("{user_id}/{device_id}").into_bytes()).into(),
+            credential: gim_credential(root_seed, device_seed),
             signature_key: signer.public().into(),
         };
         Self {
-            user_id: user_id.to_owned(),
-            device_id: device_id.to_owned(),
-            token: hub.create_session(user_id, device_id).await,
+            token: hub.create_session(&user_id, &device_id).await,
+            user_id,
+            device_id,
             provider,
             signer,
             credential,
@@ -109,13 +166,18 @@ impl Client {
 
     /// A fresh serialized KeyPackage.
     pub fn key_package(&self) -> Vec<u8> {
+        self.key_package_with(self.credential.clone(), &self.signer)
+    }
+
+    /// A fresh serialized KeyPackage with any credential and signer.
+    pub fn key_package_with(
+        &self,
+        credential: CredentialWithKey,
+        signer: &SignatureKeyPair,
+    ) -> Vec<u8> {
         KeyPackage::builder()
-            .build(
-                CIPHERSUITE,
-                &self.provider,
-                &self.signer,
-                self.credential.clone(),
-            )
+            .leaf_node_capabilities(capabilities(credential.credential.credential_type()))
+            .build(CIPHERSUITE, &self.provider, signer, credential)
             .unwrap()
             .key_package()
             .tls_serialize_detached()
@@ -157,6 +219,7 @@ impl Client {
         let config = MlsGroupCreateConfig::builder()
             .ciphersuite(CIPHERSUITE)
             .wire_format_policy(policy)
+            .capabilities(capabilities(GIM_CREDENTIAL))
             .use_ratchet_tree_extension(true)
             .build();
         let group = MlsGroup::new_with_group_id(
