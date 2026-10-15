@@ -1294,6 +1294,25 @@ Resolved in H3-T6:
   and `federation_identity.rs` (they need the API crate's test helpers); no separate
   `crates/gim-hub/tests/federation.rs` was added.
 
+Resolved in H4-CL2:
+
+- T6 is covered by the compose driver: alice@A publishes DeviceList seq 2 certifying a second
+  device and seq 3 revoking it; once `GET .../device-list` on hub-b returns each new list
+  (propagated by `NotifyDeviceList`, hub-b's cache is not stale), bob@B's Commit adding a
+  KeyPackage of the revoked device gets 400 `validation_failed`
+  `invalid MLS credential (revoked_device)` from the owner hub-b and nothing is logged.
+- T11: `deploy/federation/compose.psk.yaml` (applied by `GIM_FED_PSK=1 scripts/fed-test.sh`; CI
+  runs the default variant only) gives hub-a, hub-b and hub-c a `swarm.key` generated per run
+  under `.tmp/fed-<pid>/` and TCP-only listen, external and allowlist addresses; hub-x has no key.
+  The script first checks that hub-a with the key and a QUIC listen address exits with the
+  `QUIC is not available with GIM_HUB_P2P_PSK_FILE` error, then runs every scenario; in T10 hub-a
+  must log no refused `Hello` of hub-x (its dials fail in the pnet handshake).
+- T12 is not covered. Certificate renewal keeps the PeerId and runs only when less than a third
+  of the certificate lifetime remains (checked at startup and daily, §3.1), so a running hub
+  cannot be made to renew within a test run; rotating the runtime key (new PeerId) needs a hub
+  restart with `runtime_key` and `runtime_cert` deleted. There is no runtime rotation to test;
+  the restart variant would need the driver to delete files in a stopped hub's volume.
+
 ### 11.3 Matrix
 
 | # | Case | Steps | Assertions |

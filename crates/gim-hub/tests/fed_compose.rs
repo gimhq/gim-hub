@@ -289,7 +289,7 @@ impl User {
         device_seed: u8,
         key_packages: usize,
     ) -> Self {
-        let (uid, did) = (user_id(root_seed), device_id(device_seed));
+        let uid = user_id(root_seed);
         let list = device_list(root_seed, 1, &[device_seed], &[]);
         let (status, body) = hub
             .call(
@@ -300,7 +300,22 @@ impl User {
             )
             .await;
         assert!(status.is_success(), "{name} device list: {body}");
+        let user = Self::sign_in(name, hub, root_seed, device_seed, key_packages).await;
+        user.publish_hosting_record(root_seed).await;
+        user
+    }
 
+    /// Signs in device `key(device_seed)`, which the user's DeviceList
+    /// certifies, with challenge/response and uploads `key_packages`
+    /// KeyPackages.
+    async fn sign_in(
+        name: &'static str,
+        hub: &Hub,
+        root_seed: u8,
+        device_seed: u8,
+        key_packages: usize,
+    ) -> Self {
+        let (uid, did) = (user_id(root_seed), device_id(device_seed));
         let (status, body) = hub
             .call(
                 Method::POST,
@@ -350,7 +365,6 @@ impl User {
                 .await;
             assert_eq!(status, StatusCode::OK, "{name} key packages: {body}");
         }
-        user.publish_hosting_record(root_seed).await;
         user
     }
 
@@ -745,52 +759,38 @@ async fn cross_hub_dm(alice: &User, bob: &User) {
     ok("cross-hub DM (B owns, A member)", start);
 }
 
-/// T6: alice@A certifies a second device and then revokes it (DeviceList
-/// seq 2 and 3). Once the owner hub-b has the new list, bob@B's Commit
-/// adding a KeyPackage of the revoked device is rejected.
+/// T6: alice@A certifies a second device, which uploads a KeyPackage that
+/// bob@B claims, and then revokes it (DeviceList seq 2 and 3). Once the owner
+/// hub-b has the new list, bob's Commit adding that KeyPackage is rejected.
 async fn revoked_device(b: &Hub, alice: &User, bob: &User) {
     let start = Instant::now();
     let path = format!("/v2/users/{}/device-list", alice.user_id);
-    for list in [
-        device_list(1, 2, &[11, 12], &[]),
-        device_list(1, 3, &[11], &[12]),
-    ] {
+    let path = &path;
+    let publish = |list: Vec<u8>| async move {
         let (status, body) = alice
             .hub
             .call(
                 Method::PUT,
-                &path,
+                path,
                 None,
                 Some(json!({ "device_list": b64(&list) })),
             )
             .await;
         assert!(status.is_success(), "alice device list: {body}");
-        let expected = json!(b64(&list));
-        eventually("hub-b to have alice's new DeviceList", || async {
-            let (status, body) = b.call(Method::GET, &path, None, None).await;
-            status == StatusCode::OK && body["device_list"] == expected
-        })
-        .await;
-    }
+    };
+    publish(device_list(1, 2, &[11, 12], &[])).await;
+    let alice2 = User::sign_in("alice2", &alice.hub, 1, 12, 1).await;
+    let kp = bob.claim(&alice2).await;
 
-    // A KeyPackage the revoked device made before the revocation.
-    let provider = OpenMlsRustCrypto::default();
-    let revoked_signer = signer(12);
-    revoked_signer.store(provider.storage()).unwrap();
-    let kp = KeyPackage::builder()
-        .leaf_node_capabilities(capabilities(GIM_CREDENTIAL))
-        .build(
-            CIPHERSUITE,
-            &provider,
-            &revoked_signer,
-            CredentialWithKey {
-                credential: gim_credential(1, 12),
-                signature_key: revoked_signer.public().into(),
-            },
-        )
-        .unwrap()
-        .key_package()
-        .clone();
+    let revoking = device_list(1, 3, &[11], &[12]);
+    publish(revoking.clone()).await;
+    let expected = json!(b64(&revoking));
+    eventually("hub-b to have alice's revoking DeviceList", || async {
+        let (status, body) = b.call(Method::GET, path, None, None).await;
+        status == StatusCode::OK && body["device_list"] == expected
+    })
+    .await;
+
     let (gid, mut group) = bob.create_group("group").await;
     let (commit, _, _) = group
         .add_members(&bob.provider, &bob.signer, &[kp])
