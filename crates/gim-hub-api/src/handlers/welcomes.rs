@@ -14,6 +14,7 @@ use crate::{
     auth::AuthDevice,
     dto::{Error, PendingWelcomeList, PendingWelcomesQuery, Welcome},
     error::ApiError,
+    mls,
     state::AppState,
 };
 
@@ -112,6 +113,7 @@ pub(crate) async fn deliver_welcome(
     state: &AppState,
     request: DeliverWelcomeRequest,
 ) -> Result<(), ApiError> {
+    mls::check_welcome(&request.welcome)?;
     let snapshot = request
         .group
         .clone()
@@ -197,7 +199,8 @@ pub(crate) async fn deliver_welcome(
 
 /// Stores the pending Welcomes of a hosted user copied by a co-host
 /// (multihoming.md §4.4): for each item whose device is an active device
-/// here and whose payload is a JSON object, the pending Welcome and the
+/// here and whose payload is a JSON object with a valid `welcome` field
+/// (base64 of an MLSMessage carrying a Welcome), the pending Welcome and the
 /// `welcome` event, deduplicated by `(message_id, user_id, device_id)`. The
 /// replica is not needed: it arrives with `SeedReplica` from the owner.
 pub(crate) async fn copy_pending_welcomes(
@@ -213,9 +216,9 @@ pub(crate) async fn copy_pending_welcomes(
             let active = users::active_device_ids(tx, user_id)?;
             let mut wake = Vec::new();
             for welcome in &request.welcomes {
-                let object = serde_json::from_str::<Value>(&welcome.payload_json)
-                    .is_ok_and(|payload| payload.is_object());
-                if !object
+                let valid = serde_json::from_str::<Value>(&welcome.payload_json)
+                    .is_ok_and(|payload| valid_welcome_payload(&payload));
+                if !valid
                     || welcome.message_id.is_empty()
                     || welcome.gid.is_empty()
                     || !active.contains(&welcome.device_id)
@@ -249,4 +252,13 @@ pub(crate) async fn copy_pending_welcomes(
         state.notifier.notify(&user_id, device_id);
     }
     Ok(())
+}
+
+/// Whether a copied `welcome` event payload is an object whose `welcome`
+/// field is the base64 of an MLSMessage carrying a Welcome.
+fn valid_welcome_payload(payload: &Value) -> bool {
+    payload["welcome"]
+        .as_str()
+        .and_then(|welcome| STANDARD.decode(welcome).ok())
+        .is_some_and(|welcome| mls::check_welcome(&welcome).is_ok())
 }

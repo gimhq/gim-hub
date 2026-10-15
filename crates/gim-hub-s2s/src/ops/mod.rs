@@ -83,9 +83,12 @@ pub trait Groups: Send + Sync + 'static {
     ) -> BoxFuture<'_, Result<Vec<GroupAck>, DbError>>;
 
     /// Stores a Welcome for a hosted recipient and creates the replica
-    /// (§5.4, §6.6).
-    fn deliver_welcome(&self, request: DeliverWelcomeRequest)
-        -> BoxFuture<'_, Result<(), DbError>>;
+    /// (§5.4, §6.6). A `welcome` that is not an MLSMessage carrying a
+    /// Welcome fails with `INVALID`.
+    fn deliver_welcome(
+        &self,
+        request: DeliverWelcomeRequest,
+    ) -> BoxFuture<'_, Result<(), S2sError>>;
 
     /// Creates or replaces the replica of a hub newly listed for a member
     /// from the owner's snapshot (multihoming.md §4.3), unless a replica

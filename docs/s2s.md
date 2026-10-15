@@ -136,7 +136,10 @@ Notes:
   carry `message`, the `SequencedMessage` as it appears in `Deliver` / `FetchLog`, so the member hub
   can apply it to its replica immediately.
 - `SubmitCommitRequest.welcome` and `DeliverWelcomeRequest.welcome` hold a TLS-encoded MLSMessage
-  (wire_format = mls_welcome) carrying a Welcome, as raw bytes.
+  (wire_format = mls_welcome) carrying a Welcome, as raw bytes. The receiver checks this framing
+  (not the encrypted contents) and refuses anything else with `INVALID`, storing nothing; a member
+  hub checks a client's `welcome` before forwarding it. `CopyPendingWelcomes` skips a
+  `PendingWelcome` whose `payload_json` has no `welcome` field holding the base64 of such a message.
 - `DeliverWelcomeRequest.group` is a `GroupSnapshot` (kind, creator, `created_at`, epoch after the
   Commit, `seq` of the Commit, roster after the Commit) from which the invitee's hub creates its
   replica; `sender_device_id` is the committing device.
@@ -169,7 +172,7 @@ Notes:
 | `CONFLICT` | A Commit whose epoch already has a sequenced Commit; `current_epoch` is set. | Client fetches the latest state and retries on top of it. |
 | `GONE` | The requested log range was pruned. | Re-join or resync from a newer `seq`. |
 | `RATE_LIMITED` | Caller exceeded a rate limit. | Retry with exponential backoff. |
-| `INVALID` | Malformed request: bad gid, unparsable MLS framing, handshake not a `PublicMessage`, invalid member credential, missing required field. | Do not retry unchanged. |
+| `INVALID` | Malformed request: bad gid, unparsable MLS framing, handshake not a `PublicMessage`, `welcome` not an MLSMessage carrying a Welcome, invalid member credential, missing required field. | Do not retry unchanged. |
 | `INTERNAL` | Unexpected failure on the responder. | Retry with exponential backoff. |
 | `HELLO_REQUIRED` | The calling PeerID is not bound to a `hub_id` (no valid `Hello` on this PeerID, or its runtime certificate expired). | Send `Hello`, then retry once. |
 

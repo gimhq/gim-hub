@@ -40,11 +40,7 @@ pub(super) async fn handle(
         Err(HostingError::Db(err)) => return Err(internal(&err)),
         Err(_) => return Err(error(ErrorCode::NotFound, "recipient is not hosted here")),
     }
-    service
-        .groups
-        .deliver_welcome(request)
-        .await
-        .map_err(|err| internal(&err))?;
+    service.groups.deliver_welcome(request).await?;
     Ok(OpOutput::DeliverWelcome(DeliverWelcomeResponse {}))
 }
 
