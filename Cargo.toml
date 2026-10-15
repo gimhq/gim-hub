@@ -54,6 +54,7 @@ libp2p = { version = "=0.56.0", default-features = false, features = [
     "kad",
     "macros",
     "noise",
+    "ping",
     "pnet",
     "quic",
     "request-response",

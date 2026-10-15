@@ -12,7 +12,7 @@ use gim_hub_db::Db;
 use gim_hub_push::{Dispatcher, DispatcherSettings, PushLog};
 use gim_hub_s2s::{
     ops::hosting_record::HostingRecordService, FederationConfig, FederationService, GroupService,
-    GroupSource, Hosting, HostingSettings, Outbox, OutboxConfig,
+    GroupSource, Hosting, HostingSettings, Outbox, OutboxConfig, PushGate,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -71,6 +71,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => (None, None),
     };
+    let push_gate = match &federation {
+        Some(service) => Some(install_push_gate(&state, service).await),
+        None => None,
+    };
     // Registered last: the handlers keep a copy of the final state.
     let _ops = federation
         .as_ref()
@@ -92,6 +96,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(republish) = republish {
         republish.abort();
+    }
+    if let Some(push_gate) = push_gate {
+        push_gate.abort();
     }
     if let Some(outbox) = outbox {
         outbox.shutdown();
@@ -178,6 +185,21 @@ fn enable_federation(
         Duration::from_secs(u64::from(config.device_list_cache_hours) * 3600),
     );
     (state.hosting.spawn_republisher(), outbox)
+}
+
+/// Installs the multi-homing push gate (docs/multihoming.md §8) on the push
+/// dispatcher. Returns the task that keeps its view and co-host connections
+/// current.
+async fn install_push_gate(
+    state: &AppState,
+    service: &FederationService,
+) -> tokio::task::JoinHandle<()> {
+    let (gate, task) =
+        PushGate::start(state.db.clone(), service.transport(), state.clock.as_now()).await;
+    state.push.set_gate(Arc::new(move |user_id, _device_id| {
+        gate.should_push(user_id)
+    }));
+    task
 }
 
 /// Registers the remote identity ops (`GetDeviceList`, `NotifyDeviceList`,

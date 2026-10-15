@@ -170,6 +170,7 @@ impl FederationService {
             bootstrap: config.bootstrap.clone(),
             timeout: config.s2s_timeout,
             psk: config.psk,
+            failover: Duration::from_secs(config.push_failover_seconds.into()),
         };
         let (transport, mut inbound) =
             Transport::start(transport_config, hub_id, &runtime, policy.clone()).await?;
