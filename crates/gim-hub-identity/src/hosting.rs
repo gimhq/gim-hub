@@ -140,9 +140,9 @@ impl HostingRecord {
     /// (Unix milliseconds) for the user they claim, in the spec's
     /// verification order: envelope; the embedded `user_root_pubkey`
     /// (element 2) derives the claimed `user_id` (element 1); the user
-    /// signature; then the body (version, shape, entries, hub count, each
-    /// entry's hub signature then uniqueness, canonical order, no hub key
-    /// equal to the user root key, `now < expires_at`).
+    /// signature; then the body (version, shape, entries, hub count, per
+    /// entry: hub signature, uniqueness, canonical order, not the user root
+    /// key; then `now < expires_at`).
     pub fn verify_claimed(signed: &[u8], now: u64) -> Result<Self, IdentityError> {
         let (tbs, sig) = cbor::decode_signed(signed)?;
         let body = cbor::decode(&tbs)?;
@@ -165,20 +165,19 @@ impl HostingRecord {
             return Err(IdentityError::HubCount(hubs.len()));
         }
         let mut seen = HashSet::new();
+        let mut previous = None;
         for entry in &hubs {
             entry.verify(&user_id)?;
             if !seen.insert(entry.hub_root_pubkey.as_bytes()) {
                 return Err(IdentityError::DuplicateHub(entry.hub_id.clone()));
             }
-        }
-        if hubs
-            .windows(2)
-            .any(|pair| pair[0].order_key() > pair[1].order_key())
-        {
-            return Err(IdentityError::HubsNotSorted);
-        }
-        if seen.contains(user_root_pubkey.as_bytes()) {
-            return Err(IdentityError::UserRootIsHub);
+            if previous.is_some_and(|previous| entry.order_key() <= previous) {
+                return Err(IdentityError::UnsortedHubs);
+            }
+            previous = Some(entry.order_key());
+            if entry.hub_root_pubkey == user_root_pubkey {
+                return Err(IdentityError::UserKeyIsHubKey);
+            }
         }
         if now >= expires_at {
             return Err(IdentityError::Expired);
@@ -421,7 +420,7 @@ mod tests {
             .into_iter()
             .map(|(seed, priority)| HostingEntry::sign(&key(seed), &user_of(1), priority))
             .collect();
-        assert_eq!(verify(&resign(&entries)), Err(IdentityError::HubsNotSorted));
+        assert_eq!(verify(&resign(&entries)), Err(IdentityError::UnsortedHubs));
 
         sort_hosting_entries(&mut entries);
         let keys: Vec<_> = entries.iter().map(HostingEntry::order_key).collect();
@@ -435,7 +434,7 @@ mod tests {
         same_priority.swap(0, 1);
         assert_eq!(
             verify(&resign(&same_priority)),
-            Err(IdentityError::HubsNotSorted)
+            Err(IdentityError::UnsortedHubs)
         );
     }
 
@@ -451,8 +450,18 @@ mod tests {
         let bytes = sign_value(&user, HOSTING_RECORD_CONTEXT, &Value::Array(items));
         assert_eq!(
             HostingRecord::verify(&bytes, &user_of(1), 0),
-            Err(IdentityError::UserRootIsHub)
+            Err(IdentityError::UserKeyIsHubKey)
         );
+        // Per entry, the order check comes before the user key check.
+        entries.reverse();
+        let items = record_items(&user, 1, 1000, entries.iter().map(entry_value).collect());
+        let bytes = sign_value(&user, HOSTING_RECORD_CONTEXT, &Value::Array(items));
+        let expected = if entries[0].hub_root_pubkey() == &user.verifying_key() {
+            IdentityError::UserKeyIsHubKey
+        } else {
+            IdentityError::UnsortedHubs
+        };
+        assert_eq!(HostingRecord::verify(&bytes, &user_of(1), 0), Err(expected));
     }
 
     #[test]

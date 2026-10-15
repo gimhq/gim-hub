@@ -8,7 +8,7 @@
 //!   `SignedDeviceList` (verify only, and the "Update and seq rules" via
 //!   `DeviceList::supersedes`).
 //! - `SignedHubRuntimeCert`: verify, libp2p PeerId bytes, and issue with the
-//!   hub's own root key. PeerIds exist only as bytes here; there is no
+//!   hub's own root key. A PeerId is only its 38 bytes; there is no
 //!   string form.
 //! - `SignedHostingRecord`: verify, primary hub, update rules; the hub
 //!   co-signs its own `HostingEntry` and `sort_hosting_entries` puts entries
@@ -25,14 +25,6 @@
 //! first failing check yields the same stable code
 //! ([`IdentityError::code`], [`CredentialError::code`]) as gim-core; the
 //! shared `negative.json` and `credential.json` vectors assert this.
-//!
-//! Rules decided in gim-core but not yet in the vendored spec or vectors
-//! ("part 4", vectors pending) are implemented with codes of this crate:
-//! hosting record hubs sorted by `(priority, hub_root_pubkey)`
-//! (`hubs_not_sorted`) and no hub key equal to the user root key
-//! (`user_root_is_hub`); challenge `issued_at <= now < expires_at` with
-//! `issued_at < expires_at` and a lifetime of at most
-//! [`MAX_CHALLENGE_LIFETIME_MS`] (`invalid_challenge_lifetime`).
 //!
 //! This crate must stay free of hub-only dependencies so that it can later
 //! be shared with gim-core.
@@ -51,7 +43,7 @@ mod runtime;
 
 pub use auth::{
     auth_response_user_id, verify_auth_response, AuthChallenge, AuthenticatedDevice,
-    AUTH_RESPONSE_CONTEXT, MAX_CHALLENGE_LIFETIME_MS,
+    AUTH_CHALLENGE_MAX_LIFETIME_MS, AUTH_RESPONSE_CONTEXT,
 };
 pub use cert::{DeviceCert, DEVICE_CERT_CONTEXT};
 pub use credential::{CredentialError, GimCredential, GIM_CREDENTIAL_TYPE};
