@@ -19,7 +19,32 @@ pub struct StoredMessage {
     pub sender_device_id: String,
     pub client_id: String,
     pub payload: Vec<u8>,
+    /// Unique opaque message ID (assigned by the owning hub).
+    pub message_id: String,
     pub created_at: i64,
+}
+
+/// A membership change recorded with a Commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    Added,
+    Removed,
+}
+
+impl Change {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Added => "added",
+            Self::Removed => "removed",
+        }
+    }
+}
+
+/// Devices added and removed by one Commit, as `(user_id, device_id)`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Membership {
+    pub added: Vec<(String, String)>,
+    pub removed: Vec<(String, String)>,
 }
 
 /// A message to append with [`append`].
@@ -39,7 +64,7 @@ pub struct NewMessage<'a> {
 }
 
 const COLUMNS: &str = "gid, seq, epoch, kind, sender_user_id, sender_device_id, client_id, \
-                       payload, created_at";
+                       payload, message_id, created_at";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<StoredMessage> {
     Ok(StoredMessage {
@@ -51,7 +76,8 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<StoredMessage> {
         sender_device_id: row.get(5)?,
         client_id: row.get(6)?,
         payload: row.get(7)?,
-        created_at: row.get(8)?,
+        message_id: row.get(8)?,
+        created_at: row.get(9)?,
     })
 }
 
@@ -114,8 +140,87 @@ pub fn append(
         sender_device_id: message.sender_device_id.to_owned(),
         client_id: message.client_id.to_owned(),
         payload: message.payload.to_vec(),
+        message_id: message.message_id.to_owned(),
         created_at: now,
     })
+}
+
+/// The message `seq` of a group.
+pub fn get(conn: &Connection, gid: &str, seq: i64) -> Result<Option<StoredMessage>, DbError> {
+    let message = conn
+        .query_row(
+            &format!("SELECT {COLUMNS} FROM messages WHERE gid = ?1 AND seq = ?2"),
+            params![gid, seq],
+            from_row,
+        )
+        .optional()?;
+    Ok(message)
+}
+
+/// The newest message of a group.
+pub fn latest(conn: &Connection, gid: &str) -> Result<Option<StoredMessage>, DbError> {
+    let message = conn
+        .query_row(
+            &format!("SELECT {COLUMNS} FROM messages WHERE gid = ?1 ORDER BY seq DESC LIMIT 1"),
+            [gid],
+            from_row,
+        )
+        .optional()?;
+    Ok(message)
+}
+
+/// Records that the Commit `seq` of `gid` added or removed a device.
+pub fn insert_membership(
+    tx: &Transaction<'_>,
+    gid: &str,
+    seq: i64,
+    change: Change,
+    user_id: &str,
+    device_id: &str,
+) -> Result<(), DbError> {
+    tx.execute(
+        "INSERT OR IGNORE INTO commit_membership (gid, seq, change, user_id, device_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![gid, seq, change.as_str(), user_id, device_id],
+    )?;
+    Ok(())
+}
+
+/// Devices added and removed by the Commit `seq` of `gid`, ordered.
+pub fn membership(conn: &Connection, gid: &str, seq: i64) -> Result<Membership, DbError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT change, user_id, device_id FROM commit_membership \
+         WHERE gid = ?1 AND seq = ?2 ORDER BY change, user_id, device_id",
+    )?;
+    let mut membership = Membership::default();
+    let rows = stmt.query_map(params![gid, seq], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (change, user_id, device_id) = row?;
+        if change == Change::Added.as_str() {
+            membership.added.push((user_id, device_id));
+        } else {
+            membership.removed.push((user_id, device_id));
+        }
+    }
+    Ok(membership)
+}
+
+/// Users removed from `gid` by a Commit with `seq >= from_seq`, ordered.
+pub fn removed_since(conn: &Connection, gid: &str, from_seq: i64) -> Result<Vec<String>, DbError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT DISTINCT user_id FROM commit_membership \
+         WHERE gid = ?1 AND seq >= ?2 AND change = 'removed' ORDER BY user_id",
+    )?;
+    let users = stmt
+        .query_map(params![gid, from_seq], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(users)
 }
 
 /// Messages of a group with `seq >= from_seq`, ascending, at most `limit`.
@@ -242,9 +347,45 @@ mod tests {
         );
 
         let listed = db.read(|c| list_from(c, "g1", 2, 10)).await.unwrap();
-        assert_eq!(listed, [second]);
+        assert_eq!(listed, std::slice::from_ref(&second));
         let listed = db.read(|c| list_from(c, "g1", 1, 1)).await.unwrap();
-        assert_eq!(listed, [first]);
+        assert_eq!(listed, std::slice::from_ref(&first));
+        assert_eq!(db.read(|c| get(c, "g1", 1)).await.unwrap(), Some(first));
+        assert_eq!(db.read(|c| get(c, "g1", 3)).await.unwrap(), None);
+        assert_eq!(db.read(|c| latest(c, "g1")).await.unwrap(), Some(second));
+        assert_eq!(db.read(|c| latest(c, "g2")).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn commit_membership_is_recorded() {
+        let db = db_with_group().await;
+        db.write(|tx| {
+            insert_membership(tx, "g1", 2, Change::Added, "u3", "d3")?;
+            insert_membership(tx, "g1", 2, Change::Added, "u3", "d3")?;
+            insert_membership(tx, "g1", 2, Change::Removed, "u2", "d1")?;
+            insert_membership(tx, "g1", 4, Change::Removed, "u4", "d4")
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            db.read(|c| membership(c, "g1", 2)).await.unwrap(),
+            Membership {
+                added: vec![("u3".into(), "d3".into())],
+                removed: vec![("u2".into(), "d1".into())],
+            }
+        );
+        assert_eq!(
+            db.read(|c| membership(c, "g1", 3)).await.unwrap(),
+            Membership::default()
+        );
+        assert_eq!(
+            db.read(|c| removed_since(c, "g1", 2)).await.unwrap(),
+            ["u2", "u4"]
+        );
+        assert_eq!(
+            db.read(|c| removed_since(c, "g1", 3)).await.unwrap(),
+            ["u4"]
+        );
     }
 
     #[tokio::test]

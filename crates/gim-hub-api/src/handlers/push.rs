@@ -1,12 +1,30 @@
-//! Push registration.
+//! Push registration and the test-only push log.
 
-use axum::response::IntoResponse;
+use axum::{
+    extract::{rejection::JsonRejection, Query, State},
+    http::StatusCode,
+    Json,
+};
+use gim_hub_db::push::{self, Registration};
+use serde::Deserialize;
+use serde_json::{json, Value};
 
-use super::not_implemented;
+use super::identity::json_body;
 use crate::{
     auth::AuthDevice,
-    dto::{Error, PushRegistration},
+    dto::{Error, PushProvider, PushRegistration},
+    error::ApiError,
+    state::AppState,
 };
+
+fn provider_name(provider: PushProvider) -> &'static str {
+    match provider {
+        PushProvider::Apns => "apns",
+        PushProvider::Fcm => "fcm",
+        PushProvider::Unifiedpush => "unifiedpush",
+        PushProvider::Log => "log",
+    }
+}
 
 #[utoipa::path(
     put,
@@ -22,8 +40,29 @@ use crate::{
         (status = 401, description = "Missing or invalid bearer token (`unauthorized`)", body = Error),
     ),
 )]
-pub async fn put_push_registration(_auth: AuthDevice) -> impl IntoResponse {
-    not_implemented()
+pub async fn put_push_registration(
+    auth: AuthDevice,
+    State(state): State<AppState>,
+    body: Result<Json<PushRegistration>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let body = json_body(body)?;
+    let provider = provider_name(body.provider);
+    let token = gim_hub_push::validate_registration(provider, &body.token, body.app_id.as_deref())
+        .map_err(ApiError::ValidationFailed)?;
+    let registration = Registration {
+        user_id: auth.user_id,
+        device_id: auth.device_id,
+        provider: provider.to_owned(),
+        token,
+        app_id: body.app_id,
+        sandbox: body.sandbox,
+        updated_at: state.clock.now_ms(),
+    };
+    state
+        .db
+        .write(move |tx| push::put(tx, &registration))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
@@ -37,6 +76,33 @@ pub async fn put_push_registration(_auth: AuthDevice) -> impl IntoResponse {
         (status = 401, description = "Missing or invalid bearer token (`unauthorized`)", body = Error),
     ),
 )]
-pub async fn delete_push_registration(_auth: AuthDevice) -> impl IntoResponse {
-    not_implemented()
+pub async fn delete_push_registration(
+    auth: AuthDevice,
+    State(state): State<AppState>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .db
+        .write(move |tx| push::delete(tx, &auth.user_id, &auth.device_id))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Query of `GET /v2/debug/push-log`.
+#[derive(Debug, Deserialize)]
+pub struct PushLogQuery {
+    pub device_id: Option<String>,
+}
+
+/// Test-only: recent payloads sent by the `log` provider, optionally of one
+/// device. Not part of the API contract; 404 unless
+/// `GIM_HUB_PUSH_LOG_ENDPOINT=true` (see `docs/push.md`).
+pub async fn get_push_log(
+    State(state): State<AppState>,
+    Query(query): Query<PushLogQuery>,
+) -> Result<Json<Value>, ApiError> {
+    if !state.config.push.log_endpoint {
+        return Err(ApiError::NotFound);
+    }
+    let notifications = state.push.log().recent(query.device_id.as_deref());
+    Ok(Json(json!({ "notifications": notifications })))
 }

@@ -5,12 +5,14 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use gim_hub_db::welcomes;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use gim_hub_db::{events, groups, users, welcomes};
+use gim_hub_proto::s2s::DeliverWelcomeRequest;
 use serde_json::{json, Value};
 
 use crate::{
     auth::AuthDevice,
-    dto::{Error, PendingWelcomeList, PendingWelcomesQuery},
+    dto::{Error, PendingWelcomeList, PendingWelcomesQuery, Welcome},
     error::ApiError,
     state::AppState,
 };
@@ -93,4 +95,102 @@ pub async fn ack_welcome(
         .write(move |tx| welcomes::ack(tx, &auth.user_id, &auth.device_id, &gid, now))
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Stores a Welcome delivered by the owning hub for a hosted recipient
+/// (§5.4, §6.6): for each recipient device that is an active device here,
+/// the pending Welcome and the `welcome` event (deduplicated by the owner's
+/// `message_id`). The first such Welcome creates the replica from the
+/// snapshot; a replica without local members is replaced, one with local
+/// members is kept.
+///
+/// The replica starts just before the Commit that produced the Welcome
+/// (`last_seq = snapshot.seq - 1`, Resolved in H3-T5), so that Commit
+/// arrives through `Deliver` and emits `group.member_added` here as on a
+/// single hub.
+pub(crate) async fn deliver_welcome(
+    state: &AppState,
+    request: DeliverWelcomeRequest,
+) -> Result<(), ApiError> {
+    let snapshot = request
+        .group
+        .clone()
+        .ok_or_else(|| ApiError::ValidationFailed("missing group snapshot".into()))?;
+    let data = serde_json::to_string(&Welcome {
+        gid: request.gid.clone(),
+        sender_user_id: request.sender_user_id.clone(),
+        sender_device_id: request.sender_device_id.clone(),
+        epoch: snapshot.epoch,
+        seq: snapshot.seq,
+        welcome: STANDARD.encode(&request.welcome),
+        ratchet_tree: request
+            .ratchet_tree
+            .as_ref()
+            .map(|tree| STANDARD.encode(tree)),
+    })
+    .map_err(|err| ApiError::Internal(err.to_string()))?;
+    let now = state.clock.now_ms();
+    let wake = state
+        .db
+        .write(move |tx| {
+            let active = users::active_device_ids(tx, &request.recipient_user_id)?;
+            let devices: Vec<&String> = request
+                .recipient_device_ids
+                .iter()
+                .filter(|device_id| active.contains(device_id))
+                .collect();
+            if devices.is_empty() {
+                return Ok::<_, ApiError>(Vec::new());
+            }
+            let gid = &request.gid;
+            let replace = groups::get(tx, gid)?.is_none()
+                || groups::local_member_devices(tx, gid)?.is_empty();
+            if replace {
+                let members: Vec<(String, String)> = snapshot
+                    .members
+                    .iter()
+                    .map(|m| (m.user_id.clone(), m.device_id.clone()))
+                    .collect();
+                groups::create_replica(
+                    tx,
+                    &groups::Group {
+                        gid: gid.clone(),
+                        kind: if snapshot.kind == "direct" {
+                            "direct".into()
+                        } else {
+                            "group".into()
+                        },
+                        epoch: snapshot.epoch.saturating_sub(1),
+                        last_seq: snapshot.seq.saturating_sub(1),
+                        created_by_user_id: snapshot.created_by_user_id.clone(),
+                        created_by_device_id: snapshot.created_by_device_id.clone(),
+                        created_at: i64::try_from(snapshot.created_at).unwrap_or(i64::MAX),
+                    },
+                    &members,
+                    now,
+                )?;
+            }
+            let mut wake = Vec::new();
+            for device_id in devices {
+                let user_id = &request.recipient_user_id;
+                if welcomes::insert_delivered(
+                    tx,
+                    user_id,
+                    device_id,
+                    gid,
+                    &data,
+                    &request.message_id,
+                    now,
+                )? {
+                    events::append(tx, user_id, device_id, "welcome", &data, now)?;
+                    wake.push((user_id.clone(), device_id.clone()));
+                }
+            }
+            Ok(wake)
+        })
+        .await?;
+    for (user_id, device_id) in &wake {
+        state.notifier.notify(user_id, device_id);
+    }
+    Ok(())
 }
