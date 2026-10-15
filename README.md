@@ -15,6 +15,22 @@ Design basis: cluster-architecture.md (hub model).
 - `crates/gim-hub-s2s`: hub-to-hub federation.
 - `crates/gim-hub`: server binary (`GIM_HUB_LISTEN`, default `0.0.0.0:8080`; `GET /healthz`).
 
+## Run
+
+```bash
+cargo run -p gim-hub                    # listens on 0.0.0.0:8080, data in ./data
+```
+
+With Docker:
+
+```bash
+docker build -t gim-hub .
+docker run -d --name gim-hub -p 8080:8080 -v gim-hub-data:/data gim-hub
+curl http://127.0.0.1:8080/healthz
+```
+
+Configuration, the data directory and backups: `docs/operations.md`.
+
 ## Checks
 
 ```bash
@@ -23,3 +39,11 @@ bash scripts/check.sh
 
 Runs `cargo fmt`, `cargo clippy -D warnings` and `cargo test` (all `--locked`) in a
 `rust:1.99-bookworm` container. CI runs the same commands natively.
+
+```bash
+bash scripts/docker-smoke.sh
+```
+
+Builds the image, starts a container and checks `/healthz`, the `gim-hub healthcheck`
+subcommand, the `/data` layout and two unauthenticated `/v2` responses (see the script header for
+the network/host variables).

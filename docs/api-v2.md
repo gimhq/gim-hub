@@ -148,4 +148,14 @@ ranges.
 
 ## Status
 
-Until the hub logic lands every `/v2` route returns 501 `not_implemented`; `/healthz` is live.
+Implemented: `/healthz`, sign-in (`/v2/auth/*`), DeviceLists and users (`/v2/users/*`, `/v2/me`),
+recovery backups, device linking (`/v2/link-bundles*`), handles, KeyPackages, groups and commits,
+messages, pending Welcomes, events (long-poll and `/v2/stream`) and blobs.
+
+Pending:
+
+- `PUT`/`DELETE /v2/push/registration` return 501 `not_implemented`.
+- Validation of an added member's MLS credential (type `0xF001`) against their DeviceList is not
+  enforced yet: the hub accepts every added member until gim-core identity part 3 defines the
+  credential format. The 400 `validation_failed` rejection for credentials in the commit table
+  above applies once it lands.
