@@ -12,11 +12,11 @@ use utoipa::{IntoParams, ToSchema};
 pub const USER_ID_EXAMPLE: &str = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa";
 /// Example device ID (format owned by gim-core).
 pub const DEVICE_ID_EXAMPLE: &str = "d54ta5gvdyzz26janc6rgmbeagy";
-/// Example libp2p PeerID of a hub.
-pub const PEER_ID_EXAMPLE: &str = "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA";
-/// Example group ID: `<owner_peer_id>/<random_128 base32>`.
+/// Example hub ID (format owned by gim-core).
+pub const HUB_ID_EXAMPLE: &str = "hciqgrcknldyy6lbu2splf5frcdqeftipgfikjxbzeq6x6y55lggapay";
+/// Example group ID: `<owner hub_id>/<random_128 base32lower>`.
 pub const GID_EXAMPLE: &str =
-    "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA/hf4caruf7nbxzmwh5wvgefz6pa";
+    "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq/hf4caruf7nbxzmwh5wvgefz6pa";
 /// Example link ID.
 pub const LINK_ID_EXAMPLE: &str = "wgy33neayyoqouya3g77pwolne";
 /// Example client idempotency key.
@@ -108,29 +108,25 @@ pub struct AuthChallengeRequest {
 /// A sign-in challenge.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AuthChallenge {
-    /// Challenge handle; pass it to POST /v2/auth/session.
-    pub challenge_id: String,
-    /// gim-core AuthChallenge CBOR, base64. The device signs these bytes as
-    /// defined in gim-core docs/identity.md.
+    /// gim-core AuthChallenge CBOR, base64. The device signs these exact
+    /// bytes into an AuthResponse as defined in gim-core docs/identity.md.
     #[schema(content_encoding = "base64")]
     pub challenge: String,
-    /// When the challenge expires (ms since the Unix epoch).
+    /// When the challenge expires (ms since the Unix epoch, exclusive).
     #[schema(example = json!(TIMESTAMP_EXAMPLE))]
     pub expires_at: i64,
-    /// libp2p PeerID of this hub (bound into the challenge).
-    #[schema(example = json!(PEER_ID_EXAMPLE))]
-    pub hub_peer_id: String,
+    /// `hub_id` of this hub: the challenge's `audience`.
+    #[schema(example = json!(HUB_ID_EXAMPLE))]
+    pub hub_id: String,
 }
 
 /// Answer a sign-in challenge.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateSessionRequest {
-    /// `challenge_id` from POST /v2/auth/challenge.
-    pub challenge_id: String,
-    /// Signature over the challenge bytes by the device signing key of the
-    /// device's DeviceCert, base64 (scheme defined by gim-core).
+    /// gim-core AuthResponse CBOR, base64: the challenge bytes, user ID,
+    /// device ID and the device signature.
     #[schema(content_encoding = "base64")]
-    pub signature: String,
+    pub response: String,
 }
 
 /// A device session.
@@ -391,7 +387,8 @@ pub struct CreateGroupRequest {
 /// A group as tracked by its delivery service.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Group {
-    /// Group ID `<owner_peer_id>/<random_128 base32>`, assigned by the hub.
+    /// Group ID `<owner hub_id>/<random_128 base32lower>`, assigned by the hub. Clients use its
+    /// UTF-8 bytes as the MLS group ID.
     #[schema(example = json!(GID_EXAMPLE))]
     pub gid: String,
     pub kind: GroupKind,
