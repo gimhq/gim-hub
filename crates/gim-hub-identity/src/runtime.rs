@@ -1,7 +1,7 @@
 use ciborium::Value;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 
-use crate::keys::{parse_public_key, sign, verify};
+use crate::keys::{sign, verify};
 use crate::{cbor, HubId, IdentityError, FORMAT_VERSION};
 
 /// Signature context of a `SignedHubRuntimeCert`.
@@ -56,24 +56,24 @@ impl HubRuntimeCert {
     }
 
     /// Decodes the `SignedHubRuntimeCert` bytes and verifies them against
-    /// `expected_hub_root` at `now` (Unix milliseconds), following the
-    /// spec's verification steps in order.
+    /// `expected_hub_root` at `now` (Unix milliseconds) in the spec's
+    /// verification order: envelope, signature by `expected_hub_root`, then
+    /// the body (version, `hub_root_pubkey` equals it, `runtime_pubkey`,
+    /// times).
     pub fn verify(
         signed: &[u8],
         expected_hub_root: &VerifyingKey,
         now: u64,
     ) -> Result<Self, IdentityError> {
         let (tbs, sig) = cbor::decode_signed(signed)?;
+        verify(expected_hub_root, HUB_RUNTIME_CERT_CONTEXT, &tbs, &sig)?;
         let [_version, hub_root, runtime, not_before, not_after] = cbor::decode_body(&tbs)?;
-        let hub_root: [u8; 32] = cbor::sized(hub_root, "hub root key")?;
-        let runtime: [u8; 32] = cbor::sized(runtime, "runtime key")?;
-        let not_before = cbor::uint(not_before)?;
-        let not_after = cbor::uint(not_after)?;
-        if &hub_root != expected_hub_root.as_bytes() {
+        if cbor::sized::<32>(hub_root, "hub root key")? != *expected_hub_root.as_bytes() {
             return Err(IdentityError::HubKeyMismatch);
         }
-        verify(expected_hub_root, HUB_RUNTIME_CERT_CONTEXT, &tbs, &sig)?;
-        let runtime_pubkey = parse_public_key(&runtime)?;
+        let runtime_pubkey = cbor::public_key(runtime)?;
+        let not_before = cbor::uint(not_before)?;
+        let not_after = cbor::uint(not_after)?;
         if now < not_before {
             return Err(IdentityError::NotYetValid);
         }
@@ -164,8 +164,19 @@ mod tests {
     fn rejects_other_hub_and_bad_signature() {
         let hub = key(1);
         let bytes = HubRuntimeCert::issue(&hub, &key(2).verifying_key(), 100, 200);
+        // Verified with another hub's key: the signature fails first.
         assert_eq!(
             HubRuntimeCert::verify(&bytes, &key(3).verifying_key(), 150),
+            Err(IdentityError::BadSignature)
+        );
+        // Signed by the expected hub, naming another hub in the body.
+        let other_body = sign_value(
+            &hub,
+            HUB_RUNTIME_CERT_CONTEXT,
+            &Value::Array(items(&key(3).verifying_key(), &key(2).verifying_key())),
+        );
+        assert_eq!(
+            HubRuntimeCert::verify(&other_body, &hub.verifying_key(), 150),
             Err(IdentityError::HubKeyMismatch)
         );
         let mut tampered = bytes.clone();
