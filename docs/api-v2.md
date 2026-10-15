@@ -30,7 +30,10 @@ DeviceCert in the user's stored DeviceList. There is no handle-only registration
    self-certifying. The first upload creates the user on this hub. A later upload with a higher
    `seq` replaces the stored list (200); re-uploading the identical list (same `seq`, same bytes)
    is idempotent and also returns 200. A lower `seq`, or the same `seq` with different bytes, is
-   409 `stale_device_list`.
+   409 `stale_device_list`. A replacement emits a `device_list.updated` event (payload: the new
+   `{user_id, device_list}`) to the user's active devices and to every active device of users
+   sharing at least one group with them, so peers re-verify the user's MLS credentials against
+   the new list.
 2. `POST /v2/auth/challenge {user_id, device_id}` returns `{challenge, expires_at, hub_id}`
    (404 `not_found` unless the device is active in the stored DeviceList). `challenge` is a
    gim-core AuthChallenge (CBOR, base64) with `audience` = this hub's `hub_id`, a 32-byte random

@@ -1674,7 +1674,7 @@
           "identity"
         ],
         "summary": "Upload a signed DeviceList",
-        "description": "No authentication: the DeviceList is self-certifying. The hub verifies the root key signature and that the list's user ID matches `user_id` (derived from the root key). The first upload creates the user on this hub. A later upload with a higher `seq` replaces the stored list; re-uploading the identical list (same `seq`, same bytes) is idempotent and returns 200. Devices revoked by the new list lose their tokens; a `device_list.updated` event is emitted.",
+        "description": "No authentication: the DeviceList is self-certifying. The hub verifies the root key signature and that the list's user ID matches `user_id` (derived from the root key). The first upload creates the user on this hub. A later upload with a higher `seq` replaces the stored list; re-uploading the identical list (same `seq`, same bytes) is idempotent and returns 200. Devices revoked by the new list lose their tokens; a `device_list.updated` event is emitted to the user's other active devices and to every active device of users sharing a group with them.",
         "operationId": "put_device_list",
         "parameters": [
           {

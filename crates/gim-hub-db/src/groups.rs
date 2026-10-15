@@ -192,6 +192,23 @@ pub fn member_devices(conn: &Connection, gid: &str) -> Result<Vec<(String, Strin
     Ok(members)
 }
 
+/// Active devices of the other users sharing at least one group with
+/// `user_id`, as distinct `(user_id, device_id)`, ordered.
+pub fn peer_devices(conn: &Connection, user_id: &str) -> Result<Vec<(String, String)>, DbError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT DISTINCT d.user_id, d.device_id \
+         FROM group_members AS mine \
+         JOIN group_members AS peer ON peer.gid = mine.gid AND peer.user_id <> mine.user_id \
+         JOIN devices AS d ON d.user_id = peer.user_id AND d.device_id = peer.device_id \
+         WHERE mine.user_id = ?1 AND d.active = 1 \
+         ORDER BY d.user_id, d.device_id",
+    )?;
+    let peers = stmt
+        .query_map([user_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(peers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,7 +5,7 @@ mod identity_support;
 
 use axum::http::{Method, StatusCode};
 use gim_hub_api::testing::TestHub;
-use gim_hub_db::{events, users};
+use gim_hub_db::{events, groups, users};
 use serde_json::{json, Value};
 
 use identity_support::{b64, code, device_id, device_list, put_device_list, send, user_id};
@@ -250,4 +250,96 @@ async fn lookups_require_auth_and_report_missing_users() {
         body,
         json!({ "user_id": user, "device_id": device_id(2), "handle": "alice" })
     );
+}
+
+#[tokio::test]
+async fn update_notifies_group_peers() {
+    let hub = TestHub::new();
+    let (alice, bob, carol) = (user_id(1), user_id(5), user_id(8));
+    let (a2, b6, b7, c9) = (device_id(2), device_id(6), device_id(7), device_id(9));
+    for (user, list) in [
+        (&alice, device_list(1, 1, &[2], &[])),
+        (&bob, device_list(5, 1, &[6, 7], &[])),
+        (&carol, device_list(8, 1, &[9], &[])),
+    ] {
+        assert_eq!(
+            put_device_list(&hub, user, &list).await.0,
+            StatusCode::CREATED
+        );
+    }
+    // Alice shares two groups with Bob (whose device b7 is in both) and none
+    // with Carol.
+    let (a, b, c) = (alice.clone(), bob.clone(), carol.clone());
+    let (a2_, b6_, b7_, c9_) = (a2.clone(), b6.clone(), b7.clone(), c9.clone());
+    hub.state
+        .db
+        .write(move |tx| {
+            for (gid, members) in [
+                ("g1", vec![(&b, &b6_), (&b, &b7_)]),
+                ("g2", vec![(&b, &b7_)]),
+                ("g3", vec![(&c, &c9_)]),
+            ] {
+                let (creator, creator_device) = if gid == "g3" { (&b, &b6_) } else { (&a, &a2_) };
+                groups::create(
+                    tx,
+                    &groups::Group {
+                        gid: gid.into(),
+                        kind: "group".into(),
+                        epoch: 0,
+                        last_seq: 0,
+                        created_by_user_id: creator.clone(),
+                        created_by_device_id: creator_device.clone(),
+                        created_at: 1,
+                    },
+                )?;
+                for (leaf, (user, device)) in members.into_iter().enumerate() {
+                    groups::add_member(tx, gid, user, device, leaf as u32 + 1, 1)?;
+                }
+            }
+            Ok::<_, gim_hub_db::DbError>(())
+        })
+        .await
+        .unwrap();
+
+    let mut wake_b6 = hub.state.notifier.subscribe(&bob, &b6);
+    let mut wake_b7 = hub.state.notifier.subscribe(&bob, &b7);
+    let wake_c9 = hub.state.notifier.subscribe(&carol, &c9);
+    let v2 = device_list(1, 2, &[2, 3], &[]);
+    assert_eq!(put_device_list(&hub, &alice, &v2).await.0, StatusCode::OK);
+    assert!(wake_b6.has_changed().unwrap());
+    assert!(wake_b7.has_changed().unwrap());
+    assert!(!wake_c9.has_changed().unwrap());
+    wake_b6.mark_unchanged();
+    wake_b7.mark_unchanged();
+
+    let events_of = |user: String, device: String| {
+        let hub = &hub;
+        async move {
+            hub.state
+                .db
+                .read(move |conn| events::list_after(conn, &user, &device, 0, 10))
+                .await
+                .unwrap()
+        }
+    };
+    let expected = json!({ "user_id": alice, "device_list": b64(&v2) });
+    for (user, device) in [
+        (&alice, &a2),
+        (&alice, &device_id(3)),
+        (&bob, &b6),
+        (&bob, &b7),
+    ] {
+        let got = events_of(user.clone(), device.clone()).await;
+        assert_eq!(got.len(), 1, "{device}");
+        assert_eq!(got[0].event_type, "device_list.updated");
+        let payload: Value = serde_json::from_str(&got[0].payload).unwrap();
+        assert_eq!(payload, expected);
+    }
+    assert!(events_of(carol.clone(), c9.clone()).await.is_empty());
+
+    // An idempotent re-upload emits nothing.
+    assert_eq!(put_device_list(&hub, &alice, &v2).await.0, StatusCode::OK);
+    assert!(!wake_b6.has_changed().unwrap());
+    assert!(!wake_b7.has_changed().unwrap());
+    assert_eq!(events_of(bob.clone(), b7.clone()).await.len(), 1);
 }

@@ -1,6 +1,5 @@
-//! Route handlers, one module per API area. Everything except `/healthz` is a
-//! stub returning 501 Not Implemented until the hub logic lands; the
-//! `#[utoipa::path]` annotations are the client API v2 contract.
+//! Route handlers, one module per API area. The `#[utoipa::path]`
+//! annotations are the client API v2 contract.
 
 mod auth;
 mod blobs;

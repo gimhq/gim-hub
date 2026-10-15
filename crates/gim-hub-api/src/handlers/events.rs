@@ -8,7 +8,7 @@ use axum::{
         ws::{rejection::WebSocketUpgradeRejection, CloseFrame, Message, WebSocket},
         Query, State, WebSocketUpgrade,
     },
-    http::{header, HeaderMap},
+    http::HeaderMap,
     response::Response,
     Json,
 };
@@ -16,7 +16,7 @@ use gim_hub_db::events::{self, StoredEvent};
 use serde_json::{json, Value};
 
 use crate::{
-    auth::{token_hash, AuthDevice},
+    auth::{bearer_token_hash, token_hash, AuthDevice},
     dto::{CursorExpiredError, Error, EventList, EventsQuery, StreamQuery},
     error::ApiError,
     state::AppState,
@@ -81,7 +81,7 @@ pub async fn list_events(
         let fetched = fetch_events(&state, &auth, cursor, limit).await;
         // The session may have been revoked, deleted or expired meanwhile;
         // checked after the read so it covers every event the read saw.
-        let hash = bearer_hash(&headers).ok_or(ApiError::Unauthorized)?;
+        let hash = bearer_token_hash(&headers).ok_or(ApiError::Unauthorized)?;
         if authenticate(&state, hash).await?.is_none() {
             return Err(ApiError::Unauthorized);
         }
@@ -129,7 +129,7 @@ pub async fn stream(
     // The header token first, then `?token=`; keep the hash to re-check.
     let mut auth = None;
     let hashes = [
-        bearer_hash(&headers),
+        bearer_token_hash(&headers),
         query.token.as_deref().map(token_hash),
     ];
     for hash in hashes.into_iter().flatten() {
@@ -140,15 +140,6 @@ pub async fn stream(
     }
     let cursor = query.cursor.unwrap_or(0);
     Ok(upgrade.on_upgrade(move |socket| run_stream(socket, state, auth, cursor)))
-}
-
-/// SHA-256 of the `Authorization: Bearer` token, parsed like the
-/// [`AuthDevice`] extractor does.
-fn bearer_hash(headers: &HeaderMap) -> Option<[u8; 32]> {
-    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let (scheme, token) = value.split_once(' ')?;
-    let token = token.trim();
-    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then(|| token_hash(token))
 }
 
 /// The device of the session with token hash `hash` if it has not expired
