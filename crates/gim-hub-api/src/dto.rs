@@ -909,8 +909,10 @@ pub struct HostingRecordUpdatedEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BlobCreated {
-    /// Opaque blob ID.
-    #[schema(example = "b_Hk4dN7sL2pX9cV0mB5qT1g")]
+    /// Blob ID `<origin hub_id>/b_<random>`; percent-encode `/` in paths.
+    #[schema(
+        example = "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq/b_Hk4dN7sL2pX9cV0mB5qT1g"
+    )]
     pub blob_id: String,
     /// Stored size in bytes.
     pub size: u64,

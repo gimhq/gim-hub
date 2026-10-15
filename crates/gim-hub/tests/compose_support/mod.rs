@@ -49,6 +49,33 @@ pub async fn http(
     token: Option<&str>,
     body: Option<&Value>,
 ) -> Result<(StatusCode, Value), String> {
+    let mut headers = Vec::new();
+    let payload = match body {
+        Some(body) => {
+            headers.push((header::CONTENT_TYPE, "application/json".to_owned()));
+            body.to_string().into_bytes()
+        }
+        None => Vec::new(),
+    };
+    let (status, _, bytes) = http_bytes(base, method, path, token, &headers, payload).await?;
+    let value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).map_err(|err| format!("{base}{path}: {err}"))?
+    };
+    Ok((status, value))
+}
+
+/// One HTTP/1.1 request with a raw body and extra `headers`; returns the
+/// status, the response headers and the raw body, or a transport error.
+pub async fn http_bytes(
+    base: &str,
+    method: Method,
+    path: &str,
+    token: Option<&str>,
+    headers: &[(header::HeaderName, String)],
+    body: Vec<u8>,
+) -> Result<(StatusCode, header::HeaderMap, Bytes), String> {
     let authority = base.trim_start_matches("http://").trim_end_matches('/');
     let stream = tokio::net::TcpStream::connect(authority)
         .await
@@ -64,33 +91,25 @@ pub async fn http(
     if let Some(token) = token {
         request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
     }
-    let payload = match body {
-        Some(body) => {
-            request = request.header(header::CONTENT_TYPE, "application/json");
-            Bytes::from(body.to_string())
-        }
-        None => Bytes::new(),
-    };
+    for (name, value) in headers {
+        request = request.header(name, value);
+    }
     let response = tokio::time::timeout(
         Duration::from_secs(30),
-        sender.send_request(request.body(Full::new(payload)).unwrap()),
+        sender.send_request(request.body(Full::new(Bytes::from(body))).unwrap()),
     )
     .await
     .map_err(|_| format!("{base}{path}: timed out"))?
     .map_err(|err| err.to_string())?;
     let status = response.status();
+    let response_headers = response.headers().clone();
     let bytes = response
         .into_body()
         .collect()
         .await
         .map_err(|err| err.to_string())?
         .to_bytes();
-    let value = if bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&bytes).map_err(|err| format!("{base}{path}: {err}"))?
-    };
-    Ok((status, value))
+    Ok((status, response_headers, bytes))
 }
 
 /// A Docker Engine API call over the unix socket (curl is in the rust image).

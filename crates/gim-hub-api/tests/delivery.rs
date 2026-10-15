@@ -781,8 +781,15 @@ async fn blob_roundtrip_with_ranges() {
     let body = reply.json();
     assert_eq!(body["size"], data.len());
     let blob_id = body["blob_id"].as_str().unwrap().to_owned();
-    assert!(blob_id.starts_with("b_"));
-    assert!(hub.state.config.blobs_dir().join(&blob_id).is_file());
+    let (origin, random) = blob_id.split_once('/').unwrap();
+    assert_eq!(origin, hub.state.hub.hub_id().as_str());
+    assert!(random.starts_with("b_"));
+    assert!(hub
+        .state
+        .config
+        .blobs_dir()
+        .join(blob_id.replace('/', "_"))
+        .is_file());
     // No temp files are left behind.
     assert_eq!(
         std::fs::read_dir(hub.state.config.blobs_dir())
@@ -791,7 +798,7 @@ async fn blob_roundtrip_with_ranges() {
         1
     );
 
-    let uri = format!("/v2/blobs/{blob_id}");
+    let uri = format!("/v2/blobs/{}", encoded(&blob_id));
     let reply = get(&hub, &uri, &bob).await;
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(reply.body, data);

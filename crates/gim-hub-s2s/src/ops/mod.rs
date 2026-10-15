@@ -10,7 +10,9 @@
 //! - [`seed`], [`welcome`]: the bootstrap of a newly listed hub,
 //!   `SeedReplica` and `CopyPendingWelcomes` (multihoming.md §4.3, §4.4),
 //!   also served by [`GroupService`].
+//! - [`blob`]: federated blob reads, `FetchBlob` (§5.6).
 
+pub mod blob;
 pub mod claim;
 pub mod deliver;
 pub mod device_list;
