@@ -1,17 +1,20 @@
 //! Contract tests: the committed `openapi.json` matches the code, and every
-//! documented operation is routed.
+//! documented operation is routed behind the documented authentication.
 
 use std::path::Path;
 
 use axum::{
     body::{to_bytes, Body},
-    http::{Method, Request, StatusCode},
+    http::{header, Method, Request, StatusCode},
 };
 use serde_json::Value;
 use tower::ServiceExt;
-use utoipa::OpenApi;
+use utoipa::{
+    openapi::{path::Operation, RefOr},
+    OpenApi,
+};
 
-use gim_hub_api::{dto::GID_EXAMPLE, openapi_json, router, ApiDoc};
+use gim_hub_api::{dto::GID_EXAMPLE, openapi_json, testing::TestHub, ApiDoc};
 
 #[test]
 fn committed_openapi_json_is_up_to_date() {
@@ -36,46 +39,79 @@ fn concrete_path(template: &str) -> String {
         .replace("{blob_id}", "b_example")
 }
 
+/// Whether the operation requires a bearer token checked by `AuthDevice`.
+/// `/v2/stream` authenticates after the WebSocket upgrade (close code 4401).
+fn requires_token(template: &str, operation: &Operation) -> bool {
+    let secured = operation.security.is_some() && template != "/v2/stream";
+    let documents_401 = match operation.responses.responses.get("401") {
+        Some(RefOr::T(response)) => response.description.contains("`unauthorized`"),
+        _ => false,
+    };
+    assert_eq!(secured, documents_401, "401 contract of {template}");
+    secured
+}
+
+async fn call(
+    hub: &TestHub,
+    method: &Method,
+    uri: &str,
+    token: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder().method(method.clone()).uri(uri);
+    if let Some(token) = token {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let response = hub
+        .router()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, serde_json::from_slice(&body).unwrap())
+}
+
 #[tokio::test]
 async fn every_documented_operation_is_routed() {
+    let hub = TestHub::new();
+    let token = hub.create_session("uexample", "dexample").await;
     let doc = ApiDoc::openapi();
     let mut operations = 0;
+    let mut authenticated = 0;
     for (template, item) in &doc.paths.paths {
         let methods = [
-            (Method::GET, item.get.is_some()),
-            (Method::PUT, item.put.is_some()),
-            (Method::POST, item.post.is_some()),
-            (Method::DELETE, item.delete.is_some()),
-            (Method::PATCH, item.patch.is_some()),
+            (Method::GET, &item.get),
+            (Method::PUT, &item.put),
+            (Method::POST, &item.post),
+            (Method::DELETE, &item.delete),
+            (Method::PATCH, &item.patch),
         ];
-        for (method, documented) in methods {
-            if !documented {
+        for (method, operation) in methods {
+            let Some(operation) = operation else {
                 continue;
-            }
+            };
             operations += 1;
             let uri = concrete_path(template);
             assert!(!uri.contains('{'), "unhandled path parameter in {template}");
-            let response = router()
-                .oneshot(
-                    Request::builder()
-                        .method(method.clone())
-                        .uri(&uri)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            let status = response.status();
-            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-            let value: Value = serde_json::from_slice(&body).unwrap();
+
             if template == "/healthz" {
+                let (status, value) = call(&hub, &method, &uri, None).await;
                 assert_eq!(status, StatusCode::OK, "{method} {template}");
                 assert_eq!(value["status"], "ok");
-            } else {
-                assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {template}");
-                assert_eq!(value["error"]["code"], "not_implemented");
+                continue;
             }
+
+            if requires_token(template, operation) {
+                authenticated += 1;
+                let (status, value) = call(&hub, &method, &uri, None).await;
+                assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {template}");
+                assert_eq!(value["error"]["code"], "unauthorized");
+            }
+            let (status, value) = call(&hub, &method, &uri, Some(&token)).await;
+            assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {template}");
+            assert_eq!(value["error"]["code"], "not_implemented");
         }
     }
     assert_eq!(operations, 31);
+    assert_eq!(authenticated, 24);
 }
