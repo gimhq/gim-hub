@@ -19,6 +19,8 @@ the variable.
 | `GIM_HUB_SESSION_TTL_DAYS` | `30` | Lifetime of device bearer tokens (minimum 1) |
 | `GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN` | `120` | Unauthenticated `GET /v2/users/{user_id}` and `.../device-list` requests per client IP (IPv6: per /64) per minute (minimum 1) |
 | `GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN` | `60` | Unauthenticated reads of one `user_id` per minute, across all clients (minimum 1) |
+| `GIM_HUB_RECOVERY_READ_PER_IP_PER_MIN` | `20` | Unauthenticated `GET /v2/users/{user_id}/recovery-backup` requests per client IP (IPv6: per /64) per minute, separate from the public reads (minimum 1) |
+| `GIM_HUB_RECOVERY_READ_PER_USER_PER_MIN` | `10` | Recovery backup reads of one `user_id` per minute, across all clients (minimum 1) |
 | `GIM_HUB_TRUST_FORWARDED_FOR` | `false` | `true` keys the per-IP limit by the left-most `X-Forwarded-For` address; set only behind a reverse proxy that overwrites the header |
 | `RUST_LOG` | `info` | Log filter (`tracing_subscriber` `EnvFilter` syntax, e.g. `gim_hub_api=debug,info`) |
 
@@ -54,8 +56,9 @@ The allowlist lists one peer `hub_id` per line, optionally followed by static mu
 hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq  /ip4/10.0.0.12/tcp/4001 /ip4/10.0.0.12/udp/4001/quic-v1
 ```
 
-The libp2p host has no DNS resolver: allowlist, bootstrap and external addresses must be `/ip4/` or
-`/ip6/` multiaddrs. A `/dns4/` address parses but can never be dialed.
+Allowlist, bootstrap and external addresses may be `/ip4/`, `/ip6/`, `/dns4/` or `/dns6/`
+multiaddrs. DNS names are resolved with the system resolver (`/etc/resolv.conf`, `/etc/hosts`) at
+dial time, over TCP and QUIC alike (with a PSK, TCP only).
 
 A missing or empty allowlist, an invalid line, or a QUIC address together with
 `GIM_HUB_P2P_PSK_FILE` stops startup. On SIGHUP the file is re-read; an invalid file is logged and
