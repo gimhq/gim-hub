@@ -1,0 +1,19 @@
+# Multi-homing variant of compose.yaml (docs/multihoming.md §11), applied by
+# `GIM_FED_SUITE=mh scripts/fed-test.sh` on top of compose.yaml (and
+# compose.psk.yaml with GIM_FED_PSK=1). Only hub-a, hub-b and hub-c are
+# started. A removed user is purged after 1 h (never within a run), a
+# co-host counts as down for push after 5 s without a ping, and the `log`
+# push provider's ring is readable at GET /v2/debug/push-log.
+
+x-mh: &mh
+  GIM_HUB_UNHOSTED_GRACE_HOURS: "1"
+  GIM_HUB_PUSH_FAILOVER_SECONDS: "5"
+  GIM_HUB_PUSH_LOG_ENDPOINT: "true"
+
+services:
+  hub-a:
+    environment: *mh
+  hub-b:
+    environment: *mh
+  hub-c:
+    environment: *mh

@@ -6,6 +6,12 @@
 # rust container attached to the federation network. Hub logs are printed on
 # failure; the stack is always torn down.
 #
+# GIM_FED_SUITE selects the driver: `fed` (default) as above; `mh` runs the
+# multi-homing suite (docs/multihoming.md §11,
+# crates/gim-hub/tests/multihoming_compose.rs) on hub-a, hub-b and hub-c with
+# the override deploy/federation/compose.mh.yaml; `all` runs `fed`, then `mh`
+# on a fresh stack with the same image.
+#
 # With GIM_FED_PSK=1 the override deploy/federation/compose.psk.yaml gives
 # hub-a, hub-b and hub-c a generated pnet key and TCP-only addresses (T11);
 # hub-x stays without a key. The script first checks that a hub with the key
@@ -22,10 +28,25 @@
 #   GIM_FED_PSK         1: run the PSK variant
 #   GIM_FED_RUN_LABEL   value of the `ai-agent-run` label on every container,
 #                       network and volume of the run (default GIM_FED_PROJECT)
+#   GIM_FED_SUITE       fed (default), mh or all
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 ROOT="$PWD"
+
+SUITE="${GIM_FED_SUITE:-fed}"
+case "$SUITE" in
+fed) TEST=fed_compose SERVICES=() ;;
+mh) TEST=multihoming_compose SERVICES=(hub-a hub-b hub-c) ;;
+all)
+    GIM_FED_SUITE=fed bash "$0"
+    GIM_FED_SUITE=mh GIM_FED_SKIP_BUILD=1 exec bash "$0"
+    ;;
+*)
+    echo "fed-test: unknown GIM_FED_SUITE '$SUITE' (fed, mh, all)" >&2
+    exit 2
+    ;;
+esac
 
 IMAGE="${GIM_FED_IMAGE:-ai-agent/gim-hub:fedtest}"
 PROJECT="${GIM_FED_PROJECT:-gim-fed}"
@@ -44,11 +65,14 @@ COMPOSE_FILES=(-f deploy/federation/compose.yaml)
 if [[ "$PSK" == "1" ]]; then
     COMPOSE_FILES+=(-f deploy/federation/compose.psk.yaml)
 fi
+if [[ "$SUITE" == "mh" ]]; then
+    COMPOSE_FILES+=(-f deploy/federation/compose.mh.yaml)
+fi
 compose() {
     docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"
 }
 
-log() { echo "fed-test: $*"; }
+log() { echo "fed-test[$SUITE]: $*"; }
 
 status=1
 cleanup() {
@@ -130,7 +154,7 @@ if [[ "$PSK" == "1" ]]; then
 fi
 
 log "starting hubs"
-compose up -d --wait --wait-timeout 120
+compose up -d --wait --wait-timeout 120 "${SERVICES[@]}"
 
 mkdir -p "$CARGO_CACHE"
 log "running the driver"
@@ -149,7 +173,7 @@ timeout "${GIM_FED_TIMEOUT:-420}" docker run --rm --label ai-agent=true \
     -e GIM_FED_HUB_X=http://hub-x:8080 \
     -e GIM_FED_HUB_X_ID="${HUB_ID[x]}" \
     "$DRIVER_IMAGE" \
-    cargo test -p gim-hub --locked --test fed_compose -- --ignored --nocapture --test-threads 1
+    cargo test -p gim-hub --locked --test "$TEST" -- --ignored --nocapture --test-threads 1
 
 status=0
 log "PASS in $(($(date +%s) - START))s"

@@ -158,6 +158,10 @@ pub trait HubSetHook: Send + Sync + 'static {
     ) -> Result<(), DbError>;
 }
 
+/// Called with every record of a local user this hub stores over a
+/// different one (see [`Hosting::set_local_record_listener`]).
+pub type LocalRecordListener = Arc<dyn Fn(&HostingRecord) + Send + Sync>;
+
 /// Hosting records of this hub. Cheap to clone.
 #[derive(Clone)]
 pub struct Hosting {
@@ -174,6 +178,7 @@ struct Inner {
     flights: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     publish_failures: AtomicU64,
     hub_set_hook: RwLock<Option<Arc<dyn HubSetHook>>>,
+    local_record_listener: RwLock<Option<LocalRecordListener>>,
 }
 
 impl std::fmt::Debug for Hosting {
@@ -206,6 +211,7 @@ impl Hosting {
                 flights: Mutex::default(),
                 publish_failures: AtomicU64::new(0),
                 hub_set_hook: RwLock::default(),
+                local_record_listener: RwLock::default(),
             }),
         }
     }
@@ -235,6 +241,32 @@ impl Hosting {
         *self.inner.hub_set_hook.write().expect("hook lock") = Some(hook);
     }
 
+    /// Installs the listener for stored records of local users, replacing
+    /// any previous one: it sees every record [`Self::publish`] gets (a new
+    /// record listing this hub, including a user's first) and every
+    /// superseding local record passed to [`Self::superseded`] (including
+    /// one that removes this hub). The push gate keeps its view current with
+    /// it (docs/multihoming.md §8).
+    pub fn set_local_record_listener(&self, listener: LocalRecordListener) {
+        *self
+            .inner
+            .local_record_listener
+            .write()
+            .expect("listener lock") = Some(listener);
+    }
+
+    fn local_record_stored(&self, record: &HostingRecord) {
+        let listener = self
+            .inner
+            .local_record_listener
+            .read()
+            .expect("listener lock")
+            .clone();
+        if let Some(listener) = listener {
+            listener(record);
+        }
+    }
+
     /// To be called in the write transaction `tx` that stored `record` of
     /// `user_id` over `previous` (both verified): runs the [`HubSetHook`]
     /// when the listed hubs changed. `local`: the user is a local user.
@@ -246,6 +278,9 @@ impl Hosting {
         local: bool,
         now: i64,
     ) -> Result<(), DbError> {
+        if local {
+            self.local_record_stored(record);
+        }
         let hook = self.inner.hub_set_hook.read().expect("hook lock").clone();
         let Some(hook) = hook else {
             return Ok(());
@@ -553,9 +588,12 @@ impl Hosting {
             .collect()
     }
 
-    /// Publishes `record` to the DHT in the background (no-op without
-    /// federation); failures are retried by the republish task.
+    /// Publishes `record`, a just stored record of a local user listing
+    /// this hub, to the DHT in the background (no DHT without federation);
+    /// failures are retried by the republish task. Passes it to the local
+    /// record listener first.
     pub fn publish(&self, record: HostingRecord) {
+        self.local_record_stored(&record);
         if self.inner.dht.is_none() {
             return;
         }
