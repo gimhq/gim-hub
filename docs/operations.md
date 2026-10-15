@@ -44,10 +44,34 @@ $GIM_HUB_DATA_DIR/
 ## Retention
 
 An hourly background task (also run at startup) deletes events older than
-`GIM_HUB_EVENT_RETENTION_DAYS`. A client whose cursor is older than the
+`GIM_HUB_EVENT_RETENTION_DAYS` and expired device-link bundles. A client whose cursor is older than the
 newest pruned event receives 410 `cursor_expired` with the head cursor and
 must resync. Pending Welcomes are kept until acknowledged, independently of
 event retention.
+
+## Docker
+
+The `Dockerfile` builds a release binary in `rust:1.99-bookworm` and runs it on
+`debian:bookworm-slim` as the unprivileged user `gimhub` (uid 10001).
+
+- `GIM_HUB_LISTEN=0.0.0.0:8080` and `GIM_HUB_DATA_DIR=/data` are set in the
+  image; port 8080 is exposed and `/data` is a volume. Mount a named volume or
+  a host directory writable by uid 10001 there, and back it up as described
+  above (it holds `hub_key`).
+- The container `HEALTHCHECK` runs `gim-hub healthcheck`, which sends
+  `GET /healthz` to the `GIM_HUB_LISTEN` port (loopback if the address is
+  unspecified) and exits non-zero unless it gets 200. No HTTP client is
+  installed in the image.
+- Other variables from the table above are passed with `-e`.
+
+```bash
+docker build -t gim-hub .
+docker run -d --name gim-hub -p 8080:8080 -v gim-hub-data:/data \
+  -e GIM_HUB_EVENT_RETENTION_DAYS=14 gim-hub
+```
+
+`scripts/docker-smoke.sh` builds the image and checks a running container; CI
+runs it on every push.
 
 ## Shutdown
 
