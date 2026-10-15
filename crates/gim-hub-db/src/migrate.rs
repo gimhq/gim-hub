@@ -6,7 +6,12 @@ use crate::DbError;
 
 /// Migration `i` upgrades `user_version` from `i` to `i + 1`. Never edit a
 /// released migration; append a new one.
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_hosting.sql"),
+    include_str!("../migrations/0003_remote_identity.sql"),
+    include_str!("../migrations/0004_outbox.sql"),
+];
 
 /// Schema version after all migrations.
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -63,6 +68,7 @@ mod tests {
                 "group_members",
                 "groups",
                 "handles",
+                "hosting_records",
                 "key_packages",
                 "link_bundles",
                 "messages",
@@ -70,6 +76,10 @@ mod tests {
                 "pending_welcomes",
                 "push_registrations",
                 "recovery_backups",
+                "remote_device_lists",
+                "remote_kp_claims",
+                "s2s_outbox",
+                "s2s_peers",
                 "sessions",
                 "users",
             ]
