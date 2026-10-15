@@ -34,6 +34,10 @@ pub enum ApiError {
     HandleTaken,
     #[error("{0}")]
     Conflict(String),
+    /// A KeyPackage of the upload was already claimed from another hub
+    /// through this hub (multi-homing).
+    #[error("key package was already claimed from another hub")]
+    DuplicateKeyPackage,
     #[error("stale DeviceList")]
     StaleDeviceList,
     #[error("message is not for the current epoch {current_epoch}")]
@@ -83,6 +87,7 @@ impl ApiError {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::HandleTaken
             | Self::Conflict(_)
+            | Self::DuplicateKeyPackage
             | Self::StaleDeviceList
             | Self::StaleHostingRecord
             | Self::StaleEpoch { .. } => StatusCode::CONFLICT,
@@ -111,6 +116,7 @@ impl ApiError {
             Self::NotFound => "not_found",
             Self::HandleTaken => "handle_taken",
             Self::Conflict(_) => "conflict",
+            Self::DuplicateKeyPackage => "duplicate_key_package",
             Self::StaleDeviceList => "stale_device_list",
             Self::StaleEpoch { .. } => "stale_epoch",
             Self::CursorExpired { .. } => "cursor_expired",
@@ -237,6 +243,13 @@ mod tests {
         let (status, body) = render(gim_hub_s2s::HostingError::Required.into()).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body["error"]["code"], "hosting_record_required");
+    }
+
+    #[tokio::test]
+    async fn duplicate_key_package_is_409() {
+        let (status, body) = render(ApiError::DuplicateKeyPackage).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "duplicate_key_package");
     }
 
     #[tokio::test]
