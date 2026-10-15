@@ -8,6 +8,7 @@ use axum::{
         ws::{rejection::WebSocketUpgradeRejection, CloseFrame, Message, WebSocket},
         Query, State, WebSocketUpgrade,
     },
+    http::{header, HeaderMap},
     response::Response,
     Json,
 };
@@ -41,7 +42,9 @@ given one, ascending. With `wait > 0` and no pending events the request is held 
 seconds until an event arrives.\n\n\
 If events after `cursor` have been pruned the hub responds 410 `cursor_expired` with the current \
 head `cursor`; the client must resync (GET /v2/groups, message history, DeviceLists) and continue \
-from that cursor.",
+from that cursor.\n\n\
+After a wait the session is checked again: if it was deleted, expired or its device was revoked \
+in the meantime the hub responds 401 `unauthorized` instead of returning events.",
     params(EventsQuery),
     security(("bearerAuth" = [])),
     responses(
@@ -54,6 +57,7 @@ from that cursor.",
 pub async fn list_events(
     State(state): State<AppState>,
     auth: AuthDevice,
+    headers: HeaderMap,
     query: Result<Query<EventsQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(query) = query.map_err(|err| ApiError::ValidationFailed(err.body_text()))?;
@@ -74,7 +78,14 @@ pub async fn list_events(
     if events.is_empty() && wait > 0 {
         // A timeout simply returns the (empty) result.
         let _ = tokio::time::timeout(Duration::from_secs(wait.into()), wake.changed()).await;
-        events = fetch_events(&state, &auth, cursor, limit).await?;
+        let fetched = fetch_events(&state, &auth, cursor, limit).await;
+        // The session may have been revoked, deleted or expired meanwhile;
+        // checked after the read so it covers every event the read saw.
+        let hash = bearer_hash(&headers).ok_or(ApiError::Unauthorized)?;
+        if authenticate(&state, hash).await?.is_none() {
+            return Err(ApiError::Unauthorized);
+        }
+        events = fetched?;
     }
     let next_cursor = events.last().map_or(cursor, |(cursor, _)| *cursor);
     let events: Vec<Value> = events.into_iter().map(|(_, event)| event).collect();
@@ -96,8 +107,10 @@ Server-to-client frames are JSON text frames:\n\n\
 - `{\"type\":\"error\",\"error\":{\"code\":\"cursor_expired\",\"message\":\"...\"},\"cursor\":<head cursor>}` - \
 sent when `cursor` is older than the retention window, followed by close code 4410. Resync, then \
 reconnect with the given cursor.\n\n\
-An invalid or missing token closes the connection with code 4401. Client-to-server frames are \
-ignored.",
+An invalid or missing token closes the connection with code 4401. The session is checked again \
+with every batch of events and at least every 30 seconds; once it is deleted, expires or its \
+device is revoked by a DeviceList update, no further events are sent and the connection is closed \
+with code 4401. Client-to-server frames are ignored.",
     params(StreamQuery),
     security(("bearerAuth" = [])),
     responses(
@@ -107,24 +120,40 @@ ignored.",
 )]
 pub async fn stream(
     State(state): State<AppState>,
-    header_auth: Result<AuthDevice, ApiError>,
+    headers: HeaderMap,
     query: Result<Query<StreamQuery>, QueryRejection>,
     upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Result<Response, ApiError> {
     let Query(query) = query.map_err(|err| ApiError::ValidationFailed(err.body_text()))?;
     let upgrade = upgrade.map_err(|err| ApiError::ValidationFailed(err.body_text()))?;
-    let auth = match (header_auth, query.token) {
-        (Ok(auth), _) => Some(auth),
-        (Err(_), Some(token)) => authenticate_token(&state, &token).await?,
-        (Err(_), None) => None,
-    };
+    // The header token first, then `?token=`; keep the hash to re-check.
+    let mut auth = None;
+    let hashes = [
+        bearer_hash(&headers),
+        query.token.as_deref().map(token_hash),
+    ];
+    for hash in hashes.into_iter().flatten() {
+        if let Some(device) = authenticate(&state, hash).await? {
+            auth = Some((device, hash));
+            break;
+        }
+    }
     let cursor = query.cursor.unwrap_or(0);
     Ok(upgrade.on_upgrade(move |socket| run_stream(socket, state, auth, cursor)))
 }
 
-/// The device of an unexpired session for `token`, if any.
-async fn authenticate_token(state: &AppState, token: &str) -> Result<Option<AuthDevice>, ApiError> {
-    let hash = token_hash(token);
+/// SHA-256 of the `Authorization: Bearer` token, parsed like the
+/// [`AuthDevice`] extractor does.
+fn bearer_hash(headers: &HeaderMap) -> Option<[u8; 32]> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    let token = token.trim();
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then(|| token_hash(token))
+}
+
+/// The device of the session with token hash `hash` if it has not expired
+/// and its device is still active.
+async fn authenticate(state: &AppState, hash: [u8; 32]) -> Result<Option<AuthDevice>, ApiError> {
     let now = state.clock.now_ms();
     let session = state
         .db
@@ -139,10 +168,10 @@ async fn authenticate_token(state: &AppState, token: &str) -> Result<Option<Auth
 async fn run_stream(
     mut socket: WebSocket,
     state: AppState,
-    auth: Option<AuthDevice>,
+    auth: Option<(AuthDevice, [u8; 32])>,
     mut cursor: u64,
 ) {
-    let Some(auth) = auth else {
+    let Some((auth, hash)) = auth else {
         close(&mut socket, CLOSE_UNAUTHORIZED, "unauthorized").await;
         return;
     };
@@ -153,7 +182,13 @@ async fn run_stream(
         // Drain everything after `cursor`; the subscription above catches
         // events committed while draining.
         loop {
-            let batch = match fetch_events(&state, &auth, cursor, STREAM_BATCH).await {
+            let batch = fetch_events(&state, &auth, cursor, STREAM_BATCH).await;
+            // Checked after the read: an event it saw was committed after any
+            // revocation it must not outlive.
+            if !still_authorized(&mut socket, &state, hash).await {
+                return;
+            }
+            let batch = match batch {
                 Ok(batch) => batch,
                 Err(ApiError::CursorExpired { cursor: head }) => {
                     let err = ApiError::CursorExpired { cursor: head };
@@ -208,11 +243,31 @@ async fn run_stream(
                     Some(Ok(_)) => {}
                 },
                 _ = ping.tick() => {
+                    if !still_authorized(&mut socket, &state, hash).await {
+                        return;
+                    }
                     if socket.send(Message::Ping(Default::default())).await.is_err() {
                         return;
                     }
                 }
             }
+        }
+    }
+}
+
+/// Re-checks the stream's session; closes the socket (4401, or 1011 on a
+/// database error) and returns false if it is no longer valid.
+async fn still_authorized(socket: &mut WebSocket, state: &AppState, hash: [u8; 32]) -> bool {
+    match authenticate(state, hash).await {
+        Ok(Some(_)) => true,
+        Ok(None) => {
+            close(socket, CLOSE_UNAUTHORIZED, "unauthorized").await;
+            false
+        }
+        Err(err) => {
+            tracing::error!(%err, "event stream session check failed");
+            close(socket, CLOSE_INTERNAL, "internal").await;
+            false
         }
     }
 }

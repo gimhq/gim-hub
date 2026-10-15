@@ -46,6 +46,13 @@ DeviceCert in the user's stored DeviceList. There is no handle-only registration
 4. Use `Authorization: Bearer <token>` (or `?token=` on `GET /v2/stream`). Sign in again after
    `expires_at` or on 401.
 
+Long-lived event delivery re-checks the session (unexpired, device still active). `GET /v2/stream`
+checks it with every batch of events (after reading it, before sending it), on every wake-up and at
+least every 30 seconds; once the session is deleted, expires or its device is revoked by a
+DeviceList update, the hub sends no further events and closes the connection with code 4401 (a
+revoking upload wakes the revoked devices, so their streams close promptly). `GET /v2/events?wait=`
+checks it again when the wait ends and then answers 401 `unauthorized` instead of returning events.
+
 Linking a new device: the new device shows a QR code with a `link_id`; the old device (signed in)
 posts `POST /v2/link-bundles {link_id, sealed_bundle, expires_in}` and uploads the DeviceList that
 includes the new device; the new device long-polls `GET /v2/link-bundles/{link_id}?wait=30`
