@@ -76,7 +76,7 @@ fn run(case: &Value) -> Result<(), IdentityError> {
 fn every_case_fails_with_its_code() {
     let file = vectors();
     let cases = file["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 44);
+    assert_eq!(cases.len(), 46);
     let mut names = HashSet::new();
     for case in cases {
         let name = text(&case["name"]);
