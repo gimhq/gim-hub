@@ -58,10 +58,11 @@ impl ApiError {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::ValidationFailed(_) | Self::InvalidDeviceList(_) => StatusCode::BAD_REQUEST,
-            Self::Unauthorized | Self::InvalidChallenge | Self::InvalidSignature => {
-                StatusCode::UNAUTHORIZED
-            }
-            Self::DeviceNotActive | Self::Forbidden(_) | Self::NotMember => StatusCode::FORBIDDEN,
+            Self::Unauthorized
+            | Self::InvalidChallenge
+            | Self::InvalidSignature
+            | Self::DeviceNotActive => StatusCode::UNAUTHORIZED,
+            Self::Forbidden(_) | Self::NotMember => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::HandleTaken
             | Self::Conflict(_)

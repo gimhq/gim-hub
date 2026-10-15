@@ -39,6 +39,10 @@ fn concrete_path(template: &str) -> String {
         .replace("{blob_id}", "b_example")
 }
 
+/// Operations with a real handler: an empty request reaches the handler
+/// and fails validation instead of returning 501.
+const IMPLEMENTED: &[&str] = &["/v2/auth/challenge", "/v2/auth/session"];
+
 /// Whether the operation requires a bearer token checked by `AuthDevice`.
 /// `/v2/stream` authenticates after the WebSocket upgrade (close code 4401).
 fn requires_token(template: &str, operation: &Operation) -> bool {
@@ -108,6 +112,11 @@ async fn every_documented_operation_is_routed() {
                 assert_eq!(value["error"]["code"], "unauthorized");
             }
             let (status, value) = call(&hub, &method, &uri, Some(&token)).await;
+            if IMPLEMENTED.contains(&template.as_str()) {
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {template}");
+                assert_eq!(value["error"]["code"], "validation_failed");
+                continue;
+            }
             assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {template}");
             assert_eq!(value["error"]["code"], "not_implemented");
         }

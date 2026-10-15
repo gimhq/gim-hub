@@ -19,7 +19,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::from_env()?;
     let state = open_state(config)?;
-    tracing::info!(peer_id = state.hub.peer_id(), "hub identity loaded");
+    tracing::info!(
+        hub_id = %state.hub.hub_id(),
+        peer_id = state.hub.peer_id(),
+        "hub identity loaded"
+    );
 
     let listener = tokio::net::TcpListener::bind(state.config.listen).await?;
     tracing::info!(listen = %state.config.listen, "gim-hub listening");

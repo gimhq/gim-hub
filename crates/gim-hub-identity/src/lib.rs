@@ -33,7 +33,10 @@ mod list;
 mod relay;
 mod runtime;
 
-pub use auth::{verify_auth_response, AuthChallenge, AuthenticatedDevice, AUTH_RESPONSE_CONTEXT};
+pub use auth::{
+    auth_response_user_id, verify_auth_response, AuthChallenge, AuthenticatedDevice,
+    AUTH_RESPONSE_CONTEXT,
+};
 pub use cert::{DeviceCert, DEVICE_CERT_CONTEXT};
 pub use ed25519_dalek::{SigningKey, VerifyingKey};
 pub use error::IdentityError;

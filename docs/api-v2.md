@@ -31,12 +31,18 @@ DeviceCert in the user's stored DeviceList. There is no handle-only registration
    `seq` replaces the stored list (200); re-uploading the identical list (same `seq`, same bytes)
    is idempotent and also returns 200. A lower `seq`, or the same `seq` with different bytes, is
    409 `stale_device_list`.
-2. `POST /v2/auth/challenge {user_id, device_id}` returns
-   `{challenge_id, challenge, expires_at, hub_peer_id}`. `challenge` is a gim-core AuthChallenge
-   (CBOR, base64) binding this hub's PeerID.
-3. The device signs the challenge bytes with its device key and calls
-   `POST /v2/auth/session {challenge_id, signature}`, which returns `{token, expires_at}` if the
-   device is still active in the stored DeviceList.
+2. `POST /v2/auth/challenge {user_id, device_id}` returns `{challenge, expires_at, hub_id}`
+   (404 `not_found` unless the device is active in the stored DeviceList). `challenge` is a
+   gim-core AuthChallenge (CBOR, base64) with `audience` = this hub's `hub_id`, a 32-byte random
+   nonce and a 5-minute lifetime.
+3. The device signs the exact challenge bytes into a gim-core AuthResponse (gim-core
+   docs/identity.md, *Device authentication*) and calls `POST /v2/auth/session {response}`
+   (AuthResponse CBOR, base64). The hub verifies it against the stored DeviceList and its
+   `hub_id`, and accepts each challenge once, for the device it was issued to, before
+   `expires_at`. It returns `{token, expires_at}` (token lifetime `GIM_HUB_SESSION_TTL_DAYS`,
+   default 30 days). Errors: 400 `validation_failed` (malformed body or AuthResponse); 401
+   `invalid_challenge` (unknown, used, expired or foreign challenge), `invalid_signature`, or
+   `device_not_active` (device revoked or not in the DeviceList).
 4. Use `Authorization: Bearer <token>` (or `?token=` on `GET /v2/stream`). Sign in again after
    `expires_at` or on 401.
 
