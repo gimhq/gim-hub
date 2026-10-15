@@ -34,6 +34,10 @@ pub enum ApiError {
     HandleTaken,
     #[error("{0}")]
     Conflict(String),
+    /// A KeyPackage of the upload was already claimed from another hub
+    /// through this hub (multi-homing).
+    #[error("key package was already claimed from another hub")]
+    DuplicateKeyPackage,
     #[error("stale DeviceList")]
     StaleDeviceList,
     #[error("message is not for the current epoch {current_epoch}")]
@@ -44,8 +48,9 @@ pub enum ApiError {
     PayloadTooLarge,
     #[error("range not satisfiable")]
     RangeNotSatisfiable,
+    /// Over a rate limit; retry after `retry_after` seconds.
     #[error("rate limited")]
-    RateLimited,
+    RateLimited { retry_after: u64 },
     #[error("{0}")]
     InvalidHostingRecord(String),
     #[error("stale hosting record")]
@@ -83,13 +88,14 @@ impl ApiError {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::HandleTaken
             | Self::Conflict(_)
+            | Self::DuplicateKeyPackage
             | Self::StaleDeviceList
             | Self::StaleHostingRecord
             | Self::StaleEpoch { .. } => StatusCode::CONFLICT,
             Self::CursorExpired { .. } => StatusCode::GONE,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::RangeNotSatisfiable => StatusCode::RANGE_NOT_SATISFIABLE,
-            Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::PeerRefused(_) => StatusCode::BAD_GATEWAY,
             Self::PeerUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
             Self::NotImplemented => StatusCode::NOT_IMPLEMENTED,
@@ -111,12 +117,13 @@ impl ApiError {
             Self::NotFound => "not_found",
             Self::HandleTaken => "handle_taken",
             Self::Conflict(_) => "conflict",
+            Self::DuplicateKeyPackage => "duplicate_key_package",
             Self::StaleDeviceList => "stale_device_list",
             Self::StaleEpoch { .. } => "stale_epoch",
             Self::CursorExpired { .. } => "cursor_expired",
             Self::PayloadTooLarge => "payload_too_large",
             Self::RangeNotSatisfiable => "range_not_satisfiable",
-            Self::RateLimited => "rate_limited",
+            Self::RateLimited { .. } => "rate_limited",
             Self::InvalidHostingRecord(_) => "invalid_hosting_record",
             Self::StaleHostingRecord => "stale_hosting_record",
             Self::HostingRecordRequired => "hosting_record_required",
@@ -152,7 +159,7 @@ impl IntoResponse for ApiError {
                 }),
             )
                 .into_response(),
-            Self::PeerUnavailable { retry_after } => (
+            Self::PeerUnavailable { retry_after } | Self::RateLimited { retry_after } => (
                 status,
                 [(header::RETRY_AFTER, retry_after.to_string())],
                 Json(body),
@@ -227,16 +234,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peer_unavailable_sets_retry_after() {
+    async fn peer_unavailable_and_rate_limited_set_retry_after() {
         let response = ApiError::PeerUnavailable { retry_after: 5 }.into_response();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.headers()[header::RETRY_AFTER], "5");
+        let response = ApiError::RateLimited { retry_after: 3 }.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "3");
         let (status, body) = render(ApiError::PeerRefused("not allowlisted".into())).await;
         assert_eq!(status, StatusCode::BAD_GATEWAY);
         assert_eq!(body["error"]["code"], "peer_refused");
         let (status, body) = render(gim_hub_s2s::HostingError::Required.into()).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body["error"]["code"], "hosting_record_required");
+    }
+
+    #[tokio::test]
+    async fn duplicate_key_package_is_409() {
+        let (status, body) = render(ApiError::DuplicateKeyPackage).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "duplicate_key_package");
     }
 
     #[tokio::test]

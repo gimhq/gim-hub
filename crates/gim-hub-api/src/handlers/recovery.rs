@@ -12,6 +12,7 @@ use crate::{
     auth::AuthDevice,
     dto::{Error, PutRecoveryBackupRequest, RecoveryBackup},
     error::ApiError,
+    ratelimit::ClientIp,
     state::AppState,
 };
 
@@ -75,8 +76,8 @@ pub async fn put_recovery_backup(
     tag = "recovery",
     summary = "Fetch a recovery backup",
     description = "No authentication: this is the restore path of a user who lost every device. \
-The backup is only useful with the recovery code. Requests will be rate limited per client \
-address and per `user_id` (429 `rate_limited` with `Retry-After`).",
+The backup is only useful with the recovery code. Requests are rate limited per client address \
+and per `user_id` (429 `rate_limited` with `Retry-After`).",
     params(("user_id" = String, Path, description = "Opaque user ID (format owned by gim-core)", example = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa")),
     responses(
         (status = 200, description = "Stored backup", body = RecoveryBackup),
@@ -85,9 +86,13 @@ address and per `user_id` (429 `rate_limited` with `Retry-After`).",
     ),
 )]
 pub async fn get_recovery_backup(
+    client: ClientIp,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> Result<Json<RecoveryBackup>, ApiError> {
+    state
+        .recovery_reads
+        .check(client, &user_id, state.clock.now_ms())?;
     let user_id_ = user_id.clone();
     let stored = state
         .db

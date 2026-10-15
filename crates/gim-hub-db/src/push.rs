@@ -14,6 +14,11 @@ pub struct Registration {
     pub token: String,
     pub app_id: Option<String>,
     pub sandbox: bool,
+    /// UnifiedPush only: the user agent's uncompressed P-256 public key
+    /// (RFC 8291 `p256dh`).
+    pub p256dh: Option<Vec<u8>>,
+    /// UnifiedPush only: the RFC 8291 authentication secret.
+    pub auth: Option<Vec<u8>>,
     pub updated_at: i64,
 }
 
@@ -26,6 +31,8 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<Registration> {
         app_id: row.get(4)?,
         sandbox: row.get(5)?,
         updated_at: row.get(6)?,
+        p256dh: row.get(7)?,
+        auth: row.get(8)?,
     })
 }
 
@@ -33,11 +40,11 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<Registration> {
 pub fn put(tx: &Transaction<'_>, registration: &Registration) -> Result<(), DbError> {
     tx.execute(
         "INSERT INTO push_registrations \
-         (user_id, device_id, provider, token, app_id, sandbox, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+         (user_id, device_id, provider, token, app_id, sandbox, updated_at, p256dh, auth) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
          ON CONFLICT (user_id, device_id) DO UPDATE SET provider = excluded.provider, \
          token = excluded.token, app_id = excluded.app_id, sandbox = excluded.sandbox, \
-         updated_at = excluded.updated_at",
+         updated_at = excluded.updated_at, p256dh = excluded.p256dh, auth = excluded.auth",
         params![
             registration.user_id,
             registration.device_id,
@@ -46,6 +53,8 @@ pub fn put(tx: &Transaction<'_>, registration: &Registration) -> Result<(), DbEr
             registration.app_id,
             registration.sandbox,
             registration.updated_at,
+            registration.p256dh,
+            registration.auth,
         ],
     )?;
     Ok(())
@@ -86,7 +95,7 @@ pub fn get_active(
     let registration = conn
         .prepare_cached(
             "SELECT r.user_id, r.device_id, r.provider, r.token, r.app_id, r.sandbox, \
-             r.updated_at FROM push_registrations r JOIN devices d \
+             r.updated_at, r.p256dh, r.auth FROM push_registrations r JOIN devices d \
              ON d.user_id = r.user_id AND d.device_id = r.device_id \
              WHERE r.user_id = ?1 AND r.device_id = ?2 AND d.active = 1",
         )?
@@ -151,6 +160,8 @@ mod tests {
             token: token.into(),
             app_id: Some("im.g.apps".into()),
             sandbox: true,
+            p256dh: Some(vec![4; 65]),
+            auth: Some(vec![1; 16]),
             updated_at: 5,
         }
     }

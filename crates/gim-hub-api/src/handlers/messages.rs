@@ -235,6 +235,11 @@ async fn forward_message(
         .message
         .filter(|message| message.gid == gid)
         .ok_or_else(|| ApiError::PeerRefused("owning hub answered without the message".into()))?;
+    if message.kind() != s2s::MessageKind::Application {
+        return Err(ApiError::PeerRefused(
+            "owning hub answered with a non-application message".into(),
+        ));
+    }
     let dto = sequenced_dto(&message);
     if let Err(err) = apply_replica(state, &owner, vec![message], true).await {
         tracing::error!(%err, gid, "applying the submitted message failed");
