@@ -1077,7 +1077,7 @@ async fn forward_commit(
         Ok(response) => response,
         Err(err) => return Err(forward_error(state, &owner, &commit.gid, err).await),
     };
-    if let Some(message) = response.message {
+    if let Some(message) = response.message.filter(|message| message.gid == commit.gid) {
         // Read-your-writes: the replica holds the Commit before the client
         // hears back (§6.3).
         if let Err(err) = apply_replica(state, &owner, vec![message], true).await {
@@ -1165,6 +1165,17 @@ pub(crate) async fn apply_replica(
     batch: Vec<s2s::SequencedMessage>,
     fill_gaps: bool,
 ) -> Result<Vec<s2s::GroupAck>, ApiError> {
+    // Every path (Deliver, submit responses, FetchLog pages) only applies
+    // messages of groups `owner` owns, and never to groups owned here.
+    if owner == state.hub.hub_id()
+        || batch
+            .iter()
+            .any(|message| owner_of(&message.gid) != Some(owner.as_str()))
+    {
+        return Err(ApiError::PeerRefused(
+            "message for a group the peer does not own".into(),
+        ));
+    }
     let now = state.clock.now_ms();
     let (acks, gaps, wake) = state
         .db
@@ -1329,6 +1340,10 @@ async fn fill_gap(state: AppState, owner: HubId, gid: String) {
         if page.messages.is_empty() {
             return;
         }
+        if page.messages.iter().any(|message| message.gid != gid) {
+            tracing::warn!(%owner, gid, "gap fill: FetchLog returned another group");
+            return;
+        }
         let acks = match apply_replica(&state, &owner, page.messages, false).await {
             Ok(acks) => acks,
             Err(err) => {
@@ -1475,6 +1490,34 @@ pub fn register_group_ops(state: &AppState, service: &FederationService) -> Arc<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn replicas_only_accept_messages_of_the_owner() {
+        let hub = crate::testing::TestHub::new();
+        let own = hub.state.hub.hub_id().clone();
+        let other = HubId::parse(crate::dto::GID_EXAMPLE.split_once('/').unwrap().0).unwrap();
+        let message = |gid: String| s2s::SequencedMessage {
+            gid,
+            seq: 1,
+            ..Default::default()
+        };
+        // A message of a group owned here, or by a hub other than the sender.
+        for (owner, gid) in [(&other, format!("{own}/g1")), (&own, format!("{own}/g1"))] {
+            let err = apply_replica(&hub.state, owner, vec![message(gid)], false)
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), "peer_refused");
+        }
+        let acks = apply_replica(
+            &hub.state,
+            &other,
+            vec![message(format!("{other}/g2"))],
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(acks[0].highest_contiguous_seq, 0);
+    }
 
     #[test]
     fn base32_matches_rfc4648_vectors() {
