@@ -7,16 +7,19 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use gim_hub_db::{
-    events, groups, handles,
+    events, groups, handles, hosting, remote_identity,
     users::{self, StoredDeviceList},
+    Db, DbError, Transaction,
 };
-use gim_hub_identity::UserId;
+use gim_hub_identity::{HubId, UserId};
+use gim_hub_s2s::{outbox::NewEntry, BoxFuture, DeviceListEvents, FederationService, OutboxSender};
 
 use crate::{
     auth::AuthDevice,
     dto::{DeviceList, Error, Me, PutDeviceListRequest, User},
     error::ApiError,
-    state::AppState,
+    notifier::Notifier,
+    state::{AppState, Clock},
 };
 
 const DEVICE_LIST_UPDATED: &str = "device_list.updated";
@@ -45,19 +48,6 @@ fn device_list_dto(list: &StoredDeviceList) -> DeviceList {
     }
 }
 
-/// What a DeviceList upload did.
-enum Upload {
-    Created,
-    /// `notify`: `(user_id, device_id)` of the devices to notify of the
-    /// update; `revoked`: the user's devices deactivated by it, woken so
-    /// their open streams re-check the session.
-    Replaced {
-        notify: Vec<(String, String)>,
-        revoked: Vec<String>,
-    },
-    Unchanged,
-}
-
 #[utoipa::path(
     put,
     path = "/v2/users/{user_id}/device-list",
@@ -67,7 +57,9 @@ enum Upload {
 key signature and that the list's user ID matches `user_id` (derived from the root key). The first \
 upload creates the user on this hub. A later upload with a higher `seq` replaces the stored list; \
 re-uploading the identical list (same `seq`, same bytes) is idempotent and returns 200. Devices revoked by the new list lose their tokens; a `device_list.updated` event is emitted to \
-the user's other active devices and to every active device of users sharing a group with them.",
+the user's other active devices and to every active device of users sharing a group with them. \
+With federation, a replaced list of a hosted user is pushed to the hubs sharing groups with the \
+user, which emit `device_list.updated` to their users in those groups.",
     params(("user_id" = String, Path, description = "Opaque user ID (format owned by gim-core)", example = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa")),
     request_body = PutDeviceListRequest,
     responses(
@@ -90,85 +82,237 @@ pub async fn put_device_list(
     let bytes = decode_base64(&body.device_list)
         .ok_or_else(|| ApiError::InvalidDeviceList("device_list is not valid base64".into()))?;
     let list = gim_hub_identity::DeviceList::verify(&bytes, &expected).map_err(invalid)?;
-    let seq = i64::try_from(list.seq())
-        .map_err(|_| ApiError::InvalidDeviceList("seq is out of range".into()))?;
-    let stored = StoredDeviceList {
-        user_id: list.user_id().to_string(),
-        root_pubkey: list.root_pubkey().as_bytes().to_vec(),
-        device_list: list.as_bytes().to_vec(),
-        seq,
-        updated_at: state.clock.now_ms(),
-    };
-    let active: Vec<(String, Vec<u8>)> = list
-        .certs()
-        .iter()
-        .map(|cert| {
-            (
-                cert.device_id().to_string(),
-                cert.device_sig_pubkey().as_bytes().to_vec(),
-            )
-        })
-        .collect();
-    let response = device_list_dto(&stored);
-    let payload =
-        serde_json::to_string(&response).map_err(|err| ApiError::Internal(err.to_string()))?;
-
-    let upload = state
+    let upload = Upload::prepare(&list, state.clock.now_ms())?;
+    let response = upload.response.clone();
+    let hub_id = state.hub.hub_id().clone();
+    let outbox = state.outbox.clone();
+    let applied = state
         .db
-        .write(move |tx| {
-            // Ordering per the identity spec ("Ordering and updates"); the
-            // stored list was verified when it was stored.
-            if let Some(current) = users::get_device_list(tx, &stored.user_id)? {
-                if stored.seq < current.seq
-                    || (stored.seq == current.seq && stored.device_list != current.device_list)
-                {
-                    return Err(ApiError::StaleDeviceList);
-                }
-                if stored.seq == current.seq {
-                    return Ok(Upload::Unchanged);
-                }
-            }
-            let created = users::put_device_list(tx, &stored)?;
-            let revoked =
-                users::set_active_devices(tx, &stored.user_id, &active, stored.updated_at)?;
-            if created {
-                return Ok(Upload::Created);
-            }
-            // The user's devices and their group peers, who must re-verify
-            // the user's MLS credentials against the new list.
-            let mut notify: Vec<(String, String)> = users::active_device_ids(tx, &stored.user_id)?
-                .into_iter()
-                .map(|device_id| (stored.user_id.clone(), device_id))
-                .collect();
-            notify.extend(groups::peer_devices(tx, &stored.user_id)?);
-            for (user_id, device_id) in &notify {
-                events::append(
-                    tx,
-                    user_id,
-                    device_id,
-                    DEVICE_LIST_UPDATED,
-                    &payload,
-                    stored.updated_at,
-                )?;
-            }
-            Ok(Upload::Replaced { notify, revoked })
-        })
+        .write(move |tx| upload.apply(tx, Some((&hub_id, outbox.as_ref()))))
         .await?;
-
-    let status = match upload {
-        Upload::Created => StatusCode::CREATED,
-        Upload::Replaced { notify, revoked } => {
-            for (user_id, device_id) in &notify {
-                state.notifier.notify(user_id, device_id);
-            }
-            for device_id in &revoked {
-                state.notifier.notify(&response.user_id, device_id);
-            }
-            StatusCode::OK
-        }
-        Upload::Unchanged => StatusCode::OK,
+    let status = match applied {
+        Applied::Created => StatusCode::CREATED,
+        Applied::Replaced { .. } | Applied::Unchanged => StatusCode::OK,
     };
+    applied.wake(&state.notifier, &response.user_id);
     Ok((status, Json(response)))
+}
+
+/// A verified DeviceList ready to be stored as a local user's list.
+struct Upload {
+    stored: StoredDeviceList,
+    /// `(device_id, device_sig_pubkey)` of the list's active devices.
+    active: Vec<(String, Vec<u8>)>,
+    response: DeviceList,
+    /// `device_list.updated` event payload.
+    payload: String,
+}
+
+impl Upload {
+    fn prepare(list: &gim_hub_identity::DeviceList, now: i64) -> Result<Self, ApiError> {
+        let seq = i64::try_from(list.seq())
+            .map_err(|_| ApiError::InvalidDeviceList("seq is out of range".into()))?;
+        let stored = StoredDeviceList {
+            user_id: list.user_id().to_string(),
+            root_pubkey: list.root_pubkey().as_bytes().to_vec(),
+            device_list: list.as_bytes().to_vec(),
+            seq,
+            updated_at: now,
+        };
+        let active = list
+            .certs()
+            .iter()
+            .map(|cert| {
+                (
+                    cert.device_id().to_string(),
+                    cert.device_sig_pubkey().as_bytes().to_vec(),
+                )
+            })
+            .collect();
+        let response = device_list_dto(&stored);
+        let payload =
+            serde_json::to_string(&response).map_err(|err| ApiError::Internal(err.to_string()))?;
+        Ok(Self {
+            stored,
+            active,
+            response,
+            payload,
+        })
+    }
+
+    /// Stores the list with the seq rules. On replacement, notifies the
+    /// user's devices and their local group peers and, with `propagate` and
+    /// a hosted user, queues `NotifyDeviceList` to the peer hubs (§5.1).
+    fn apply(
+        self,
+        tx: &Transaction<'_>,
+        propagate: Option<(&HubId, &dyn OutboxSender)>,
+    ) -> Result<Applied, ApiError> {
+        let Self {
+            stored,
+            active,
+            payload,
+            ..
+        } = self;
+        // Ordering per the identity spec ("Ordering and updates"); the
+        // stored list was verified when it was stored.
+        if let Some(current) = users::get_device_list(tx, &stored.user_id)? {
+            if stored.seq < current.seq
+                || (stored.seq == current.seq && stored.device_list != current.device_list)
+            {
+                return Err(ApiError::StaleDeviceList);
+            }
+            if stored.seq == current.seq {
+                return Ok(Applied::Unchanged);
+            }
+        }
+        let created = users::put_device_list(tx, &stored)?;
+        let revoked = users::set_active_devices(tx, &stored.user_id, &active, stored.updated_at)?;
+        if created {
+            return Ok(Applied::Created);
+        }
+        // The user's devices and their group peers, who must re-verify
+        // the user's MLS credentials against the new list.
+        let mut notify: Vec<(String, String)> = users::active_device_ids(tx, &stored.user_id)?
+            .into_iter()
+            .map(|device_id| (stored.user_id.clone(), device_id))
+            .collect();
+        notify.extend(groups::peer_devices(tx, &stored.user_id)?);
+        for (user_id, device_id) in &notify {
+            events::append(
+                tx,
+                user_id,
+                device_id,
+                DEVICE_LIST_UPDATED,
+                &payload,
+                stored.updated_at,
+            )?;
+        }
+        if let Some((hub_id, outbox)) = propagate {
+            queue_device_list(tx, hub_id, outbox, &stored.user_id)?;
+        }
+        Ok(Applied::Replaced { notify, revoked })
+    }
+}
+
+/// Queues one `NotifyDeviceList` per peer hub of hosted user `user_id`.
+fn queue_device_list(
+    tx: &Transaction<'_>,
+    hub_id: &HubId,
+    outbox: &dyn OutboxSender,
+    user_id: &str,
+) -> Result<(), DbError> {
+    if !hosting::get(tx, user_id)?.is_some_and(|record| record.hosted) {
+        return Ok(());
+    }
+    for peer in remote_identity::device_list_peer_hubs(tx, user_id, hub_id.as_str())? {
+        match HubId::parse(&peer) {
+            Ok(peer) => outbox.enqueue_in_tx(tx, &peer, NewEntry::DeviceList { user_id })?,
+            Err(err) => tracing::warn!(%peer, %err, "skipping an invalid peer hub_id"),
+        }
+    }
+    Ok(())
+}
+
+/// What a DeviceList upload did.
+enum Applied {
+    Created,
+    /// `notify`: `(user_id, device_id)` of the devices to notify of the
+    /// update; `revoked`: the user's devices deactivated by it, woken so
+    /// their open streams re-check the session.
+    Replaced {
+        notify: Vec<(String, String)>,
+        revoked: Vec<String>,
+    },
+    Unchanged,
+}
+
+impl Applied {
+    fn wake(&self, notifier: &Notifier, user_id: &str) {
+        if let Self::Replaced { notify, revoked } = self {
+            for (user_id, device_id) in notify {
+                notifier.notify(user_id, device_id);
+            }
+            for device_id in revoked {
+                notifier.notify(user_id, device_id);
+            }
+        }
+    }
+}
+
+/// DeviceList effects for [`gim_hub_s2s::DeviceLists`]: events for remote
+/// users' list updates and the local upload path for pushed lists.
+pub(crate) struct IdentityEvents {
+    db: Db,
+    clock: Clock,
+    notifier: Notifier,
+}
+
+impl IdentityEvents {
+    pub(crate) fn new(db: Db, clock: Clock, notifier: Notifier) -> Self {
+        Self {
+            db,
+            clock,
+            notifier,
+        }
+    }
+}
+
+impl DeviceListEvents for IdentityEvents {
+    fn replaced(
+        &self,
+        tx: &Transaction<'_>,
+        user_id: &str,
+        device_list: &[u8],
+        now: i64,
+    ) -> Result<Vec<(String, String)>, DbError> {
+        let payload = serde_json::to_string(&DeviceList {
+            user_id: user_id.to_owned(),
+            device_list: STANDARD.encode(device_list),
+        })
+        .expect("DeviceList serializes");
+        let notify = groups::peer_devices(tx, user_id)?;
+        for (peer, device_id) in &notify {
+            events::append(tx, peer, device_id, DEVICE_LIST_UPDATED, &payload, now)?;
+        }
+        Ok(notify)
+    }
+
+    fn wake(&self, devices: &[(String, String)]) {
+        for (user_id, device_id) in devices {
+            self.notifier.notify(user_id, device_id);
+        }
+    }
+
+    fn apply_local(
+        &self,
+        list: gim_hub_identity::DeviceList,
+    ) -> BoxFuture<'_, Result<(), DbError>> {
+        Box::pin(async move {
+            let upload = match Upload::prepare(&list, self.clock.now_ms()) {
+                Ok(upload) => upload,
+                Err(err) => return Err(DbError::Task(err.to_string())),
+            };
+            let user_id = upload.stored.user_id.clone();
+            // Pushed by another hub of the user: that hub propagates it.
+            let applied = self
+                .db
+                .write(move |tx| match upload.apply(tx, None) {
+                    Err(ApiError::StaleDeviceList) => Ok(Applied::Unchanged),
+                    Err(ApiError::Internal(err)) => Err(DbError::Task(err)),
+                    Err(err) => Err(DbError::Task(err.to_string())),
+                    Ok(applied) => Ok(applied),
+                })
+                .await?;
+            applied.wake(&self.notifier, &user_id);
+            Ok(())
+        })
+    }
+}
+
+/// Registers the `GetDeviceList` and `NotifyDeviceList` op handlers.
+pub fn register_device_list_ops(state: &AppState, service: &FederationService) {
+    state.device_lists.register(service);
 }
 
 #[utoipa::path(
@@ -176,12 +320,17 @@ pub async fn put_device_list(
     path = "/v2/users/{user_id}/device-list",
     tag = "identity",
     summary = "Get a user's DeviceList",
+    description = "For a user of another hub, the hub answers from its cache of remote \
+DeviceLists, fetching the list from the user's hub when it is not cached or older than \
+`GIM_HUB_DEVICE_LIST_CACHE_HOURS`. A stale cached copy is returned if the user's hub cannot be \
+reached.",
     params(("user_id" = String, Path, description = "Opaque user ID (format owned by gim-core)", example = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa")),
     security(("bearerAuth" = [])),
     responses(
         (status = 200, description = "Current DeviceList", body = DeviceList),
         (status = 401, description = "Missing or invalid bearer token (`unauthorized`)", body = Error),
         (status = 404, description = "Not found (`not_found`)", body = Error),
+        (status = 503, description = "The user's hub is unreachable and no cached copy exists (`peer_unavailable`); retry after `Retry-After` seconds", body = Error),
     ),
 )]
 pub async fn get_device_list(
@@ -189,12 +338,11 @@ pub async fn get_device_list(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> Result<Json<DeviceList>, ApiError> {
-    let list = state
-        .db
-        .read(move |conn| users::get_device_list(conn, &user_id))
-        .await?
-        .ok_or(ApiError::NotFound)?;
-    Ok(Json(device_list_dto(&list)))
+    let device_list = state.device_lists.device_list_for(&user_id).await?;
+    Ok(Json(DeviceList {
+        user_id,
+        device_list: STANDARD.encode(device_list),
+    }))
 }
 
 #[utoipa::path(
@@ -202,12 +350,15 @@ pub async fn get_device_list(
     path = "/v2/users/{user_id}",
     tag = "identity",
     summary = "Get a user",
+    description = "For a user of another hub, the DeviceList comes from the cache of remote \
+DeviceLists (fetched from the user's hub when missing or stale) and `handle` is absent.",
     params(("user_id" = String, Path, description = "Opaque user ID (format owned by gim-core)", example = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa")),
     security(("bearerAuth" = [])),
     responses(
         (status = 200, description = "User", body = User),
         (status = 401, description = "Missing or invalid bearer token (`unauthorized`)", body = Error),
         (status = 404, description = "Not found (`not_found`)", body = Error),
+        (status = 503, description = "The user's hub is unreachable and no cached copy exists (`peer_unavailable`); retry after `Retry-After` seconds", body = Error),
     ),
 )]
 pub async fn get_user(
@@ -215,23 +366,15 @@ pub async fn get_user(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> Result<Json<User>, ApiError> {
-    let (list, handle) = state
+    let device_list = state.device_lists.device_list_for(&user_id).await?;
+    let key = user_id.clone();
+    let handle = state
         .db
-        .read(move |conn| {
-            let Some(list) = users::get_device_list(conn, &user_id)? else {
-                return Ok::<_, ApiError>((None, None));
-            };
-            Ok((Some(list), handles::handle_of(conn, &user_id)?))
-        })
+        .read(move |conn| handles::handle_of(conn, &key))
         .await?;
-    let list = list.ok_or(ApiError::NotFound)?;
-    let DeviceList {
-        user_id,
-        device_list,
-    } = device_list_dto(&list);
     Ok(Json(User {
         user_id,
-        device_list,
+        device_list: STANDARD.encode(device_list),
         handle,
     }))
 }

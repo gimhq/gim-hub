@@ -11,10 +11,13 @@
 //! - [`hosting`]: hosting records: DHT publication, validator, resolver and
 //!   the `GetHostingRecord` op (§4).
 //! - [`outbox`]: the durable outbound queue and its per-peer worker (§7).
+//! - [`ops`]: remote DeviceLists and cross-hub KeyPackage claims (§5.1,
+//!   §5.2).
 
 pub mod config;
 pub mod federation;
 pub mod hosting;
+pub mod ops;
 pub mod outbox;
 pub mod policy;
 pub mod transport;
@@ -24,6 +27,10 @@ pub use federation::{
     error, BoxFuture, Disabled, Federation, FederationService, OpHandler, OpResult, StartError,
 };
 pub use hosting::{Hosting, HostingError, HostingSettings, Purpose};
+pub use ops::{
+    claim::{ClaimOutcome, ClaimService, LocalClaims},
+    device_list::{DeviceListEvents, DeviceLists},
+};
 pub use outbox::{Outbox, OutboxConfig, OutboxSender, OutboxSource};
 pub use policy::{AllowlistPolicy, Decision, FederationPolicy, OpKind, PolicyError};
 pub use transport::{

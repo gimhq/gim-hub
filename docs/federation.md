@@ -486,6 +486,31 @@ CREATE TABLE remote_device_lists (
   the cached/fetched list (contract behaviour change, §9.2); 404 if the user cannot be resolved,
   503 `peer_unavailable` if their hub is unreachable and no cached copy exists.
 
+Resolved in H3-T3:
+
+- **Receiver events.** Since H2-T9 a single-hub DeviceList replacement also notifies the user's
+  group peers. To keep parity, a hub that replaces a cached remote list with a higher seq (from
+  `NotifyDeviceList` or a refresh) emits `device_list.updated` (payload as for a local upload) to
+  its local active devices sharing a group with the user. Caching a list for the first time emits
+  nothing (as the single-hub "created" case).
+- **Peer hubs.** The `NotifyDeviceList` targets are computed from this hub's tables: the owner
+  (gid prefix) of every group with the user as a member (owned groups and replicas), plus every
+  hub listed in the stored hosting records of the other members of the groups this hub owns that
+  contain the user; this hub excluded. Entries are queued only while the user's row in
+  `hosting_records` is `hosted`.
+- **Local receivers.** A `NotifyDeviceList` for a user with a `users` row here is applied with the
+  upload path (seq rules, device (de)activation, events); a stale or equal list is a no-op. The
+  receiver does not propagate it further (the sending hub does).
+- **Fetch.** `GetDeviceList` goes to the hubs of the user's resolved record in
+  `(priority, hub_id)` order, this hub skipped, stopping at the first valid list. A hub answers
+  `GetDeviceList` only for its local users (never from its cache); otherwise `NOT_FOUND`. A list
+  whose `seq` exceeds 2^63-1 is invalid. When no hub answers, a stale cached copy is used; 503
+  only without any copy.
+- **API.** `gim_hub_s2s::DeviceLists` (`AppState::device_lists`): `device_list_for(user_id)`
+  (local row or cached/fetched remote copy) and `refetch_after_failure(user_id)` (refetch a remote
+  copy older than 60 s) for the commit path; `ops::device_list::local_device_list` is the
+  `OutboxSource::device_list` of `device_list` entries.
+
 ### 5.2 Remote KeyPackage claims
 
 A client always claims through its own hub (`POST /v2/keypackages/claim`, unchanged request).
@@ -516,6 +541,29 @@ Rows older than 7 days are pruned by the retention task. A KeyPackage that does 
 Response: same shape plus a new `unavailable: [ClaimTarget]` list for targets whose hub could not
 be reached, refused the request, or timed out (§9.2). `missing` keeps its meaning (unknown user,
 no active device, no KeyPackage).
+
+Resolved in H3-T3:
+
+- **Routing.** With federation disabled every target is claimed locally (single-hub behaviour). A
+  local user (row in `users`) is always claimed locally. Otherwise the target's record is resolved
+  (§4.5): none known → `missing`; resolution failed for lack of a peer → `unavailable`; the record
+  lists this hub → local (so `missing`); else the primary hub (lowest priority, ties by smallest
+  `hub_id`) is asked. Only the primary hub is asked.
+- **Requester check first.** If any target is remote and the caller has no valid hosting record
+  listing this hub, the whole request fails with 403 `hosting_record_required` before anything
+  is claimed.
+- **Responses.** A `ClaimKeyPackage` answer without packages counts as `NOT_FOUND` (`missing`);
+  every error other than `NOT_FOUND` (including `INVALID`) counts as `unavailable`. A package that
+  does not parse is reported in `missing` with its `device_id`.
+- **Ledger.** A reused last-resort package keeps one `remote_kp_claims` row (its `kp_ref` is the
+  key), updated to the latest claim. Rows older than 7 days are deleted by the hourly retention
+  loop of `main.rs`.
+- **Handler.** `ClaimKeyPackage` checks, in order: the caller is listed for `requester_user_id`
+  (`resolve_for(.., Authorize(caller))`; a resolution that needed an unreachable peer answers
+  `INTERNAL`, retryable), the target is hosted here (`require_hosting_record`, else `NOT_FOUND`),
+  then the 10/min limit per `(caller, requester, target)` as a fixed one-minute window
+  (`RATE_LIMITED`); it then claims exactly as a local client would (including `keypackages.low`)
+  and answers `NOT_FOUND` if nothing was claimed.
 
 ### 5.3 Groups on the owning hub
 

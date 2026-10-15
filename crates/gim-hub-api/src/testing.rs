@@ -1,7 +1,7 @@
 //! Test helpers (feature `testing`): an [`AppState`] on an in-memory database
 //! and a temporary data directory, plus direct session creation.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::Router;
 use gim_hub_db::{
@@ -18,6 +18,9 @@ use crate::{auth::token_hash, config::Config, hub::HubIdentity, state::Clock, Ap
 pub const TEST_NOW: i64 = 1_760_479_200_000;
 /// Lifetime of sessions created by [`TestHub::create_session`].
 pub const TEST_SESSION_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+/// Lifetime of cached remote DeviceLists after [`TestHub::set_federation`]
+/// (the `GIM_HUB_DEVICE_LIST_CACHE_HOURS` default).
+pub const TEST_DEVICE_LIST_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// A hub on an in-memory database with a manual clock at [`TEST_NOW`].
 pub struct TestHub {
@@ -60,17 +63,22 @@ impl TestHub {
     }
 
     /// Replaces federation (default [`gim_hub_s2s::Disabled`]) with
-    /// `federation`, e.g. a fake peer; hosting resolution then sends through
-    /// it (without a DHT).
+    /// `federation`, e.g. a fake peer; hosting resolution and DeviceList
+    /// fetches then send through it (without a DHT).
     pub fn set_federation(&mut self, federation: Arc<dyn Federation>) {
         self.state.federation = federation.clone();
         self.state.hosting = Hosting::new(
             self.state.db.clone(),
             self.state.hub.hub_id().clone(),
-            federation,
+            federation.clone(),
             None,
             HostingSettings::default(),
             self.state.clock.as_now(),
+        );
+        self.state.device_lists = self.state.device_lists.with_federation(
+            federation,
+            self.state.hosting.clone(),
+            TEST_DEVICE_LIST_CACHE_TTL,
         );
     }
 
