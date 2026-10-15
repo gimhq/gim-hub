@@ -39,8 +39,9 @@ axum = { version = "=0.8.9", default-features = false, features = [
 ] }
 base64 = "=0.23.1"
 bs58 = "=0.5.1"
+ciborium = "=0.2.2"
 data-encoding = "=2.11.1"
-ed25519-dalek = "=3.0.0"
+ed25519-dalek = "=2.2.0"
 hex = "=0.4.3"
 prost = "=0.14.4"
 prost-build = "=0.14.4"
@@ -48,7 +49,7 @@ prost-build = "=0.14.4"
 protox = "=0.10.0"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
-sha2 = "=0.11.1"
+sha2 = "=0.10.9"
 thiserror = "=2.0.21"
 tokio = "=1.53.3"
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }

@@ -1,6 +1,6 @@
 [package]
 name = "gim-hub-identity"
-description = "Self-certifying identity types and verification for gim"
+description = "Hub-side verification of gim identity formats"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,16 +10,14 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
-# Keep this list free of hub-only dependencies: gim-core depends on this crate.
+# Keep this list free of hub-only dependencies, and the crypto/encoding
+# versions aligned with gim-core's gim-identity crate.
 [dependencies]
-base64 = { workspace = true }
-bs58 = { workspace = true }
+ciborium = { workspace = true }
 data-encoding = { workspace = true }
 ed25519-dalek = { workspace = true }
-serde = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-hex = { workspace = true }
 serde_json = { workspace = true }
