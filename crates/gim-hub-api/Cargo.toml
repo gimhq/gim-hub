@@ -28,6 +28,7 @@ gim-hub-s2s = { workspace = true }
 hex = { workspace = true }
 openmls = { workspace = true }
 openmls_rust_crypto = { workspace = true }
+prost = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

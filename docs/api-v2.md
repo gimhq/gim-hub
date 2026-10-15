@@ -205,6 +205,33 @@ own hub:
   target is on another hub, the caller needs a valid hosting record listing this hub (403
   `hosting_record_required`); no package is claimed then.
 
+## Groups across hubs
+
+With federation ([`federation.md`](federation.md) §5.3, §5.4, §6), a group may have members on
+several hubs. The hub named by the gid prefix owns the group and assigns every `seq`; every other
+hub with a member keeps a replica. Clients still talk only to their own hub, and the API behaves
+as on a single hub:
+
+- `POST /v2/groups/{gid}/commits` and `POST /v2/groups/{gid}/messages` for a group owned by
+  another hub are forwarded to the owner; the response is the owner's result (same `seq`,
+  `epoch`, `duplicate`, 409 `stale_epoch` with `current_epoch`, `client_id` replay), and the
+  local replica already holds the message when the client gets it. Additional errors: 403
+  `hosting_record_required` (no valid hosting record lists this hub), 502 `peer_refused` (the
+  owning hub refused), 503 `peer_unavailable` with `Retry-After` (the owning hub is unreachable;
+  retry with the same Commit or `client_id`, both are idempotent).
+- Adding a member of another hub works like a local Add: claim the KeyPackage through your own
+  hub (`POST /v2/keypackages/claim`), then commit. The owning hub checks the added member's
+  credential against their DeviceList, fetched from their hub. The Welcome reaches the member's
+  devices through their own hub (`welcome` event and `GET /v2/welcomes/pending`, with the
+  Commit's `seq` and `epoch`).
+- Events (`message`, `group.member_added`, `group.member_removed` with `user_id`, `welcome`) are
+  emitted by each member's own hub, after the owner sequenced the message and delivered it to
+  that hub (seconds normally; after a hub outage the missed messages arrive in `seq` order, without
+  gaps or duplicates).
+- `GET /v2/groups`, `GET /v2/groups/{gid}` and `GET /v2/groups/{gid}/messages` are served from
+  the replica, also while the owning hub is down. A replica holds the log from the Commit that
+  added its hub's first member on; a lower `from_seq` returns messages starting there.
+
 ## Push
 
 `PUT /v2/push/registration` stores the calling device's push registration (one per device,
@@ -246,8 +273,10 @@ ranges.
 
 Implemented: `/healthz`, sign-in (`/v2/auth/*`), DeviceLists and users (`/v2/users/*`, `/v2/me`),
 recovery backups, device linking (`/v2/link-bundles*`), handles, KeyPackages, groups and commits,
-messages, pending Welcomes, events (long-poll and `/v2/stream`), blobs, hosting records and push
-registration (log provider; APNs, FCM and UnifiedPush when configured).
+messages, pending Welcomes, events (long-poll and `/v2/stream`), blobs, hosting records,
+federation (remote users and KeyPackage claims, groups across hubs) and push (registration and
+delivery for local and federated events; log provider, APNs, FCM and UnifiedPush when
+configured).
 
 Pending:
 
