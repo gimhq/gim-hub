@@ -36,10 +36,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             return Ok(());
         }
+        Some("version" | "--version") => {
+            println!(
+                "gim-hub {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                option_env!("GIM_HUB_BUILD_REV").unwrap_or("unknown")
+            );
+            return Ok(());
+        }
         Some(other) => {
-            return Err(
-                format!("unknown command {other:?}; usage: gim-hub [healthcheck|hub-id]").into(),
+            return Err(format!(
+                "unknown command {other:?}; usage: gim-hub [healthcheck|hub-id|version]"
             )
+            .into())
         }
     }
 

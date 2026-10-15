@@ -167,6 +167,19 @@ docker run -d --name gim-hub -p 8080:8080 -v gim-hub-data:/data \
 `scripts/docker-smoke.sh` builds the image and checks a running container; CI
 runs it on every push.
 
+Build notes:
+
+- The builder caches only the cargo registry and git checkouts. `target/` is
+  not cached: a BuildKit cache mount is shared by every checkout built on the
+  same daemon, and cargo judges freshness by mtime, so a shared `target/` can
+  yield a binary built from another checkout's sources. Docker's layer cache
+  is keyed on the build context content and stays safe.
+- `gim-hub version` prints the package version and the `GIM_HUB_BUILD_REV`
+  build argument (`unknown` if unset). `scripts/docker-build.sh IMAGE`, used by
+  `docker-smoke.sh` and `fed-test.sh`, passes the checkout's revision (with a
+  `-dirty-<hash>` suffix for uncommitted changes to tracked files) and fails
+  unless the built image reports exactly that revision.
+
 ## Shutdown
 
 The hub stops accepting connections on SIGINT or SIGTERM and finishes

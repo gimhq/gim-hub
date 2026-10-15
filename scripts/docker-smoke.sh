@@ -28,7 +28,7 @@ fail() {
 }
 
 echo "smoke: building $IMAGE"
-docker build --label ai-agent=true -t "$IMAGE" .
+bash scripts/docker-build.sh "$IMAGE"
 
 if [[ -n "$NETWORK" ]]; then
     docker run --rm -d --label ai-agent=true --name "$NAME" --network "$NETWORK" "$IMAGE" >/dev/null

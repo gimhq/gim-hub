@@ -50,7 +50,7 @@ trap cleanup EXIT
 
 if [[ "${GIM_FED_SKIP_BUILD:-}" != "1" ]]; then
     log "building $IMAGE"
-    docker build --label ai-agent=true -t "$IMAGE" .
+    bash scripts/docker-build.sh "$IMAGE"
 fi
 
 # Leftovers of an interrupted run.
