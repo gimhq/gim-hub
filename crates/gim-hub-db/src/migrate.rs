@@ -16,6 +16,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0007_multihoming.sql"),
     include_str!("../migrations/0008_replica_detached_at.sql"),
     include_str!("../migrations/0009_message_proposal.sql"),
+    include_str!("../migrations/0010_remote_blobs.sql"),
 ];
 
 /// Schema version after all migrations.
@@ -83,6 +84,7 @@ mod tests {
                 "pending_welcomes",
                 "push_registrations",
                 "recovery_backups",
+                "remote_blobs",
                 "remote_device_lists",
                 "remote_kp_claims",
                 "s2s_outbox",

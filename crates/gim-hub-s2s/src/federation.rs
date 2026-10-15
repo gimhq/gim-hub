@@ -119,11 +119,10 @@ impl FederationService {
         hub_root: &SigningKey,
     ) -> Result<Self, StartError> {
         let hub_id = HubId::from_root_pubkey(&hub_root.verifying_key());
-        let allowlist = Arc::new(AllowlistPolicy::load(
-            &config.allowlist_path,
-            &hub_id,
-            config.psk,
-        )?);
+        let allowlist = Arc::new(
+            AllowlistPolicy::load(&config.allowlist_path, &hub_id, config.psk)?
+                .with_fetch_blob_limit(config.fetch_blob_per_minute),
+        );
         let service = Self::start(config, hub_root, allowlist.clone()).await?;
         #[cfg(unix)]
         {
@@ -455,6 +454,13 @@ mod tests {
         ] {
             assert!(crate::ops::GROUP_OPS.contains(&OpKind::of(&op)));
         }
+    }
+
+    #[test]
+    fn fetch_blob_is_its_own_op_kind() {
+        let kind = OpKind::of(&Op::FetchBlob(Default::default()));
+        assert_eq!(kind, OpKind::FetchBlob);
+        assert!(!crate::ops::GROUP_OPS.contains(&kind));
     }
 
     #[tokio::test]

@@ -1,9 +1,10 @@
 //! Shared application state.
 
 use std::{
+    collections::HashMap,
     sync::{
         atomic::{AtomicI64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -42,7 +43,13 @@ pub struct AppState {
     pub public_reads: PublicReadLimits,
     /// Rate limits of the unauthenticated recovery backup reads.
     pub recovery_reads: PublicReadLimits,
+    /// One lock per remote blob being fetched from its origin, so
+    /// concurrent downloads fetch it once.
+    pub blob_fetches: BlobFetches,
 }
+
+/// Per-blob locks of in-flight remote blob fetches, keyed by blob id.
+pub type BlobFetches = Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
 
 impl AppState {
     /// State with federation disabled.
@@ -90,6 +97,7 @@ impl AppState {
             push,
             public_reads,
             recovery_reads,
+            blob_fetches: BlobFetches::default(),
         }
     }
 }

@@ -42,6 +42,7 @@ pub enum OpKind {
     NotifyHostingRecord,
     SeedReplica,
     CopyPendingWelcomes,
+    FetchBlob,
 }
 
 impl OpKind {
@@ -60,6 +61,7 @@ impl OpKind {
             Op::NotifyHostingRecord(_) => Self::NotifyHostingRecord,
             Op::SeedReplica(_) => Self::SeedReplica,
             Op::CopyPendingWelcomes(_) => Self::CopyPendingWelcomes,
+            Op::FetchBlob(_) => Self::FetchBlob,
         }
     }
 }
@@ -105,6 +107,9 @@ pub type Allowlist = HashMap<HubId, Vec<Multiaddr>>;
 /// Rate limits per caller hub (§6.8): (requests, per window).
 const CLAIM_LIMIT: u32 = 600;
 const LOOKUP_LIMIT: u32 = 600;
+/// Default `FetchBlob` requests (chunks of up to 4 MiB) per caller and
+/// window, `GIM_HUB_FETCH_BLOB_PER_MINUTE`.
+pub const FETCH_BLOB_LIMIT: u32 = 600;
 const LIMIT_WINDOW: Duration = Duration::from_secs(60);
 
 /// Closed-federation policy backed by an allowlist file, reloaded on SIGHUP.
@@ -113,6 +118,7 @@ pub struct AllowlistPolicy {
     own_hub_id: HubId,
     psk: Option<Psk>,
     hubs: RwLock<Allowlist>,
+    fetch_blob_limit: u32,
     buckets: Mutex<HashMap<(HubId, Bucket), TokenBucket>>,
 }
 
@@ -136,8 +142,15 @@ impl AllowlistPolicy {
             own_hub_id: own_hub_id.clone(),
             psk,
             hubs: RwLock::new(hubs),
+            fetch_blob_limit: FETCH_BLOB_LIMIT,
             buckets: Mutex::default(),
         })
+    }
+
+    /// Sets the `FetchBlob` requests allowed per caller and minute.
+    pub fn with_fetch_blob_limit(mut self, per_minute: u32) -> Self {
+        self.fetch_blob_limit = per_minute;
+        self
     }
 
     /// Re-reads the allowlist file. On error the previous allowlist stays in
@@ -176,6 +189,7 @@ impl AllowlistPolicy {
         let (bucket, limit) = match op {
             OpKind::ClaimKeyPackage => (Bucket::Claim, CLAIM_LIMIT),
             OpKind::GetDeviceList | OpKind::GetHostingRecord => (Bucket::Lookup, LOOKUP_LIMIT),
+            OpKind::FetchBlob => (Bucket::Blob, self.fetch_blob_limit),
             _ => return Decision::Allow,
         };
         self.buckets
@@ -279,6 +293,7 @@ pub fn parse_allowlist(
 enum Bucket {
     Claim,
     Lookup,
+    Blob,
 }
 
 /// Token bucket refilling `capacity` tokens per [`LIMIT_WINDOW`].
@@ -448,6 +463,31 @@ mod tests {
         assert_eq!(
             policy.admit(&hub(4), OpKind::Deliver),
             Decision::Deny("hub not allowlisted")
+        );
+    }
+
+    #[test]
+    fn admit_rate_limits_blob_fetches_with_the_configured_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("allowlist");
+        std::fs::write(&path, format!("{}\n", hub(2))).unwrap();
+        let policy = AllowlistPolicy::load(&path, &hub(1), None)
+            .unwrap()
+            .with_fetch_blob_limit(2);
+        let now = Instant::now();
+        for _ in 0..2 {
+            assert_eq!(
+                policy.admit_at(&hub(2), OpKind::FetchBlob, now),
+                Decision::Allow
+            );
+        }
+        assert!(matches!(
+            policy.admit_at(&hub(2), OpKind::FetchBlob, now),
+            Decision::RateLimited { .. }
+        ));
+        assert_eq!(
+            policy.admit_at(&hub(2), OpKind::GetDeviceList, now),
+            Decision::Allow
         );
     }
 

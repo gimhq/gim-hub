@@ -48,6 +48,7 @@ while it is off. Design: [`federation.md`](federation.md).
 | `GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS` | `300` | Maximum retry backoff per peer hub (minimum 1) |
 | `GIM_HUB_UNHOSTED_GRACE_HOURS` | `168` | How long a user who removed this hub from their hosting record keeps read access before their data is purged (minimum 1; [`multihoming.md`](multihoming.md) §7.3) |
 | `GIM_HUB_PUSH_FAILOVER_SECONDS` | `30` | A co-host hub without a successful ping or hub-to-hub exchange for this long is down; a fallback hub of a multi-homed user pushes only while every hub before it is down (minimum 1; [`multihoming.md`](multihoming.md) §8) |
+| `GIM_HUB_FETCH_BLOB_PER_MINUTE` | `600` | Blob chunk requests (`FetchBlob`, up to 4 MiB each) served per peer hub and minute (minimum 1; [`federation.md`](federation.md) §5.6) |
 
 The allowlist lists one peer `hub_id` per line, optionally followed by static multiaddrs without
 `/p2p/`; `#` starts a comment and the hub's own `hub_id` is ignored:
@@ -120,11 +121,12 @@ user's groups must allow all of them. Two variables apply (table above):
   short blips (devices collapse them on `collapse_id`).
 
 Known limits: a group whose owning hub is down cannot sequence (503 `peer_unavailable` through
-every hub; owning-hub migration is out of scope); blobs stay on the hub they were uploaded to;
-an added hub serves no history before its replica seed; pushes for messages that arrive in the
-failover window after the primary stops are not sent late; the client must `PUT` a new record
-to the added hub before the other hubs, or an owner that only caches the user's record may seed
-the added hub too early and the seed is dropped (§4.3).
+every hub; owning-hub migration is out of scope); blobs are not replicated: a hub fetches a
+remote blob from its origin on first download, so while the origin is down only copies fetched
+before are served; an added hub serves no history before its replica seed; pushes for messages
+that arrive in the failover window after the primary stops are not sent late; the client must
+`PUT` a new record to the added hub before the other hubs, or an owner that only caches the
+user's record may seed the added hub too early and the seed is dropped (§4.3).
 
 `GIM_FED_SUITE=mh bash scripts/fed-test.sh` runs the multi-homing acceptance suite
 (multihoming.md §11, MH1-MH9; driver `crates/gim-hub/tests/multihoming_compose.rs`; CI job
@@ -164,7 +166,9 @@ them, e.g. under `/run/secrets`).
 $GIM_HUB_DATA_DIR/
 ├── hub.db        SQLite database (WAL mode, with hub.db-wal and hub.db-shm)
 ├── hub_key       32-byte Ed25519 seed of the hub root key, mode 0600
-└── blobs/        Encrypted blob contents, one file per blob
+└── blobs/        Encrypted blob contents, one file per blob: uploads and cached
+                  copies of other hubs' blobs; `<hub_id>_b_<random>` (legacy
+                  uploads: `b_<random>`); `.*.tmp` files are unfinished writes
 ```
 
 - `hub.db` is created on first start; schema migrations are embedded in the
@@ -189,6 +193,12 @@ data of users who removed this hub more than `GIM_HUB_UNHOSTED_GRACE_HOURS` ago
 newest pruned event receives 410 `cursor_expired` with the head cursor and
 must resync. Pending Welcomes are kept until acknowledged, independently of
 event retention.
+
+Blobs have no retention: uploaded blobs and the cached copies of other hubs'
+blobs (fetched on first download with federation, `remote_blobs`) are kept
+until the data directory is cleaned up by the operator. A cache eviction policy
+for the copies is future work; an evicted copy would simply be fetched again
+from its origin.
 
 ## Docker
 

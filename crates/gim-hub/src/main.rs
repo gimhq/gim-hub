@@ -209,9 +209,10 @@ async fn install_push_gate(
 /// Registers the remote identity ops (`GetDeviceList`, `NotifyDeviceList`,
 /// `ClaimKeyPackage`), the group ops (`SubmitCommit`, `SubmitMessage`,
 /// `Deliver`, `DeliverWelcome`, `FetchLog`, `SeedReplica`,
-/// `CopyPendingWelcomes`, plus the replica bootstrap hub-set hook) and
-/// `NotifyHostingRecord` with handlers on `state`. Returns the claim, group and hosting record
-/// handlers, which must be kept alive.
+/// `CopyPendingWelcomes`, plus the replica bootstrap hub-set hook),
+/// `NotifyHostingRecord` and `FetchBlob` with handlers on `state`. Returns
+/// the claim, group, hosting record and blob handlers, which must be kept
+/// alive.
 fn register_ops(
     state: &AppState,
     service: &FederationService,
@@ -219,12 +220,14 @@ fn register_ops(
     Arc<gim_hub_s2s::ClaimService>,
     Arc<GroupService>,
     Arc<HostingRecordService>,
+    Arc<gim_hub_s2s::BlobService>,
 ) {
     gim_hub_api::handlers::register_device_list_ops(state, service);
     (
         gim_hub_api::handlers::register_claim_op(state, service),
         gim_hub_api::handlers::register_group_ops(state, service),
         gim_hub_api::handlers::register_hosting_record_op(state, service),
+        gim_hub_api::handlers::register_blob_op(state, service),
     )
 }
 

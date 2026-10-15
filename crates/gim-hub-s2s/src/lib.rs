@@ -12,7 +12,7 @@
 //!   the `GetHostingRecord` op (§4).
 //! - [`outbox`]: the durable outbound queue and its per-peer worker (§7).
 //! - [`ops`]: remote DeviceLists and cross-hub KeyPackage claims (§5.1,
-//!   §5.2), and group federation (§5.3, §5.4, §6).
+//!   §5.2), group federation (§5.3, §5.4, §6) and blob reads (§5.6).
 //! - [`multihoming`]: the multi-homing push gate and co-host liveness
 //!   (docs/multihoming.md §8).
 
@@ -32,6 +32,7 @@ pub use federation::{
 pub use hosting::{Hosting, HostingError, HostingSettings, Purpose};
 pub use multihoming::{PeerLiveness, PushGate};
 pub use ops::{
+    blob::{BlobOrigin, BlobService, FetchBlobError},
     claim::{ClaimOutcome, ClaimService, LocalClaims},
     deliver::GroupSource,
     device_list::{DeviceListEvents, DeviceLists},
