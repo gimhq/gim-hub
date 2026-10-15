@@ -17,7 +17,7 @@ the variable.
 | `GIM_HUB_MAX_BLOB_BYTES` | `104857600` | Largest accepted blob (minimum 1) |
 | `GIM_HUB_LONGPOLL_MAX_WAIT_SECONDS` | `30` | Upper bound for long-poll `wait` |
 | `GIM_HUB_SESSION_TTL_DAYS` | `30` | Lifetime of device bearer tokens (minimum 1) |
-| `GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN` | `120` | Unauthenticated `GET /v2/users/{user_id}` and `.../device-list` requests per client IP (IPv6: per /64) per minute (minimum 1) |
+| `GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN` | `120` | Unauthenticated `GET /v2/users/{user_id}`, `.../device-list` and `.../hosting-record` requests per client IP (IPv6: per /64) per minute (minimum 1) |
 | `GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN` | `60` | Unauthenticated reads of one `user_id` per minute, across all clients (minimum 1) |
 | `GIM_HUB_TRUST_FORWARDED_FOR` | `false` | `true` keys the per-IP limit by the left-most `X-Forwarded-For` address; set only behind a reverse proxy that overwrites the header |
 | `RUST_LOG` | `info` | Log filter (`tracing_subscriber` `EnvFilter` syntax, e.g. `gim_hub_api=debug,info`) |
