@@ -251,6 +251,39 @@ as on a single hub:
   the replica, also while the owning hub is down. A replica holds the log from the Commit that
   added its hub's first member on; a lower `from_seq` returns messages starting there.
 
+## Multi-homing
+
+A user's hosting record may list several hubs ([`multihoming.md`](multihoming.md) §9.2). The
+client keeps one connection and cursor per listed hub and merges by `message_id`.
+
+- `GET /v2/hub` (no token) returns `{hub_id, hub_root_pubkey, version}`: this hub's id, its
+  32-byte Ed25519 root public key (standard base64, as in `hosting-entry`) and the hub version. A
+  client checks that a URL belongs to the `hub_id` in its record before signing in. Live.
+
+The rest of this section is multi-homing (H4), implementation in progress: not live yet.
+
+- New event `hosting_record.updated`, payload
+  `{user_id, seq, expires_at, hosted, hubs: [{hub_id, priority}]}` (`hosted` = the record lists
+  this hub). Emitted to the user's active devices on this hub when a stored record changes the
+  listed hubs or their priorities; renewals with the same entries emit nothing. Devices dedup by
+  `seq` across hubs ([`multihoming.md`](multihoming.md) §4.5).
+- `POST /v2/keypackages`: a KeyPackage is uploaded to at most one hub, ever. An upload containing
+  a KeyPackage this hub already claimed from another hub on a client's behalf is rejected as a
+  whole with 409 `duplicate_key_package` (§5.3).
+- `POST /v2/keypackages/claim`: each target is claimed from the listed hubs in
+  `(priority, hub_id)` order, moving to the next hub when one is unavailable or has no package;
+  devices the first answering hub did not return are requested from the following hubs. The
+  response shape is unchanged (§5.2). Claim and commit through the same hub.
+- `POST /v2/groups/{gid}/commits`: an Add whose KeyPackage was not claimed through this hub keeps
+  failing with 400 `validation_failed`, with the message
+  `key package not claimed through this hub (kp_not_claimed)`; re-claim through this hub and
+  commit again (§5.4).
+- Removed users: when a stored record no longer lists this hub, the user is removed here. During
+  `GIM_HUB_UNHOSTED_GRACE_HOURS` (default 168) sign-in, reads, `GET /v2/stream`,
+  `GET /v2/events`, pending Welcomes and their acks, and `PUT` of the DeviceList and hosting record
+  keep working; every other write fails with 403 `hosting_record_required`, message
+  `user is not hosted on this hub`. Afterwards the user's data is purged (§7.3).
+
 ## Push
 
 `PUT /v2/push/registration` stores the calling device's push registration (one per device,
@@ -281,7 +314,7 @@ device's provider (never to the sender's own device). Payload, provider mapping 
 | Welcome | message of kind `welcome` with `recipients` | `welcome` event to each recipient device |
 | Members | `device_id` | `user_id` + `device_id` |
 | Events | `message`, `group.member_added`, `group.member_removed`, `keypackages.low` | same, membership events carry `user_id` and `device_ids`; plus `welcome` and `device_list.updated`; unacknowledged Welcomes via `GET /v2/welcomes/pending` |
-| Health | `{status}` | `{status, version}` |
+| Health | `{status}` | `{status, version}`; plus `GET /v2/hub` `{hub_id, hub_root_pubkey, version}` |
 
 Unchanged semantics: per-device event cursor, long-poll `GET /v2/events?cursor&wait`, 410
 `cursor_expired` with the head cursor, WebSocket `GET /v2/stream` with the same frames and close
@@ -290,7 +323,7 @@ ranges.
 
 ## Status
 
-Implemented: `/healthz`, sign-in (`/v2/auth/*`), DeviceLists and users (`/v2/users/*`, `/v2/me`),
+Implemented: `/healthz`, `/v2/hub`, sign-in (`/v2/auth/*`), DeviceLists and users (`/v2/users/*`, `/v2/me`),
 recovery backups, device linking (`/v2/link-bundles*`), handles, KeyPackages, groups and commits,
 messages, pending Welcomes, events (long-poll and `/v2/stream`), blobs, hosting records,
 federation (remote users and KeyPackage claims, groups across hubs) and push (registration and
@@ -299,6 +332,7 @@ configured).
 
 Pending:
 
+- Multi-homing (H4): the behaviour of [Multi-homing](#multi-homing) other than `GET /v2/hub`.
 - Push: no real APNs/FCM credentials have been exercised yet; UnifiedPush bodies are not Web Push
   encrypted (RFC 8291).
 - Validation of an added member's MLS credential (type `0xF001`) against their DeviceList is not
