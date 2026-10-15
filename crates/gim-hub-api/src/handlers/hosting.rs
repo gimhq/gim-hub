@@ -26,6 +26,7 @@ use crate::{
         HostingRecordUpdated, PutHostingRecordRequest,
     },
     error::ApiError,
+    ratelimit::ClientIp,
     state::AppState,
 };
 
@@ -336,20 +337,24 @@ pub async fn put_hosting_record(
     summary = "Get a user's hosting record",
     description = "No authentication. For a user of this hub, the stored record; for any other \
 user, the newest valid record resolved through federation (cached, fetched from the user's hubs \
-or from the DHT). Requests will be rate limited per client address (429 `rate_limited` with \
-`Retry-After`).",
+or from the DHT). Rate limited per client IP and per `user_id`, sharing the budget of the other \
+unauthenticated user reads (`GET /v2/users/{user_id}` and its `device-list`).",
     params(("user_id" = String, Path, description = "Opaque user ID (format owned by gim-core)", example = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa")),
     responses(
         (status = 200, description = "Current record", body = dto::HostingRecord),
         (status = 404, description = "No record, or it expired (`not_found`)", body = Error),
-        (status = 429, description = "Rate limited (`rate_limited`)", body = Error),
+        (status = 429, description = "Over the per-client-IP or per-user limit of unauthenticated reads (`rate_limited`); retry after `Retry-After` seconds", body = Error),
         (status = 503, description = "Resolution needed a peer hub that did not answer and the DHT had nothing (`peer_unavailable`, with `Retry-After` seconds)", body = Error),
     ),
 )]
 pub async fn get_hosting_record(
+    client: ClientIp,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> Result<Json<dto::HostingRecord>, ApiError> {
+    state
+        .public_reads
+        .check(client, &user_id, state.clock.now_ms())?;
     let user_id_ = user_id.clone();
     let local = state
         .db

@@ -1931,7 +1931,7 @@
           "hosting"
         ],
         "summary": "Get a user's hosting record",
-        "description": "No authentication. For a user of this hub, the stored record; for any other user, the newest valid record resolved through federation (cached, fetched from the user's hubs or from the DHT). Requests will be rate limited per client address (429 `rate_limited` with `Retry-After`).",
+        "description": "No authentication. For a user of this hub, the stored record; for any other user, the newest valid record resolved through federation (cached, fetched from the user's hubs or from the DHT). Rate limited per client IP and per `user_id`, sharing the budget of the other unauthenticated user reads (`GET /v2/users/{user_id}` and its `device-list`).",
         "operationId": "get_hosting_record",
         "parameters": [
           {
@@ -1967,7 +1967,7 @@
             }
           },
           "429": {
-            "description": "Rate limited (`rate_limited`)",
+            "description": "Over the per-client-IP or per-user limit of unauthenticated reads (`rate_limited`); retry after `Retry-After` seconds",
             "content": {
               "application/json": {
                 "schema": {

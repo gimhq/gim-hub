@@ -1,16 +1,20 @@
-//! Hosting records: GET /v2/hub, POST hosting-entry, PUT/GET hosting-record and the
-//! `hosting_record.expiring` event, with the `hosting.json` vector and
-//! records signed like it.
+//! Hosting records: GET /v2/hub, POST hosting-entry, PUT/GET hosting-record,
+//! its GET rate limit and the `hosting_record.expiring` event, with the
+//! `hosting.json` vector and records signed like it.
 
 mod identity_support;
 
 use std::sync::Arc;
 
-use axum::http::{Method, StatusCode};
+use axum::{
+    body::Body,
+    http::{header, Method, Request, StatusCode},
+};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ed25519_dalek::SigningKey;
 use gim_hub_api::{
     handlers::check_hosting_records,
+    ratelimit::PublicReadLimits,
     testing::{TestHub, TEST_NOW},
 };
 use gim_hub_db::hosting as store;
@@ -21,6 +25,7 @@ use gim_hub_proto::s2s::{
 };
 use gim_hub_s2s::{hosting::testing::sign_record, BoxFuture, Federation, SendError};
 use serde_json::{json, Value};
+use tower::ServiceExt;
 
 use identity_support::{b64, code, key, send};
 
@@ -237,6 +242,43 @@ async fn upload_replace_and_fetch() {
     );
     let (_, body) = get_record(&hub, &user).await;
     assert_eq!(body["hosting_record"], b64(&seq2));
+}
+
+#[tokio::test]
+async fn get_shares_the_public_read_limit() {
+    let (mut hub, _) = vector_hub().await;
+    let user = vector_user();
+    let signed = hex_bytes(&vector()["hosting_record"]["signed"]);
+    assert_eq!(
+        put_record(&hub, &user, &signed).await.0,
+        StatusCode::CREATED
+    );
+    hub.state.public_reads = PublicReadLimits::new(2, 100, false);
+
+    assert_eq!(get_record(&hub, &user).await.0, StatusCode::OK);
+    // Same budget as GET /v2/users/{user_id}.
+    let (status, _) = send(&hub, Method::GET, &format!("/v2/users/{user}"), None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let response = hub
+        .router()
+        .oneshot(
+            Request::get(format!("/v2/users/{user}/hosting-record"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    // Two per minute: one refills every 30 s.
+    assert_eq!(response.headers()[header::RETRY_AFTER], "30");
+    let (status, body) = get_record(&hub, &user).await;
+    assert_eq!(
+        (status, code(&body)),
+        (StatusCode::TOO_MANY_REQUESTS, "rate_limited")
+    );
+
+    hub.state.clock.advance(30_000);
+    assert_eq!(get_record(&hub, &user).await.0, StatusCode::OK);
 }
 
 #[tokio::test]
