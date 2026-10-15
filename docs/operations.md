@@ -47,8 +47,11 @@ The allowlist lists one peer `hub_id` per line, optionally followed by static mu
 
 ```
 # hub_id                                                  [multiaddr ...]
-hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq  /dns4/hub-b/tcp/4001 /dns4/hub-b/udp/4001/quic-v1
+hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq  /ip4/10.0.0.12/tcp/4001 /ip4/10.0.0.12/udp/4001/quic-v1
 ```
+
+The libp2p host has no DNS resolver: allowlist, bootstrap and external addresses must be `/ip4/` or
+`/ip6/` multiaddrs. A `/dns4/` address parses but can never be dialed.
 
 A missing or empty allowlist, an invalid line, or a QUIC address together with
 `GIM_HUB_P2P_PSK_FILE` stops startup. On SIGHUP the file is re-read; an invalid file is logged and
@@ -58,6 +61,31 @@ mode 0600) and `runtime_cert` (its certificate, signed by `hub_key` and renewed 
 less than a third of its lifetime remains). Deleting both while the hub is stopped rotates the
 PeerId; allowlists are unaffected because they name `hub_id`s. `gim-hub hub-id` prints the
 `hub_id` (creating `hub_key` if missing), which peers need for their allowlists.
+
+### Federation acceptance test
+
+`scripts/fed-test.sh` is the closed-federation acceptance test (CI job `federation`). It needs
+only Docker:
+
+1. builds the hub image from the `Dockerfile` (`GIM_FED_SKIP_BUILD=1` reuses `GIM_FED_IMAGE`);
+2. generates fresh hub root keys in the hubs' volumes with `gim-hub hub-id` and writes the
+   allowlists into `.tmp/fed-<pid>/` (nothing key-related is committed);
+3. starts `deploy/federation/compose.yaml`: `hub-a`, `hub-b`, `hub-c` allowing each other and
+   `hub-x`, which is on nobody's allowlist, on an isolated network with fixed IPs
+   (`GIM_FED_SUBNET`, default `10.231.64`; change it if that /24 is taken);
+4. runs the driver `crates/gim-hub/tests/fed_compose.rs` (`cargo test -p gim-hub --test
+   fed_compose -- --ignored`) in a `rust:1.99-bookworm` container attached to that network. The
+   driver speaks the client API to every hub with openmls clients and stops and starts hubs
+   through the mounted Docker socket. Scenarios: hosting-record resolution, a cross-hub direct
+   message, a group across three hubs with add and remove from a non-owning hub, a concurrent
+   Commit conflict (one 201, one 409 `stale_epoch`), a member-hub outage (50 messages, no loss,
+   no duplicates), an owner-hub outage (503 `peer_unavailable`, then delivery) and the refusal of
+   `hub-x`;
+5. prints the hub logs on failure and always removes the containers, network and volumes.
+
+All containers, the network and the volumes carry the label `ai-agent=true`. Other variables:
+`GIM_FED_PROJECT` (compose project, default `gim-fed`), `GIM_FED_CARGO_HOME` (cargo home of the
+driver container) and `GIM_FED_TIMEOUT` (driver timeout in seconds).
 
 ## Data directory
 
@@ -98,6 +126,7 @@ The `Dockerfile` builds a release binary in `rust:1.99-bookworm` and runs it on
   image; port 8080 is exposed and `/data` is a volume. Mount a named volume or
   a host directory writable by uid 10001 there, and back it up as described
   above (it holds `hub_key`).
+- Port 4001 (TCP and UDP) is exposed for federation (`GIM_HUB_P2P_LISTEN` default).
 - The container `HEALTHCHECK` runs `gim-hub healthcheck`, which sends
   `GET /healthz` to the `GIM_HUB_LISTEN` port (loopback if the address is
   unspecified) and exits non-zero unless it gets 200. No HTTP client is

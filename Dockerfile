@@ -20,7 +20,8 @@ COPY --from=builder /out/gim-hub /usr/local/bin/gim-hub
 ENV GIM_HUB_LISTEN=0.0.0.0:8080 \
     GIM_HUB_DATA_DIR=/data
 USER gimhub
-EXPOSE 8080
+# 8080: client API; 4001 tcp/udp: federation (libp2p TCP and QUIC).
+EXPOSE 8080 4001/tcp 4001/udp
 VOLUME /data
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD ["gim-hub", "healthcheck"]

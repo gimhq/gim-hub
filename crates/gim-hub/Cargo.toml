@@ -20,7 +20,16 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+base64 = { workspace = true }
+ed25519-dalek = { workspace = true }
 gim-hub-api = { workspace = true, features = ["testing"] }
+gim-hub-identity = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+openmls = { workspace = true }
+openmls_basic_credential = { workspace = true }
+openmls_rust_crypto = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tower = { workspace = true }

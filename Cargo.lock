@@ -1180,9 +1180,18 @@ name = "gim-hub"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.23.1",
+ "ed25519-dalek",
  "gim-hub-api",
  "gim-hub-db",
+ "gim-hub-identity",
  "gim-hub-s2s",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "openmls",
+ "openmls_basic_credential",
+ "openmls_rust_crypto",
  "serde_json",
  "tempfile",
  "tokio",
