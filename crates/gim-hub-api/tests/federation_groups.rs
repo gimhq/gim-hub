@@ -542,6 +542,88 @@ async fn cross_hub_direct_message() {
     assert_eq!(log(&alice, &a.hub, &gid).await, on_a);
 }
 
+/// The stored message ID of `(gid, seq)` on `hub`.
+async fn message_id(hub: &TestHub, gid: &str, seq: i64) -> String {
+    let gid = gid.to_owned();
+    hub.state
+        .db
+        .read(move |conn| gim_hub_db::push::message_id_at(conn, &gid, seq))
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+/// Events emitted on a member hub by `DeliverWelcome` and `Deliver` push to
+/// its local devices, with the owner's message ID as collapse id.
+#[tokio::test]
+async fn federated_events_push_to_local_devices() {
+    let nodes = cluster(&[101, 102], 1000).await;
+    let (a, b) = (&nodes[0], &nodes[1]);
+    let alice = Client::new(&a.hub, 1, 11).await;
+    alice.upload_key_packages(&a.hub, 1).await;
+    let bob = Client::new(&b.hub, 2, 21).await;
+    host(&[a, b], 1, a).await;
+    host(&[a, b], 2, b).await;
+    let (status, _) = send(
+        &a.hub,
+        Method::PUT,
+        "/v2/push/registration",
+        &alice.token,
+        Some(json!({ "provider": "log", "token": "alice-log" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // bob@B creates a direct group on B and adds alice@A.
+    let (gid, mut bob_group) = create_group(&bob, &b.hub, "direct").await;
+    let kp = bob.claim(&b.hub, &alice).await;
+    let (commit, welcome, _) = bob_group
+        .add_members(&bob.provider, &bob.signer, &[kp])
+        .unwrap();
+    let body = with_welcome(commit_body("c1", &commit), &welcome, &[&alice]);
+    let (status, result) = bob.submit_commit(&b.hub, &gid, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    bob_group.merge_pending_commit(&bob.provider).unwrap();
+    wait_events(&alice, &a.hub, "welcome", 1).await;
+    wait_events(&alice, &a.hub, "group.member_added", 1).await;
+    assert_eq!(a.hub.deliver_pushes().await, 1);
+    let pushes = a.hub.state.push.log().recent(Some(&alice.device_id));
+    assert_eq!(pushes.len(), 1);
+    assert_eq!(pushes[0].payload["type"], "welcome");
+    assert_eq!(pushes[0].payload["gid"], json!(gid));
+    assert_eq!(pushes[0].payload["seq"], 1);
+    assert_eq!(pushes[0].payload["sender_user_id"], json!(bob.user_id));
+    assert_eq!(
+        pushes[0].payload["message_id"],
+        json!(message_id(&b.hub, &gid, 1).await)
+    );
+
+    // A message sequenced on B reaches A through Deliver and is pushed there.
+    let mls = application(&bob, &mut bob_group, b"hi");
+    let (status, message) = post_message(&bob, &b.hub, &gid, "m1", &mls).await;
+    assert_eq!(status, StatusCode::CREATED, "{message}");
+    wait_message(&alice, &a.hub, 2).await;
+    assert_eq!(a.hub.deliver_pushes().await, 1);
+    let push = a.hub.state.push.log().recent(None).pop().unwrap();
+    let owner_id = message_id(&b.hub, &gid, 2).await;
+    assert_eq!(owner_id, message_id(&a.hub, &gid, 2).await);
+    assert_eq!(
+        push.payload,
+        json!({
+            "v": 1,
+            "type": "message",
+            "gid": gid,
+            "seq": 2,
+            "message_id": owner_id,
+            "sender_user_id": bob.user_id,
+            "collapse_id": owner_id,
+            "mls_message": message["mls_message"],
+        })
+    );
+    // Nothing is pushed for the sender's own device or on the owner hub.
+    assert_eq!(b.hub.deliver_pushes().await, 0);
+}
+
 #[tokio::test]
 async fn three_hubs_add_remove_and_concurrent_commits() {
     let nodes = cluster(&[101, 102, 103], 1000).await;

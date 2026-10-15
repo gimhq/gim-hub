@@ -173,6 +173,8 @@ pub fn router(state: AppState) -> Router {
             "/v2/push/registration",
             put(h::put_push_registration).delete(h::delete_push_registration),
         )
+        // Test-only, outside the contract; 404 unless GIM_HUB_PUSH_LOG_ENDPOINT=true.
+        .route("/v2/debug/push-log", get(h::get_push_log))
         .route(
             "/v2/users/{user_id}/hosting-entry",
             post(h::create_hosting_entry),

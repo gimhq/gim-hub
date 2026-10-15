@@ -59,6 +59,27 @@ less than a third of its lifetime remains). Deleting both while the hub is stopp
 PeerId; allowlists are unaffected because they name `hub_id`s. `gim-hub hub-id` prints the
 `hub_id` (creating `hub_key` if missing), which peers need for their allowlists.
 
+### Push
+
+Push design and payload: [`push.md`](push.md). The `log` provider is always available. Each other
+provider is inert until configured: registrations for it are accepted and its sends are logged as
+skipped. Unreadable or invalid credentials stop startup. Keep credentials out of the image (mount
+them, e.g. under `/run/secrets`).
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GIM_HUB_PUSH_MEMBER_EVENTS` | `false` | Also push `group.member_added` / `group.member_removed` (silent) |
+| `GIM_HUB_PUSH_QUEUE_CAPACITY` | `10000` | Most devices with a queued push; further pushes are dropped (minimum 1) |
+| `GIM_HUB_PUSH_LOG_ENDPOINT` | `false` | Serve the unauthenticated, test-only `GET /v2/debug/push-log`; never enable in production |
+| `GIM_HUB_PUSH_APNS_TEAM_ID` | unset | APNs team ID; the four `APNS` variables below enable APNs together |
+| `GIM_HUB_PUSH_APNS_KEY_ID` | unset | ID of the APNs auth key |
+| `GIM_HUB_PUSH_APNS_KEY_PATH` | unset | Path of the APNs auth key (`.p8`) |
+| `GIM_HUB_PUSH_APNS_TOPIC` | unset | Default APNs topic (bundle ID) for registrations without `app_id` |
+| `GIM_HUB_PUSH_APNS_SANDBOX` | `false` | Send every APNs push through the sandbox |
+| `GIM_HUB_PUSH_FCM_SERVICE_ACCOUNT_PATH` | unset | Service account JSON key; enables FCM |
+| `GIM_HUB_PUSH_FCM_PROJECT_ID` | service account's `project_id` | Firebase project ID |
+| `GIM_HUB_PUSH_UNIFIEDPUSH` | `false` | `true` delivers to UnifiedPush endpoints |
+
 ## Data directory
 
 ```
