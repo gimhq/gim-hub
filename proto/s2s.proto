@@ -69,7 +69,9 @@ enum ErrorCode {
   ERROR_CODE_UNSPECIFIED = 0;
   // Calling PeerID is not allowed by federation policy, or is not listed in
   // the current hosting record of the acting user, or is not the owning hub
-  // for Deliver / DeliverWelcome.
+  // for Deliver / DeliverWelcome; or the request is rejected by the owning
+  // hub's group policy (e.g. sender not a group member, or a credential not
+  // allowed by the owning hub).
   ERROR_CODE_UNAUTHORIZED = 1;
   // Unknown user, device, group or record.
   ERROR_CODE_NOT_FOUND = 2;

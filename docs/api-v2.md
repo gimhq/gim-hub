@@ -77,6 +77,32 @@ On `POST /v2/groups/{gid}/commits` the owning hub:
 `POST /v2/groups/{gid}/messages` carries only `PrivateMessage` application messages; the hub reads
 the epoch from the framing but cannot see their content.
 
+## Pending Welcomes and 410 recovery
+
+Every Welcome addressed to a device is also kept as a pending Welcome for that device:
+
+- `GET /v2/welcomes/pending?limit=` (bearer) returns `{welcomes: [...]}`, the Welcomes addressed to
+  the calling device that it has not acknowledged, oldest first. `limit` defaults to 50, at most
+  200. Each item carries the `welcome` event payload (`gid`, `sender_user_id`, `sender_device_id`,
+  `epoch`, `seq`, `welcome`, `ratchet_tree?`) plus `created_at`.
+- `POST /v2/welcomes/{gid}/ack` (bearer, `gid` percent-encoded) marks the pending Welcome(s) for
+  `gid` as processed for the calling device and returns 204. It is idempotent: acknowledging again,
+  or a `gid` with nothing pending, also returns 204.
+
+Pending Welcomes are retained independently of event retention, until acknowledged or until the
+group is deleted. A retention cap may be added later.
+
+A client acknowledges a Welcome once it has joined the group (or decided to ignore it), whether it
+learned of it from a `welcome` event or from the pending list. Recovery after 410
+`cursor_expired` (from `GET /v2/events` or close code 4410 on `GET /v2/stream`):
+
+1. Keep the head `cursor` from the 410 response.
+2. Page through `GET /v2/welcomes/pending` and join each group from its Welcome (and
+   `ratchet_tree`), then `POST /v2/welcomes/{gid}/ack`.
+3. Resync groups already joined: `GET /v2/groups`, message history from the last known `seq`
+   (for a newly joined group, from the Welcome's `seq + 1`), DeviceLists.
+4. Continue `GET /v2/events` / `GET /v2/stream` from the head cursor.
+
 ## Changes from v1
 
 | Area | v1 (gim-server) | v2 (gim-hub) |
@@ -98,7 +124,7 @@ the epoch from the framing but cannot see their content.
 | History | `?after_seq` (exclusive) | `?from_seq` (inclusive) |
 | Welcome | message of kind `welcome` with `recipients` | `welcome` event to each recipient device |
 | Members | `device_id` | `user_id` + `device_id` |
-| Events | `message`, `group.member_added`, `group.member_removed`, `keypackages.low` | same, membership events carry `user_id` and `device_ids`; plus `welcome` and `device_list.updated` |
+| Events | `message`, `group.member_added`, `group.member_removed`, `keypackages.low` | same, membership events carry `user_id` and `device_ids`; plus `welcome` and `device_list.updated`; unacknowledged Welcomes via `GET /v2/welcomes/pending` |
 | Health | `{status}` | `{status, version}` |
 
 Unchanged semantics: per-device event cursor, long-poll `GET /v2/events?cursor&wait`, 410

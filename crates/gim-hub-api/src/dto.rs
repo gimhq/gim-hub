@@ -693,6 +693,31 @@ pub struct WelcomeEvent {
     pub data: Welcome,
 }
 
+/// Query of GET /v2/welcomes/pending.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PendingWelcomesQuery {
+    /// Maximum number of Welcomes (1-200).
+    #[param(minimum = 1, maximum = 200, default = 50)]
+    pub limit: Option<u32>,
+}
+
+/// A Welcome addressed to the calling device that it has not acknowledged.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PendingWelcome {
+    #[serde(flatten)]
+    pub welcome: Welcome,
+    /// When the hub stored the Welcome.
+    #[schema(example = json!(TIMESTAMP_EXAMPLE))]
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PendingWelcomeList {
+    /// Oldest first.
+    pub welcomes: Vec<PendingWelcome>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct KeyPackagesLow {
     /// Remaining one-time KeyPackages of the receiving device.

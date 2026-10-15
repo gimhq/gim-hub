@@ -1902,6 +1902,120 @@
           }
         ]
       }
+    },
+    "/v2/welcomes/pending": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "List unacknowledged Welcomes",
+        "description": "Welcomes addressed to the calling device that it has not acknowledged with POST /v2/welcomes/{gid}/ack, oldest first. Pending Welcomes are retained independently of event retention until acknowledged or the group is deleted, so after a 410 `cursor_expired` a client recovers group joins here instead of scanning history.",
+        "operationId": "list_pending_welcomes",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of Welcomes (1-200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending Welcomes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingWelcomeList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v2/welcomes/{gid}/ack": {
+      "post": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Acknowledge a Welcome",
+        "description": "Marks the pending Welcome(s) for `gid` as processed for the calling device; they are no longer returned by GET /v2/welcomes/pending. Idempotent: returns 204 also when nothing is pending for `gid` (already acknowledged, or the group was deleted).",
+        "operationId": "ack_welcome",
+        "parameters": [
+          {
+            "name": "gid",
+            "in": "path",
+            "description": "Group ID, percent-encoded (`/` as `%2F`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "12D3KooWD3eckifWpRn9wQpMG9R9hX3sD158z7EqHWmweQAJU5SA%2Fhf4caruf7nbxzmwh5wvgefz6pa"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Acknowledged (or nothing pending for `gid`)"
+          },
+          "400": {
+            "description": "Validation failed (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -2811,6 +2925,43 @@
             "items": {
               "$ref": "#/components/schemas/Message"
             }
+          }
+        }
+      },
+      "PendingWelcome": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Welcome"
+          },
+          {
+            "type": "object",
+            "required": [
+              "created_at"
+            ],
+            "properties": {
+              "created_at": {
+                "type": "integer",
+                "format": "int64",
+                "description": "When the hub stored the Welcome.",
+                "example": 1760479200000
+              }
+            }
+          }
+        ],
+        "description": "A Welcome addressed to the calling device that it has not acknowledged."
+      },
+      "PendingWelcomeList": {
+        "type": "object",
+        "required": [
+          "welcomes"
+        ],
+        "properties": {
+          "welcomes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PendingWelcome"
+            },
+            "description": "Oldest first."
           }
         }
       },

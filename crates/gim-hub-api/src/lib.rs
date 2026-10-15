@@ -57,6 +57,8 @@ opaque strings whose format is owned by gim-core. Every non-2xx JSON response ha
         h::list_messages,
         h::list_events,
         h::stream,
+        h::list_pending_welcomes,
+        h::ack_welcome,
         h::upload_blob,
         h::download_blob,
         h::put_push_registration,
@@ -143,6 +145,8 @@ pub fn router() -> Router {
         )
         .route("/v2/events", get(h::list_events))
         .route("/v2/stream", get(h::stream))
+        .route("/v2/welcomes/pending", get(h::list_pending_welcomes))
+        .route("/v2/welcomes/{gid}/ack", post(h::ack_welcome))
         .route("/v2/blobs", post(h::upload_blob))
         .route("/v2/blobs/{blob_id}", get(h::download_blob))
         .route(

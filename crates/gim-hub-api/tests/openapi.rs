@@ -77,5 +77,5 @@ async fn every_documented_operation_is_routed() {
             }
         }
     }
-    assert_eq!(operations, 29);
+    assert_eq!(operations, 31);
 }
