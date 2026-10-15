@@ -548,7 +548,9 @@ Resolved in H3-T3:
   local user (row in `users`) is always claimed locally. Otherwise the target's record is resolved
   (§4.5): none known → `missing`; resolution failed for lack of a peer → `unavailable`; the record
   lists this hub → local (so `missing`); else the primary hub (lowest priority, ties by smallest
-  `hub_id`) is asked. Only the primary hub is asked.
+  `hub_id`) is asked. Only the primary hub is asked. *Superseded by docs/multihoming.md §5.2:
+  the primary hub is asked first, then the fallback hubs, with a per-device follow-up
+  (implemented in H4-M4).*
 - **Requester check first.** If any target is remote and the caller has no valid hosting record
   listing this hub, the whole request fails with 403 `hosting_record_required` before anything
   is claimed.
@@ -660,8 +662,14 @@ Resolved in H3-T5:
   leaf index (the owner validates Commits).
 - With federation enabled, a gid whose prefix is another hub is always handled as a replica; with
   federation disabled every gid is handled locally (single-hub behaviour).
-- Not implemented in H3-T5: deleting detached replicas in the retention task (the retention loop
-  is outside this subtask's files, and `groups` has no detach timestamp yet).
+- **Detached replica retention (H4-CL3).** `groups.detached_at` (unix ms, migration
+  `0008_replica_detached_at.sql`) is set when a replica is detached: by a Commit that removes its
+  last local member (the Commit's time), or by the removal of its last local user (the user's
+  `removed_at`, multihoming.md §7.3). Re-detaching keeps the first time; a replica replaced from a
+  `DeliverWelcome` starts attached with `detached_at = NULL`. Replicas detached before the
+  migration count from the migration time. The hourly retention task deletes replicas with
+  `detached_at` older than `GIM_HUB_EVENT_RETENTION_DAYS`, cascading to their roster, messages and
+  `commit_membership`; groups owned here (`replica_from_seq = NULL`) are never deleted.
 
 ## 6. Flows
 
@@ -835,7 +843,11 @@ Resolved in H3-T5:
 - **Outbox source (§7.7).** `ops::deliver::GroupSource` builds `deliver` entries from `messages` +
   `commit_membership`, `device_list` entries with `ops::device_list::local_device_list`, and the
   resync nudge from the newest message of every owned group with a member whose stored hosting
-  record lists the peer. `refresh_peer` stays the default no-op.
+  record lists the peer. `refresh_peer` (H4-CL3) refreshes the records of the users of the
+  peer's first 256 queued entries (the entry's `user_id`, or the recipient of a
+  `deliver_welcome`) through `Hosting` with `Purpose::Refresh`: a remote user's record is
+  re-resolved bypassing the fresh cache (listed hubs, then always the DHT) and stored if newer; a
+  local user's record is republished to the DHT, where the peer's own refresh finds it.
 
 ### 6.7 Client-visible behaviour
 
@@ -1017,6 +1029,7 @@ numbering lets subtasks work in parallel; each adds one line to the list):
 | `0003_remote_identity.sql` | `remote_device_lists`, `remote_kp_claims` | H3-T3 |
 | `0004_outbox.sql` | `s2s_outbox`, `s2s_peers` | H3-T4 |
 | `0005_group_federation.sql` | `commit_membership`, `groups.replica_from_seq`, `groups.detached`, `pending_welcomes.message_id` + unique index `(message_id, user_id, device_id) WHERE message_id IS NOT NULL` | H3-T5 |
+| `0008_replica_detached_at.sql` | `groups.detached_at` (§5.4) | H4-CL3 |
 
 Single-hub databases migrate in place; owned groups have `replica_from_seq = NULL`. Existing
 Commits get no `commit_membership` rows; a `FetchLog` over them returns Commits without membership
@@ -1269,10 +1282,11 @@ volumes: { a-data: {}, b-data: {}, c-data: {}, x-data: {} }
 
 Resolved in H3-T6:
 
-- The libp2p host has no DNS transport, so `/dns4/...` multiaddrs (§3.3 example, the sketch
-  above) parse but cannot be dialed. The compose network has a fixed /24 (`GIM_FED_SUBNET`,
-  default `10.231.64`) and every hub a static IP; allowlists and `GIM_HUB_P2P_EXTERNAL_ADDRS` use
-  `/ip4/` addresses. A static IP also keeps a restarted hub reachable at its advertised address.
+- The compose network has a fixed /24 (`GIM_FED_SUBNET`, default `10.231.64`) and every hub a
+  static IP; allowlists and `GIM_HUB_P2P_EXTERNAL_ADDRS` use `/ip4/` addresses. A static IP also
+  keeps a restarted hub reachable at its advertised address. (At H3-T6 the libp2p host had no
+  DNS transport; since H4-CL1 the TCP and QUIC transports are wrapped in the system DNS resolver,
+  so `/dns4/` and `/dns6/` multiaddrs such as the §3.3 example and the sketch above are dialable.)
 - No test-only entrypoint flag and no committed key seeds: `scripts/fed-test.sh` runs
   `gim-hub hub-id` once per hub (creating `hub_key` in its volume) and generates the allowlists
   from the printed `hub_id`s into `.tmp/fed-<pid>/`. `hub-x` runs in every run (no `refusal`
@@ -1293,6 +1307,25 @@ Resolved in H3-T6:
 - §11.1: the in-process three-hub tests live in `crates/gim-hub-api/tests/federation_groups.rs`
   and `federation_identity.rs` (they need the API crate's test helpers); no separate
   `crates/gim-hub/tests/federation.rs` was added.
+
+Resolved in H4-CL2:
+
+- T6 is covered by the compose driver: alice@A publishes DeviceList seq 2 certifying a second
+  device and seq 3 revoking it; once `GET .../device-list` on hub-b returns each new list
+  (propagated by `NotifyDeviceList`, hub-b's cache is not stale), bob@B's Commit adding a
+  KeyPackage of the revoked device gets 400 `validation_failed`
+  `invalid MLS credential (revoked_device)` from the owner hub-b and nothing is logged.
+- T11: `deploy/federation/compose.psk.yaml` (applied by `GIM_FED_PSK=1 scripts/fed-test.sh`; CI
+  runs the default variant only) gives hub-a, hub-b and hub-c a `swarm.key` generated per run
+  under `.tmp/fed-<pid>/` and TCP-only listen, external and allowlist addresses; hub-x has no key.
+  The script first checks that hub-a with the key and a QUIC listen address exits with the
+  `QUIC is not available with GIM_HUB_P2P_PSK_FILE` error, then runs every scenario; in T10 hub-a
+  must log no refused `Hello` of hub-x (its dials fail in the pnet handshake).
+- T12 is not covered. Certificate renewal keeps the PeerId and runs only when less than a third
+  of the certificate lifetime remains (checked at startup and daily, §3.1), so a running hub
+  cannot be made to renew within a test run; rotating the runtime key (new PeerId) needs a hub
+  restart with `runtime_key` and `runtime_cert` deleted. There is no runtime rotation to test;
+  the restart variant would need the driver to delete files in a stopped hub's volume.
 
 ### 11.3 Matrix
 

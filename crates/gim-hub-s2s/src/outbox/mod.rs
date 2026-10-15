@@ -1,5 +1,7 @@
 //! Durable outbound queue for owner → member traffic (`Deliver`,
-//! `DeliverWelcome`) and `NotifyDeviceList` (docs/federation.md §7).
+//! `DeliverWelcome`), `NotifyDeviceList` (docs/federation.md §7) and the
+//! multi-homing ops `NotifyHostingRecord`, `SeedReplica` and
+//! `CopyPendingWelcomes` (docs/multihoming.md §9.3).
 //!
 //! Writers queue entries with [`OutboxSender::enqueue_in_tx`] inside the
 //! write transaction that sequences the message (or replaces the
@@ -24,7 +26,7 @@ use std::{
 
 use gim_hub_db::{outbox, Connection, Db, DbError, Transaction};
 use gim_hub_identity::HubId;
-use gim_hub_proto::s2s::SequencedMessage;
+use gim_hub_proto::s2s::{CopyPendingWelcomesRequest, SequencedMessage};
 use tokio::{
     sync::{broadcast, Notify},
     task::JoinHandle,
@@ -87,34 +89,32 @@ pub trait OutboxSource: Send + Sync + 'static {
         peer: &HubId,
     ) -> Result<Vec<SequencedMessage>, DbError>;
 
+    /// The current hosting record (CBOR) of the local user `user_id` for a
+    /// `NotifyHostingRecord`; `None` when there is none (the entry is
+    /// dropped). Defaults to the stored record
+    /// ([`crate::ops::hosting_record::local_hosting_record`]).
+    fn hosting_record(&self, conn: &Connection, user_id: &str) -> Result<Option<Vec<u8>>, DbError> {
+        crate::ops::hosting_record::local_hosting_record(conn, user_id)
+    }
+
+    /// The `CopyPendingWelcomes` request for `user_id` to `peer`, built at
+    /// send time; `None` drops the entry. The default builds nothing: the
+    /// replica bootstrap (multihoming.md §4.4) overrides it.
+    fn pending_welcomes(
+        &self,
+        conn: &Connection,
+        user_id: &str,
+        peer: &HubId,
+    ) -> Result<Option<CopyPendingWelcomesRequest>, DbError> {
+        let _ = (conn, user_id, peer);
+        Ok(None)
+    }
+
     /// Called once when `peer` answers `UNAUTHORIZED`, before the entry is
     /// retried (§7.4): refresh the hosting records involved.
     fn refresh_peer(&self, peer: &HubId) -> BoxFuture<'_, ()> {
         let _ = peer;
         Box::pin(async {})
-    }
-}
-
-/// Placeholder until the group and identity code provide the real source:
-/// every build fails, so queued entries wait (and eventually expire).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoSource;
-
-impl OutboxSource for NoSource {
-    fn deliver_messages(
-        &self,
-        _: &Connection,
-        _: &[(String, u64)],
-    ) -> Result<Vec<Option<SequencedMessage>>, DbError> {
-        Err(DbError::Task("no outbox source".into()))
-    }
-
-    fn device_list(&self, _: &Connection, _: &str) -> Result<Option<Vec<u8>>, DbError> {
-        Err(DbError::Task("no outbox source".into()))
-    }
-
-    fn resync_nudge(&self, _: &Connection, _: &HubId) -> Result<Vec<SequencedMessage>, DbError> {
-        Err(DbError::Task("no outbox source".into()))
     }
 }
 

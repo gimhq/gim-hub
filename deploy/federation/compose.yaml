@@ -9,13 +9,16 @@
 # hub-a, hub-b and hub-c allow each other. hub-x is on nobody's allowlist;
 # its own allowlist lists hub-a, so it keeps trying to federate and is
 # refused. The libp2p host has no DNS transport, so peers are addressed by
-# fixed IPs (/ip4) on the project network.
+# fixed IPs (/ip4) on the project network. Every container, the network and
+# the volumes carry `ai-agent=true` and `ai-agent-run=${GIM_FED_RUN_LABEL}`
+# (default `gim-fed`), so one run's resources can be removed by label.
 name: gim-fed
 
 x-hub: &hub
   image: ${GIM_FED_IMAGE:?}
   labels:
     ai-agent: "true"
+    ai-agent-run: ${GIM_FED_RUN_LABEL:-gim-fed}
   healthcheck:
     test: ["CMD", "gim-hub", "healthcheck"]
     interval: 2s
@@ -84,6 +87,7 @@ networks:
   fed:
     labels:
       ai-agent: "true"
+      ai-agent-run: ${GIM_FED_RUN_LABEL:-gim-fed}
     ipam:
       config:
         - subnet: ${GIM_FED_SUBNET:?}.0/24
@@ -92,12 +96,16 @@ volumes:
   a-data:
     labels:
       ai-agent: "true"
+      ai-agent-run: ${GIM_FED_RUN_LABEL:-gim-fed}
   b-data:
     labels:
       ai-agent: "true"
+      ai-agent-run: ${GIM_FED_RUN_LABEL:-gim-fed}
   c-data:
     labels:
       ai-agent: "true"
+      ai-agent-run: ${GIM_FED_RUN_LABEL:-gim-fed}
   x-data:
     labels:
       ai-agent: "true"
+      ai-agent-run: ${GIM_FED_RUN_LABEL:-gim-fed}

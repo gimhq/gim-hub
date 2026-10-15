@@ -17,6 +17,11 @@ the variable.
 | `GIM_HUB_MAX_BLOB_BYTES` | `104857600` | Largest accepted blob (minimum 1) |
 | `GIM_HUB_LONGPOLL_MAX_WAIT_SECONDS` | `30` | Upper bound for long-poll `wait` |
 | `GIM_HUB_SESSION_TTL_DAYS` | `30` | Lifetime of device bearer tokens (minimum 1) |
+| `GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN` | `120` | Unauthenticated `GET /v2/users/{user_id}`, `.../device-list` and `.../hosting-record` requests per client IP (IPv6: per /64) per minute (minimum 1) |
+| `GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN` | `60` | Unauthenticated reads of one `user_id` per minute, across all clients (minimum 1) |
+| `GIM_HUB_RECOVERY_READ_PER_IP_PER_MIN` | `20` | Unauthenticated `GET /v2/users/{user_id}/recovery-backup` requests per client IP (IPv6: per /64) per minute, separate from the public reads (minimum 1) |
+| `GIM_HUB_RECOVERY_READ_PER_USER_PER_MIN` | `10` | Recovery backup reads of one `user_id` per minute, across all clients (minimum 1) |
+| `GIM_HUB_TRUST_FORWARDED_FOR` | `false` | `true` keys the per-IP limit by the left-most `X-Forwarded-For` address; set only behind a reverse proxy that overwrites the header |
 | `RUST_LOG` | `info` | Log filter (`tracing_subscriber` `EnvFilter` syntax, e.g. `gim_hub_api=debug,info`) |
 
 ### Federation
@@ -41,6 +46,8 @@ while it is off. Design: [`federation.md`](federation.md).
 | `GIM_HUB_OUTBOX_MAX_ENTRIES_PER_PEER` | `100000` | Outbound backlog cap per peer hub, entries (minimum 1) |
 | `GIM_HUB_OUTBOX_MAX_BYTES_PER_PEER` | `1073741824` | Outbound backlog cap per peer hub, bytes (minimum 1) |
 | `GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS` | `300` | Maximum retry backoff per peer hub (minimum 1) |
+| `GIM_HUB_UNHOSTED_GRACE_HOURS` | `168` | How long a user who removed this hub from their hosting record keeps read access before their data is purged (minimum 1; [`multihoming.md`](multihoming.md) §7.3) |
+| `GIM_HUB_PUSH_FAILOVER_SECONDS` | `30` | A co-host hub without a successful ping or hub-to-hub exchange for this long is down; a fallback hub of a multi-homed user pushes only while every hub before it is down (minimum 1; [`multihoming.md`](multihoming.md) §8) |
 
 The allowlist lists one peer `hub_id` per line, optionally followed by static multiaddrs without
 `/p2p/`; `#` starts a comment and the hub's own `hub_id` is ignored:
@@ -50,8 +57,9 @@ The allowlist lists one peer `hub_id` per line, optionally followed by static mu
 hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq  /ip4/10.0.0.12/tcp/4001 /ip4/10.0.0.12/udp/4001/quic-v1
 ```
 
-The libp2p host has no DNS resolver: allowlist, bootstrap and external addresses must be `/ip4/` or
-`/ip6/` multiaddrs. A `/dns4/` address parses but can never be dialed.
+Allowlist, bootstrap and external addresses may be `/ip4/`, `/ip6/`, `/dns4/` or `/dns6/`
+multiaddrs. DNS names are resolved with the system resolver (`/etc/resolv.conf`, `/etc/hosts`) at
+dial time, over TCP and QUIC alike (with a PSK, TCP only).
 
 A missing or empty allowlist, an invalid line, or a QUIC address together with
 `GIM_HUB_P2P_PSK_FILE` stops startup. On SIGHUP the file is re-read; an invalid file is logged and
@@ -77,7 +85,8 @@ only Docker:
    fed_compose -- --ignored`) in a `rust:1.99-bookworm` container attached to that network. The
    driver speaks the client API to every hub with openmls clients and stops and starts hubs
    through the mounted Docker socket. Scenarios: hosting-record resolution, a cross-hub direct
-   message, a group across three hubs with add and remove from a non-owning hub, a concurrent
+   message, a Commit adding a revoked device of a remote user (400 `revoked_device`), a group
+   across three hubs with add and remove from a non-owning hub, a concurrent
    Commit conflict (one 201, one 409 `stale_epoch`), a member-hub outage (50 messages, no loss,
    no duplicates), an owner-hub outage (503 `peer_unavailable`, then delivery) and the refusal of
    `hub-x`;
@@ -85,7 +94,47 @@ only Docker:
 
 All containers, the network and the volumes carry the label `ai-agent=true`. Other variables:
 `GIM_FED_PROJECT` (compose project, default `gim-fed`), `GIM_FED_CARGO_HOME` (cargo home of the
-driver container) and `GIM_FED_TIMEOUT` (driver timeout in seconds).
+driver container), `GIM_FED_TIMEOUT` (driver timeout in seconds) and `GIM_FED_RUN_LABEL` (value of
+the `ai-agent-run` label also set on every container, network and volume, default the project
+name).
+
+`GIM_FED_PSK=1 bash scripts/fed-test.sh` runs the PSK variant (`deploy/federation/compose.psk.yaml`,
+not run in CI): hub-a, hub-b and hub-c share a pnet key generated for the run and use TCP only;
+hub-x has no key. It first checks that a hub with the key and a QUIC listen address refuses to
+start, then runs the same scenarios; hub-x must never get a `Hello` to hub-a.
+
+### Multi-homing
+
+A user is multi-homed when their hosting record lists several hubs
+([`multihoming.md`](multihoming.md)). It needs nothing beyond federation
+(`GIM_HUB_FEDERATION=true`): every listed hub must allow the others, and the owning hubs of the
+user's groups must allow all of them. Two variables apply (table above):
+
+- `GIM_HUB_UNHOSTED_GRACE_HOURS` (default 168): after a user removes this hub, their devices may
+  still sign in and read (drain their cursor) for this long; every other write is 403
+  `hosting_record_required`. The hourly retention task then purges the user's data and keeps
+  the record as a tombstone.
+- `GIM_HUB_PUSH_FAILOVER_SECONDS` (default 30): only the user's primary hub pushes; a fallback
+  hub starts pushing once every hub before it has been unreachable for this long and stops when
+  it sees the primary again. Lower it for faster failover at the cost of double pushes during
+  short blips (devices collapse them on `collapse_id`).
+
+Known limits: a group whose owning hub is down cannot sequence (503 `peer_unavailable` through
+every hub; owning-hub migration is out of scope); blobs stay on the hub they were uploaded to;
+an added hub serves no history before its replica seed; pushes for messages that arrive in the
+failover window after the primary stops are not sent late; the client must `PUT` a new record
+to the added hub before the other hubs, or an owner that only caches the user's record may seed
+the added hub too early and the seed is dropped (§4.3).
+
+`GIM_FED_SUITE=mh bash scripts/fed-test.sh` runs the multi-homing acceptance suite
+(multihoming.md §11, MH1-MH9; driver `crates/gim-hub/tests/multihoming_compose.rs`; CI job
+`federation`) with the same harness: it starts only `hub-a`, `hub-b` and `hub-c` with the
+override `deploy/federation/compose.mh.yaml` (`GIM_HUB_UNHOSTED_GRACE_HOURS=1`,
+`GIM_HUB_PUSH_FAILOVER_SECONDS=5`, `GIM_HUB_PUSH_LOG_ENDPOINT=true`) and observes pushes through
+`GET /v2/debug/push-log`. `GIM_FED_SUITE=all` runs the federation suite and then the
+multi-homing suite on a fresh stack with the same image. The run cannot advance the hubs'
+clocks, so the purge after the grace period is covered by the in-process test
+`crates/gim-hub-api/tests/multihoming_records.rs`, not by the compose suite.
 
 ### Push
 
@@ -97,6 +146,7 @@ them, e.g. under `/run/secrets`).
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `GIM_HUB_PUSH_MEMBER_EVENTS` | `false` | Also push `group.member_added` / `group.member_removed` (silent) |
+| `GIM_HUB_PUSH_MINIMAL` | `false` | `true` sends minimal wake-up payloads `{"v":1,"type":"wake","collapse_id"}` only (no group, sequence or MLS message; see `push.md`) |
 | `GIM_HUB_PUSH_QUEUE_CAPACITY` | `10000` | Most devices with a queued push; further pushes are dropped (minimum 1) |
 | `GIM_HUB_PUSH_LOG_ENDPOINT` | `false` | Serve the unauthenticated, test-only `GET /v2/debug/push-log`; never enable in production |
 | `GIM_HUB_PUSH_APNS_TEAM_ID` | unset | APNs team ID; the four `APNS` variables below enable APNs together |
@@ -133,7 +183,9 @@ $GIM_HUB_DATA_DIR/
 ## Retention
 
 An hourly background task (also run at startup) deletes events older than
-`GIM_HUB_EVENT_RETENTION_DAYS` and expired device-link bundles. A client whose cursor is older than the
+`GIM_HUB_EVENT_RETENTION_DAYS` and expired device-link bundles, and purges the
+data of users who removed this hub more than `GIM_HUB_UNHOSTED_GRACE_HOURS` ago
+(their hosting record is kept as a tombstone). A client whose cursor is older than the
 newest pruned event receives 410 `cursor_expired` with the head cursor and
 must resync. Pending Welcomes are kept until acknowledged, independently of
 event retention.
@@ -162,6 +214,19 @@ docker run -d --name gim-hub -p 8080:8080 -v gim-hub-data:/data \
 
 `scripts/docker-smoke.sh` builds the image and checks a running container; CI
 runs it on every push.
+
+Build notes:
+
+- The builder caches only the cargo registry and git checkouts. `target/` is
+  not cached: a BuildKit cache mount is shared by every checkout built on the
+  same daemon, and cargo judges freshness by mtime, so a shared `target/` can
+  yield a binary built from another checkout's sources. Docker's layer cache
+  is keyed on the build context content and stays safe.
+- `gim-hub version` prints the package version and the `GIM_HUB_BUILD_REV`
+  build argument (`unknown` if unset). `scripts/docker-build.sh IMAGE`, used by
+  `docker-smoke.sh` and `fed-test.sh`, passes the checkout's revision (with a
+  `-dirty-<hash>` suffix for uncommitted changes to tracked files) and fails
+  unless the built image reports exactly that revision.
 
 ## Shutdown
 
