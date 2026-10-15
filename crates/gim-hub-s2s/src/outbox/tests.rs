@@ -13,8 +13,10 @@ use std::{
 use gim_hub_db::{outbox as store, Connection, Db, DbError};
 use gim_hub_identity::{HubId, SigningKey};
 use gim_hub_proto::s2s::{
-    s2s_request::Op, s2s_response::Result as OpOutput, DeliverResponse, DeliverWelcomeRequest,
-    DeliverWelcomeResponse, ErrorCode, GroupAck, NotifyDeviceListResponse, S2sRequest, S2sResponse,
+    s2s_request::Op, s2s_response::Result as OpOutput, CopyPendingWelcomesRequest,
+    CopyPendingWelcomesResponse, DeliverResponse, DeliverWelcomeRequest, DeliverWelcomeResponse,
+    ErrorCode, GroupAck, NotifyDeviceListResponse, NotifyHostingRecordRequest,
+    NotifyHostingRecordResponse, S2sRequest, S2sResponse, SeedReplicaRequest, SeedReplicaResponse,
     SequencedMessage,
 };
 use prost::Message;
@@ -84,6 +86,13 @@ impl FakePeer {
             }
             Op::DeliverWelcome(_) => Ok(OpOutput::DeliverWelcome(DeliverWelcomeResponse {})),
             Op::NotifyDeviceList(_) => Ok(OpOutput::NotifyDeviceList(NotifyDeviceListResponse {})),
+            Op::NotifyHostingRecord(_) => Ok(OpOutput::NotifyHostingRecord(
+                NotifyHostingRecordResponse {},
+            )),
+            Op::SeedReplica(_) => Ok(OpOutput::SeedReplica(SeedReplicaResponse {})),
+            Op::CopyPendingWelcomes(_) => Ok(OpOutput::CopyPendingWelcomes(
+                CopyPendingWelcomesResponse {},
+            )),
             _ => Err(error(ErrorCode::Internal, "unexpected op")),
         }
     }
@@ -154,6 +163,22 @@ impl OutboxSource for FakeSource {
 
     fn device_list(&self, _: &Connection, user_id: &str) -> Result<Option<Vec<u8>>, DbError> {
         Ok(Some(format!("list:{user_id}").into_bytes()))
+    }
+
+    fn hosting_record(&self, _: &Connection, user_id: &str) -> Result<Option<Vec<u8>>, DbError> {
+        Ok(Some(format!("record:{user_id}").into_bytes()))
+    }
+
+    fn pending_welcomes(
+        &self,
+        _: &Connection,
+        user_id: &str,
+        _: &HubId,
+    ) -> Result<Option<CopyPendingWelcomesRequest>, DbError> {
+        Ok(Some(CopyPendingWelcomesRequest {
+            user_id: user_id.into(),
+            welcomes: Vec::new(),
+        }))
     }
 
     fn resync_nudge(&self, _: &Connection, _: &HubId) -> Result<Vec<SequencedMessage>, DbError> {
@@ -347,6 +372,49 @@ async fn delivers_fifo_batches_and_acks_remove_entries() {
     assert_eq!(h.peer.max_in_flight.load(Ordering::SeqCst), 1);
     assert_eq!(h.state().await.failures, 0);
     h.outbox.shutdown();
+}
+
+#[tokio::test]
+async fn multihoming_entries_are_sent_alone_and_acked_on_empty_answers() {
+    let h = Harness::new(Db::open_in_memory().unwrap(), config(), true);
+    let seed = SeedReplicaRequest {
+        gid: "g2".into(),
+        user_id: "u1".into(),
+        group: None,
+    }
+    .encode_to_vec()
+    .leak();
+    h.enqueue(vec![
+        deliver("g1", 1),
+        NewEntry::HostingRecord { user_id: "u1" },
+        NewEntry::SeedReplica {
+            gid: "g2",
+            payload: seed,
+        },
+        // Coalesced with the queued entry.
+        NewEntry::HostingRecord { user_id: "u1" },
+        NewEntry::PendingWelcomes { user_id: "u1" },
+        NewEntry::PendingWelcomes { user_id: "u1" },
+        deliver("g1", 2),
+    ])
+    .await;
+    h.outbox.start(None);
+    eventually("queue drained", || async { h.queued().await.is_empty() }).await;
+
+    let requests = h.peer.requests();
+    assert_eq!(requests.len(), 5, "{requests:?}");
+    assert!(matches!(&requests[0], Op::Deliver(r) if r.messages.len() == 1));
+    assert_eq!(
+        requests[1],
+        Op::NotifyHostingRecord(NotifyHostingRecordRequest {
+            user_id: "u1".into(),
+            hosting_record_cbor: b"record:u1".to_vec(),
+        })
+    );
+    assert!(matches!(&requests[2], Op::SeedReplica(r) if r.gid == "g2" && r.user_id == "u1"));
+    assert!(matches!(&requests[3], Op::CopyPendingWelcomes(r) if r.user_id == "u1"));
+    assert!(matches!(&requests[4], Op::Deliver(r) if r.messages[0].seq == 2));
+    assert_eq!(h.state().await.failures, 0);
 }
 
 #[tokio::test]

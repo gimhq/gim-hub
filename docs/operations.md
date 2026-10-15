@@ -44,6 +44,7 @@ while it is off. Design: [`federation.md`](federation.md).
 | `GIM_HUB_OUTBOX_MAX_ENTRIES_PER_PEER` | `100000` | Outbound backlog cap per peer hub, entries (minimum 1) |
 | `GIM_HUB_OUTBOX_MAX_BYTES_PER_PEER` | `1073741824` | Outbound backlog cap per peer hub, bytes (minimum 1) |
 | `GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS` | `300` | Maximum retry backoff per peer hub (minimum 1) |
+| `GIM_HUB_UNHOSTED_GRACE_HOURS` | `168` | How long a user who removed this hub from their hosting record keeps read access before their data is purged (minimum 1; [`multihoming.md`](multihoming.md) §7.3) |
 
 The allowlist lists one peer `hub_id` per line, optionally followed by static multiaddrs without
 `/p2p/`; `#` starts a comment and the hub's own `hub_id` is ignored:
@@ -137,7 +138,9 @@ $GIM_HUB_DATA_DIR/
 ## Retention
 
 An hourly background task (also run at startup) deletes events older than
-`GIM_HUB_EVENT_RETENTION_DAYS` and expired device-link bundles. A client whose cursor is older than the
+`GIM_HUB_EVENT_RETENTION_DAYS` and expired device-link bundles, and purges the
+data of users who removed this hub more than `GIM_HUB_UNHOSTED_GRACE_HOURS` ago
+(their hosting record is kept as a tombstone). A client whose cursor is older than the
 newest pruned event receives 410 `cursor_expired` with the head cursor and
 must resync. Pending Welcomes are kept until acknowledged, independently of
 event retention.
