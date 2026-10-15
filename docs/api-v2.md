@@ -119,7 +119,9 @@ On `POST /v2/groups/{gid}/commits` the owning hub:
 
 A Proposal on the same endpoint (types Add, Remove, Update and SelfRemove; others are rejected)
 must come from a member at its own leaf, for the group's current epoch (else 409 `stale_epoch`),
-without Welcome fields. An Update's leaf is checked like the committer's own leaves; a Remove must
+without Welcome fields. `welcome` (and the `welcome` field of the `welcome` event and of pending
+Welcomes) is the base64 of a TLS-encoded MLSMessage (wire_format = mls_welcome) carrying a Welcome;
+`ratchet_tree` is the TLS-encoded ratchet tree. An Update's leaf is checked like the committer's own leaves; a Remove must
 target an occupied leaf; an Add is checked (claim ledger, credential) only when a Commit references
 it. The hub sequences the Proposal, delivers it to the other members as a `message` of kind
 `proposal` and answers `{seq, epoch, duplicate}` with the unchanged epoch. Neither the epoch nor

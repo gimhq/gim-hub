@@ -135,6 +135,8 @@ Notes:
   API's `CommitResult.epoch`); `SubmitMessageResponse.epoch` is the message's epoch. Both responses
   carry `message`, the `SequencedMessage` as it appears in `Deliver` / `FetchLog`, so the member hub
   can apply it to its replica immediately.
+- `SubmitCommitRequest.welcome` and `DeliverWelcomeRequest.welcome` hold a TLS-encoded MLSMessage
+  (wire_format = mls_welcome) carrying a Welcome, as raw bytes.
 - `DeliverWelcomeRequest.group` is a `GroupSnapshot` (kind, creator, `created_at`, epoch after the
   Commit, `seq` of the Commit, roster after the Commit) from which the invitee's hub creates its
   replica; `sender_device_id` is the committing device.
