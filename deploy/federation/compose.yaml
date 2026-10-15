@@ -1,0 +1,103 @@
+# Closed-federation acceptance topology (docs/federation.md §11.2), run by
+# scripts/fed-test.sh. Do not start it by hand without the variables below:
+#
+#   GIM_FED_IMAGE        hub image built from the repository Dockerfile
+#   GIM_FED_CONFIG_DIR   directory with the generated `allowlist` (a, b, c)
+#                        and `allowlist-x` files
+#   GIM_FED_SUBNET       /24 prefix of the isolated network, e.g. 10.231.64
+#
+# hub-a, hub-b and hub-c allow each other. hub-x is on nobody's allowlist;
+# its own allowlist lists hub-a, so it keeps trying to federate and is
+# refused. The libp2p host has no DNS transport, so peers are addressed by
+# fixed IPs (/ip4) on the project network.
+name: gim-fed
+
+x-hub: &hub
+  image: ${GIM_FED_IMAGE:?}
+  labels:
+    ai-agent: "true"
+  healthcheck:
+    test: ["CMD", "gim-hub", "healthcheck"]
+    interval: 2s
+    timeout: 2s
+    retries: 30
+  stop_grace_period: 10s
+
+x-env: &env
+  RUST_LOG: info
+  GIM_HUB_FEDERATION: "true"
+  GIM_HUB_P2P_LISTEN: /ip4/0.0.0.0/udp/4001/quic-v1,/ip4/0.0.0.0/tcp/4001
+  GIM_HUB_FEDERATION_ALLOWLIST: /config/allowlist
+  GIM_HUB_S2S_TIMEOUT_SECONDS: "3"
+  GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS: "2"
+
+services:
+  hub-a:
+    <<: *hub
+    environment:
+      <<: *env
+      GIM_HUB_P2P_EXTERNAL_ADDRS: /ip4/${GIM_FED_SUBNET:?}.11/tcp/4001,/ip4/${GIM_FED_SUBNET:?}.11/udp/4001/quic-v1
+    volumes:
+      - a-data:/data
+      - ${GIM_FED_CONFIG_DIR:?}/allowlist:/config/allowlist:ro
+    networks:
+      fed:
+        ipv4_address: ${GIM_FED_SUBNET:?}.11
+
+  hub-b:
+    <<: *hub
+    environment:
+      <<: *env
+      GIM_HUB_P2P_EXTERNAL_ADDRS: /ip4/${GIM_FED_SUBNET:?}.12/tcp/4001,/ip4/${GIM_FED_SUBNET:?}.12/udp/4001/quic-v1
+    volumes:
+      - b-data:/data
+      - ${GIM_FED_CONFIG_DIR:?}/allowlist:/config/allowlist:ro
+    networks:
+      fed:
+        ipv4_address: ${GIM_FED_SUBNET:?}.12
+
+  hub-c:
+    <<: *hub
+    environment:
+      <<: *env
+      GIM_HUB_P2P_EXTERNAL_ADDRS: /ip4/${GIM_FED_SUBNET:?}.13/tcp/4001,/ip4/${GIM_FED_SUBNET:?}.13/udp/4001/quic-v1
+    volumes:
+      - c-data:/data
+      - ${GIM_FED_CONFIG_DIR:?}/allowlist:/config/allowlist:ro
+    networks:
+      fed:
+        ipv4_address: ${GIM_FED_SUBNET:?}.13
+
+  hub-x:
+    <<: *hub
+    environment:
+      <<: *env
+      GIM_HUB_P2P_EXTERNAL_ADDRS: /ip4/${GIM_FED_SUBNET:?}.14/tcp/4001,/ip4/${GIM_FED_SUBNET:?}.14/udp/4001/quic-v1
+    volumes:
+      - x-data:/data
+      - ${GIM_FED_CONFIG_DIR:?}/allowlist-x:/config/allowlist:ro
+    networks:
+      fed:
+        ipv4_address: ${GIM_FED_SUBNET:?}.14
+
+networks:
+  fed:
+    labels:
+      ai-agent: "true"
+    ipam:
+      config:
+        - subnet: ${GIM_FED_SUBNET:?}.0/24
+
+volumes:
+  a-data:
+    labels:
+      ai-agent: "true"
+  b-data:
+    labels:
+      ai-agent: "true"
+  c-data:
+    labels:
+      ai-agent: "true"
+  x-data:
+    labels:
+      ai-agent: "true"
