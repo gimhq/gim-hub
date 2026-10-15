@@ -14,6 +14,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0005_group_federation.sql"),
     include_str!("../migrations/0006_push_webpush_keys.sql"),
     include_str!("../migrations/0007_multihoming.sql"),
+    include_str!("../migrations/0008_replica_detached_at.sql"),
 ];
 
 /// Schema version after all migrations.
@@ -261,6 +262,50 @@ mod tests {
                 "s2s_outbox_pending_welcomes",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn detached_replicas_get_a_detach_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hub.db");
+        let detached_at = super::MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("detached_at"))
+            .unwrap();
+        {
+            let mut conn = rusqlite::Connection::open(&path).unwrap();
+            for (version, sql) in (1..).zip(&super::MIGRATIONS[..detached_at]) {
+                let tx = conn.transaction().unwrap();
+                tx.execute_batch(sql).unwrap();
+                tx.pragma_update(None, "user_version", version).unwrap();
+                tx.commit().unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO groups (gid, kind, created_by_user_id, created_by_device_id, \
+                 created_at, replica_from_seq, detached) VALUES \
+                 ('h2/a', 'group', 'u', 'd', 0, 1, 1), ('h2/b', 'group', 'u', 'd', 0, 1, 0);",
+            )
+            .unwrap();
+        }
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let db = Db::open(&path).unwrap();
+        let rows: Vec<(String, Option<i64>)> = db
+            .read(|conn| {
+                let mut stmt = conn.prepare("SELECT gid, detached_at FROM groups ORDER BY gid")?;
+                let rows = stmt
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, DbError>(rows)
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows[0].0, "h2/a");
+        let at = rows[0].1.unwrap();
+        assert!((before - 60_000..before + 60_000).contains(&at), "{at}");
+        assert_eq!(rows[1], ("h2/b".to_owned(), None));
     }
 
     #[test]

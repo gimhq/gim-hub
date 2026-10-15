@@ -205,13 +205,32 @@ pub fn replica(conn: &Connection, gid: &str) -> Result<Option<Replica>, DbError>
     )
 }
 
-/// Marks a replica detached (or attached again).
-pub fn set_detached(tx: &Transaction<'_>, gid: &str, detached: bool) -> Result<(), DbError> {
+/// Marks a replica detached at `detached_at` (`Some`, unix ms) or attached
+/// again (`None`). Re-detaching keeps the first detach time.
+pub fn set_detached(
+    tx: &Transaction<'_>,
+    gid: &str,
+    detached_at: Option<i64>,
+) -> Result<(), DbError> {
     tx.execute(
-        "UPDATE groups SET detached = ?2 WHERE gid = ?1",
-        params![gid, detached],
+        "UPDATE groups SET detached = ?2 IS NOT NULL, \
+         detached_at = CASE WHEN ?2 IS NULL THEN NULL ELSE coalesce(detached_at, ?2) END \
+         WHERE gid = ?1",
+        params![gid, detached_at],
     )?;
     Ok(())
+}
+
+/// Deletes the replicas detached before `cutoff` (unix ms) with their
+/// roster, messages and Commit membership (cascade); groups owned here are
+/// never replicas. Returns the number of replicas deleted.
+pub fn delete_detached_replicas(tx: &Transaction<'_>, cutoff: i64) -> Result<usize, DbError> {
+    let deleted = tx.execute(
+        "DELETE FROM groups WHERE replica_from_seq IS NOT NULL AND detached = 1 \
+         AND detached_at < ?1",
+        [cutoff],
+    )?;
+    Ok(deleted)
 }
 
 /// Removes a member device.
@@ -491,7 +510,7 @@ mod tests {
             ..group
         };
         db.write(move |tx| {
-            set_detached(tx, "h2/g1", true)?;
+            set_detached(tx, "h2/g1", Some(25))?;
             create_replica(tx, &replaced, &[("u3".into(), "d3".into())], 30)
         })
         .await
@@ -506,6 +525,89 @@ mod tests {
         );
         let members = db.read(|conn| member_devices(conn, "h2/g1")).await.unwrap();
         assert_eq!(members, [("u3".to_owned(), "d3".to_owned())]);
+    }
+
+    #[tokio::test]
+    async fn old_detached_replicas_are_deleted() {
+        let db = Db::open_in_memory().unwrap();
+        db.write(|tx| {
+            let group = |gid: &str| Group {
+                gid: gid.into(),
+                kind: "group".into(),
+                epoch: 0,
+                last_seq: 1,
+                created_by_user_id: "u2".into(),
+                created_by_device_id: "d2".into(),
+                created_at: 0,
+            };
+            let member = [("u1".to_owned(), "d1".to_owned())];
+            // old: detached at 10; again: re-detached at 90 keeps 10;
+            // recent: detached at 60; attached: detached then attached again.
+            for gid in ["h2/old", "h2/again", "h2/recent", "h2/attached", "h2/live"] {
+                create_replica(tx, &group(gid), &member, 0)?;
+                tx.execute(
+                    "INSERT INTO messages (gid, seq, epoch, kind, sender_user_id, \
+                     sender_device_id, client_id, payload, message_id, created_at) \
+                     VALUES (?1, 2, 0, 'commit', 'u2', 'd2', 'c', x'00', ?1, 0)",
+                    [gid],
+                )?;
+                tx.execute(
+                    "INSERT INTO commit_membership (gid, seq, change, user_id, device_id) \
+                     VALUES (?1, 2, 'added', 'u1', 'd1')",
+                    [gid],
+                )?;
+            }
+            set_detached(tx, "h2/old", Some(10))?;
+            set_detached(tx, "h2/again", Some(10))?;
+            set_detached(tx, "h2/again", Some(90))?;
+            set_detached(tx, "h2/recent", Some(60))?;
+            set_detached(tx, "h2/attached", Some(10))?;
+            set_detached(tx, "h2/attached", None)?;
+            // An owned group is never deleted, even if flagged.
+            create(tx, &group("h1/own"))?;
+            tx.execute(
+                "UPDATE groups SET detached = 1, detached_at = 0 WHERE gid = 'h1/own'",
+                [],
+            )?;
+            Ok::<_, DbError>(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            db.read(|conn| replica(conn, "h2/attached")).await.unwrap(),
+            Some(Replica {
+                from_seq: 2,
+                detached: false
+            })
+        );
+
+        let deleted = db
+            .write(|tx| delete_detached_replicas(tx, 50))
+            .await
+            .unwrap();
+        assert_eq!(deleted, 2);
+        let count = |table: &'static str| {
+            db.read(move |conn| {
+                Ok::<i64, DbError>(conn.query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE gid IN ('h2/old', 'h2/again')"),
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+        };
+        for table in ["groups", "group_members", "messages", "commit_membership"] {
+            assert_eq!(count(table).await.unwrap(), 0, "{table}");
+        }
+        for gid in ["h2/recent", "h2/attached", "h2/live", "h1/own"] {
+            assert!(db.read(move |conn| get(conn, gid)).await.unwrap().is_some());
+        }
+        assert_eq!(
+            db.read(|conn| member_devices(conn, "h2/recent"))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]

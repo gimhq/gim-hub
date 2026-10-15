@@ -84,6 +84,11 @@ pub enum Purpose {
     /// does not list the caller, it is refreshed once, asking the caller
     /// first.
     Authorize(HubId),
+    /// A peer refused an outbox entry with `UNAUTHORIZED` (federation.md
+    /// §7.4): a remote record is re-resolved bypassing the fresh cache; a
+    /// local user's record is republished to the DHT, where the peer's
+    /// refresh finds it.
+    Refresh,
 }
 
 /// Hosting settings, from [`FederationConfig`].
@@ -219,6 +224,10 @@ impl Hosting {
 
     pub fn hub_id(&self) -> &HubId {
         &self.inner.hub_id
+    }
+
+    pub(crate) fn db(&self) -> &Db {
+        &self.inner.db
     }
 
     /// Installs the [`HubSetHook`], replacing any previous one.
@@ -413,14 +422,20 @@ impl Hosting {
         let valid_cached = cached.clone().filter(|record| unexpired(record, now));
         // 1. Local user: no network.
         if local {
+            if let (Purpose::Refresh, Some(record)) = (purpose, &valid_cached) {
+                self.publish(record.clone());
+            }
             return valid_cached.ok_or(HostingError::NotFound);
         }
-        // 2. Fresh cache, unless it does not list the authorizing caller.
+        // 2. Fresh cache, unless it does not list the authorizing caller or
+        // is being refreshed.
         let caller = match purpose {
-            Purpose::Lookup => None,
+            Purpose::Lookup | Purpose::Refresh => None,
             Purpose::Authorize(caller) => Some(caller),
         };
-        if let (Some(row), Some(record)) = (&row, &valid_cached) {
+        if let (Some(row), Some(record), false) =
+            (&row, &valid_cached, *purpose == Purpose::Refresh)
+        {
             let age = now.saturating_sub(row.fetched_at);
             let fresh =
                 u128::try_from(age).unwrap_or(0) < self.inner.settings.cache_ttl.as_millis();
@@ -453,9 +468,9 @@ impl Hosting {
                 Err(err) => unavailable = Some(format!("{hub}: {err}")),
             }
         }
-        // 4. The DHT.
-        if found.is_empty() {
-            found = self.fetch_from_dht(user_id, now).await;
+        // 4. The DHT (always on a refresh: the listed hubs may be stale).
+        if found.is_empty() || *purpose == Purpose::Refresh {
+            found.extend(self.fetch_from_dht(user_id, now).await);
         }
 
         // A record from the network never replaces a cached one with a

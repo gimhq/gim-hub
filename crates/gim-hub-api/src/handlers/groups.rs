@@ -1276,7 +1276,7 @@ fn apply_replicated(
     };
     let wake = record_commit(tx, &stored, &changes, now)?;
     if groups::local_member_devices(tx, &message.gid)?.is_empty() {
-        groups::set_detached(tx, &message.gid, true)?;
+        groups::set_detached(tx, &message.gid, Some(now))?;
     }
     Ok(wake)
 }
