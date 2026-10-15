@@ -1,5 +1,5 @@
-//! Per-group message log (Commits and application messages) and the group
-//! lookups needed to accept a message.
+//! Per-group message log (Commits, Proposals and application messages) and
+//! the group lookups needed to accept a message.
 //!
 //! `seq` is assigned by bumping `groups.last_seq` inside the caller's write
 //! transaction, so sequence numbers are gap-free and unique per group.
@@ -8,7 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
 use crate::DbError;
 
-/// A stored message. `kind` is `commit` or `application`.
+/// A stored message. `kind` is `commit`, `proposal` or `application`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredMessage {
     pub gid: String,
@@ -57,7 +57,8 @@ pub struct NewMessage<'a> {
     pub sender_device_id: &'a str,
     pub client_id: &'a str,
     pub payload: &'a [u8],
-    /// Hash of a Commit, used to detect retries of the same Commit.
+    /// Hash of a Commit or Proposal, used to detect retries of the same
+    /// message.
     pub commit_hash: Option<&'a [u8]>,
     /// Unique opaque message ID.
     pub message_id: &'a str,
@@ -239,20 +240,62 @@ pub fn list_from(
     Ok(messages)
 }
 
-/// `(seq, framing epoch)` of the Commit with `commit_hash` in `gid`.
+/// `(seq, framing epoch, kind)` of the Commit or Proposal with
+/// `commit_hash` in `gid`.
 pub fn find_commit(
     conn: &Connection,
     gid: &str,
     commit_hash: &[u8],
-) -> Result<Option<(u64, u64)>, DbError> {
+) -> Result<Option<(u64, u64, String)>, DbError> {
     let found = conn
         .query_row(
-            "SELECT seq, epoch FROM messages WHERE gid = ?1 AND commit_hash = ?2",
+            "SELECT seq, epoch, kind FROM messages WHERE gid = ?1 AND commit_hash = ?2",
             params![gid, commit_hash],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
     Ok(found)
+}
+
+/// Makes the Proposal `seq` of `gid`, sent in `epoch`, resolvable under each
+/// of its `proposal_refs` until the epoch advances.
+pub fn insert_pending_proposal(
+    tx: &Transaction<'_>,
+    gid: &str,
+    epoch: i64,
+    seq: i64,
+    proposal_refs: &[Vec<u8>],
+) -> Result<(), DbError> {
+    let mut stmt = tx.prepare_cached(
+        "INSERT OR IGNORE INTO pending_proposals (gid, proposal_ref, epoch, seq) \
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for proposal_ref in proposal_refs {
+        stmt.execute(params![gid, proposal_ref, epoch, seq])?;
+    }
+    Ok(())
+}
+
+/// The Proposal of `gid` sent in `epoch` with `proposal_ref`, if still
+/// pending.
+pub fn pending_proposal(
+    conn: &Connection,
+    gid: &str,
+    epoch: i64,
+    proposal_ref: &[u8],
+) -> Result<Option<StoredMessage>, DbError> {
+    let message = conn
+        .query_row(
+            &format!(
+                "SELECT {COLUMNS} FROM messages WHERE gid = ?1 AND seq = \
+                 (SELECT seq FROM pending_proposals \
+                  WHERE gid = ?1 AND proposal_ref = ?2 AND epoch = ?3)"
+            ),
+            params![gid, proposal_ref, epoch],
+            from_row,
+        )
+        .optional()?;
+    Ok(message)
 }
 
 #[cfg(test)]
@@ -385,6 +428,66 @@ mod tests {
         assert_eq!(
             db.read(|c| removed_since(c, "g1", 3)).await.unwrap(),
             ["u4"]
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_proposals_resolve_until_the_epoch_advances() {
+        let db = db_with_group().await;
+        let stored = db
+            .write(|tx| {
+                let stored = append(
+                    tx,
+                    &NewMessage {
+                        kind: "proposal",
+                        commit_hash: Some(b"h1"),
+                        ..new_message("c1", "m1")
+                    },
+                    10,
+                )?;
+                insert_pending_proposal(
+                    tx,
+                    "g1",
+                    3,
+                    stored.seq,
+                    &[b"r1".to_vec(), b"r2".to_vec()],
+                )?;
+                Ok::<_, DbError>(stored)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            db.read(|c| find_commit(c, "g1", b"h1")).await.unwrap(),
+            Some((1, 3, "proposal".to_owned()))
+        );
+        for proposal_ref in [b"r1", b"r2"] {
+            assert_eq!(
+                db.read(move |c| pending_proposal(c, "g1", 3, proposal_ref))
+                    .await
+                    .unwrap(),
+                Some(stored.clone())
+            );
+        }
+        assert_eq!(
+            db.read(|c| pending_proposal(c, "g1", 2, b"r1"))
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            db.read(|c| pending_proposal(c, "g1", 3, b"r3"))
+                .await
+                .unwrap(),
+            None
+        );
+        db.write(|tx| crate::groups::set_epoch(tx, "g1", 4))
+            .await
+            .unwrap();
+        assert_eq!(
+            db.read(|c| pending_proposal(c, "g1", 3, b"r1"))
+                .await
+                .unwrap(),
+            None
         );
     }
 

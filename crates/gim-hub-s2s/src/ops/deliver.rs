@@ -34,10 +34,10 @@ pub fn to_sequenced(stored: StoredMessage, membership: Membership) -> SequencedM
         .chain(&membership.removed)
         .map(|(user_id, _)| user_id.clone())
         .collect();
-    let kind = if stored.kind == "commit" {
-        MessageKind::Commit
-    } else {
-        MessageKind::Application
+    let kind = match stored.kind.as_str() {
+        "commit" => MessageKind::Commit,
+        "proposal" => MessageKind::Proposal,
+        _ => MessageKind::Application,
     };
     SequencedMessage {
         gid: stored.gid,

@@ -20,13 +20,16 @@ mod mls_support;
 use std::time::{Duration, Instant};
 
 use hyper::{Method, StatusCode};
-use openmls::prelude::{LeafNodeParameters, MlsGroup, OpenMlsProvider};
+use openmls::prelude::{
+    tls_codec::Deserialize, LeafNodeParameters, MlsGroup, MlsMessageIn, OpenMlsProvider,
+    ProcessedMessageContent,
+};
 use serde_json::{json, Value};
 
 use compose_support::{
     application, commit_body, eventually, leaf_of, sorted, with_welcome, Hub, User, CONVERGE,
 };
-use mls_support::{b64, code, device_list, group_path};
+use mls_support::{b64, code, device_list, group_path, unb64};
 
 /// Prints a step result with the time since `start`.
 fn ok(step: &str, start: Instant) {
@@ -77,6 +80,7 @@ async fn compose_federation() {
     member_hub_outage(&gid, &c, &alice, &bob, &dave, &mut groups).await;
     owner_hub_outage(&gid, &a, &alice, &bob, &dave, &mut groups).await;
     refusal(&a, &x_id, &alice, &eve, psk).await;
+    leave_by_proposal(&a, &b, &c, &alice).await;
     println!("fed: PASS ({:.1}s)", start.elapsed().as_secs_f64());
 }
 
@@ -532,6 +536,123 @@ async fn refusal(a: &Hub, x_id: &str, alice: &User, eve: &User, psk: bool) {
         } else {
             "non-allowlisted hub-x refused; eve@X cannot reach alice@A"
         },
+        start,
+    );
+}
+
+/// T13: frank@B leaves a group owned by hub-a with a self-Remove Proposal
+/// (forwarded to A); grace@C commits it by reference through hub-c; frank
+/// is removed on every hub.
+async fn leave_by_proposal(a: &Hub, b: &Hub, c: &Hub, alice: &User) {
+    let start = Instant::now();
+    let frank = User::sign_up("frank", b, 6, 61, 1).await;
+    let grace = User::sign_up("grace", c, 7, 71, 1).await;
+    for user in [&frank, &grace] {
+        let path = format!("/v2/users/{}/hosting-record", user.user_id);
+        eventually(&format!("{}'s record on hub-a", user.name), || async {
+            let (status, body) = a.call(Method::GET, &path, None, None).await;
+            status == StatusCode::OK && body["seq"] == 1
+        })
+        .await;
+    }
+    let (gid, mut alice_group) = alice.create_group("group").await;
+    let kps = vec![alice.claim(&frank).await, alice.claim(&grace).await];
+    let (commit, welcome, _) = alice_group
+        .add_members(&alice.provider, &alice.signer, &kps)
+        .unwrap();
+    let body = with_welcome(commit_body("c1", &commit), &welcome, &[&frank, &grace]);
+    let (status, result) = alice.submit_commit(&gid, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    alice_group.merge_pending_commit(&alice.provider).unwrap();
+    let mut frank_group = frank.join(&gid).await;
+    let mut grace_group = grace.join(&gid).await;
+    let three = sorted(&[&alice.device_id, &frank.device_id, &grace.device_id]);
+    for user in [&frank, &grace] {
+        eventually(&format!("{}'s replica roster", user.name), || async {
+            user.roster(&gid).await == (StatusCode::OK, three.clone())
+        })
+        .await;
+    }
+
+    // Submits like a client: 503 `peer_unavailable` (e.g. a connection to
+    // hub-a still closing after the outage scenario) is retried as is.
+    async fn submit(user: &User, gid: &str, body: Value) -> (StatusCode, Value) {
+        let deadline = Instant::now() + CONVERGE;
+        loop {
+            let (status, result) = user.submit_commit(gid, body.clone()).await;
+            if status != StatusCode::SERVICE_UNAVAILABLE || Instant::now() > deadline {
+                return (status, result);
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    // Stores a Proposal, or merges a Commit, from the message `seq`.
+    let process = |user: &User, group: &mut MlsGroup, event: &Value| {
+        let message = MlsMessageIn::tls_deserialize_exact(unb64(&event["mls_message"])).unwrap();
+        let processed = group
+            .process_message(&user.provider, message.try_into_protocol_message().unwrap())
+            .unwrap();
+        match processed.into_content() {
+            ProcessedMessageContent::ProposalMessage(proposal) => group
+                .store_pending_proposal(user.provider.storage(), *proposal)
+                .unwrap(),
+            ProcessedMessageContent::StagedCommitMessage(staged) => {
+                group.merge_staged_commit(&user.provider, *staged).unwrap()
+            }
+            _ => panic!("unexpected message"),
+        }
+    };
+
+    let leave = frank_group
+        .leave_group(&frank.provider, &frank.signer)
+        .unwrap();
+    let (status, result) = submit(&frank, &gid, commit_body("p1", &leave)).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result, json!({ "seq": 2, "epoch": 1, "duplicate": false }));
+    for (user, group) in [(alice, &mut alice_group), (&grace, &mut grace_group)] {
+        let event = user.wait_message(&gid, 2).await;
+        assert_eq!(event["kind"], "proposal", "{}", user.name);
+        process(user, group, &event);
+    }
+    let (commit, _, _) = grace_group
+        .commit_to_pending_proposals(&grace.provider, &grace.signer)
+        .unwrap();
+    let (status, result) = submit(&grace, &gid, commit_body("c2", &commit)).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result, json!({ "seq": 3, "epoch": 2, "duplicate": false }));
+    grace_group.merge_pending_commit(&grace.provider).unwrap();
+    process(alice, &mut alice_group, &alice.wait_message(&gid, 3).await);
+    assert_eq!(alice_group.epoch().as_u64(), 2);
+    assert_eq!(alice_group.members().count(), 2);
+
+    for user in [alice, &frank, &grace] {
+        let removed = || async {
+            user.events_of("group.member_removed")
+                .await
+                .into_iter()
+                .filter(|e| e["gid"] == gid)
+                .collect::<Vec<_>>()
+        };
+        eventually(&format!("{}'s member_removed", user.name), || async {
+            !removed().await.is_empty()
+        })
+        .await;
+        let removed = removed().await;
+        assert_eq!(removed.len(), 1, "{}: {removed:?}", user.name);
+        assert_eq!(removed[0]["user_id"], json!(frank.user_id));
+        assert_eq!(removed[0]["by_device_id"], json!(grace.device_id));
+        assert_eq!(removed[0]["seq"], 3);
+    }
+    let two = sorted(&[&alice.device_id, &grace.device_id]);
+    for user in [alice, &grace] {
+        assert_eq!(user.roster(&gid).await, (StatusCode::OK, two.clone()));
+    }
+    let (status, body) = frank.call(Method::GET, &group_path(&gid), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(code(&body), "not_member");
+    ok(
+        "frank@B leaves by Proposal, grace@C commits it by reference",
         start,
     );
 }

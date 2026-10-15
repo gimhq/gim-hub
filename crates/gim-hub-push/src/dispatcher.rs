@@ -420,6 +420,10 @@ fn collect_jobs(
         if !kind.is_alert() && !member_events {
             continue;
         }
+        // MLS Proposals change nothing until a Commit covers them.
+        if matches!(kind, PushKind::Message) && is_proposal(&addressed.event.payload) {
+            continue;
+        }
         let Some(registration) = push::get_active(conn, &addressed.user_id, &addressed.device_id)?
         else {
             continue;
@@ -437,6 +441,11 @@ fn collect_jobs(
         }
     }
     Ok((last, events.len(), jobs))
+}
+
+/// Whether a `message` event carries an MLS Proposal.
+fn is_proposal(payload: &str) -> bool {
+    serde_json::from_str::<Value>(payload).is_ok_and(|data| data["kind"] == "proposal")
 }
 
 /// The notification for an event's data.
@@ -628,6 +637,21 @@ mod tests {
         assert_eq!(sent[0].1.mls_message.as_deref(), Some("AAAA"));
         let m = d.metrics();
         assert_eq!((m.enqueued, m.coalesced, m.sent), (1, 1, 1));
+    }
+
+    #[tokio::test]
+    async fn proposals_are_not_pushed() {
+        let db = db_with_devices(&[("u2", "d1", "fcm")]).await;
+        let fake = Fake::new("fcm", Vec::new());
+        let d = dispatcher(&db, vec![fake.clone()], DispatcherSettings::default());
+        let mut proposal = message(1);
+        proposal["kind"] = "proposal".into();
+        append(&db, "d1", "message", proposal).await;
+        assert_eq!(d.poll_once().await.unwrap(), 0);
+        let mut commit = message(2);
+        commit["kind"] = "commit".into();
+        append(&db, "d1", "message", commit).await;
+        assert_eq!(d.poll_once().await.unwrap(), 1);
     }
 
     #[tokio::test]

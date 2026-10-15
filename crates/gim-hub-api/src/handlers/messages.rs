@@ -306,7 +306,7 @@ enum Outcome {
     path = "/v2/groups/{gid}/messages",
     tag = "messages",
     summary = "List group messages",
-    description = "Commits and application messages with `seq >= from_seq`, ascending. For a \
+    description = "Commits, Proposals and application messages with `seq >= from_seq`, ascending. For a \
 group owned by another hub (federation), this hub serves its replica, which holds the log from \
 the Commit that added this hub's first member on: a lower `from_seq` returns messages starting \
 there.",
@@ -398,10 +398,10 @@ fn new_message_id() -> Result<String, ApiError> {
 /// API view of a stored message.
 pub(crate) fn message_dto(stored: StoredMessage) -> Message {
     Message {
-        kind: if stored.kind == "commit" {
-            MessageKind::Commit
-        } else {
-            MessageKind::Application
+        kind: match stored.kind.as_str() {
+            "commit" => MessageKind::Commit,
+            "proposal" => MessageKind::Proposal,
+            _ => MessageKind::Application,
         },
         mls_message: STANDARD.encode(&stored.payload),
         seq: u64::try_from(stored.seq).unwrap_or_default(),
@@ -418,10 +418,10 @@ pub(crate) fn message_dto(stored: StoredMessage) -> Message {
 /// API view of a message received from the owning hub.
 fn sequenced_dto(message: &s2s::SequencedMessage) -> Message {
     Message {
-        kind: if message.kind() == s2s::MessageKind::Commit {
-            MessageKind::Commit
-        } else {
-            MessageKind::Application
+        kind: match message.kind() {
+            s2s::MessageKind::Commit => MessageKind::Commit,
+            s2s::MessageKind::Proposal => MessageKind::Proposal,
+            _ => MessageKind::Application,
         },
         mls_message: STANDARD.encode(&message.payload),
         seq: message.seq,

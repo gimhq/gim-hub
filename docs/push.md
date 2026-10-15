@@ -50,8 +50,9 @@ removed with the device.
 ```
 
 - `v`: payload version, `1`. Clients ignore unknown fields.
-- `type`: the event type. `message` and `welcome` always; `group.member_added` and
-  `group.member_removed` only when the hub sets `GIM_HUB_PUSH_MEMBER_EVENTS=true`.
+- `type`: the event type. `message` (except kind `proposal`, section 4) and `welcome` always;
+  `group.member_added` and `group.member_removed` only when the hub sets
+  `GIM_HUB_PUSH_MEMBER_EVENTS=true`.
 - `gid`, `seq`: the group and per-group sequence number of the message (for `welcome` and
   membership events: of the Commit that produced them).
 - `message_id`: the hub's ID of the stored message at `(gid, seq)`. If the hub does not store that
@@ -168,6 +169,8 @@ Writes a structured log line (target `gim_hub_push::log`) and records the payloa
   (events from before the start are not pushed). For each `message`/`welcome` event (and
   membership events if enabled) addressed to a device that is active and has a registration, it
   queues a push. The sender's own device never gets a `message` event, so it gets no push.
+- MLS Proposals are not pushed: a `message` event of kind `proposal` changes nothing until a Commit
+  covers it, and that Commit (and its membership events) is pushed as usual.
 - Queue: at most one pending push per device; a newer one replaces it. At most
   `GIM_HUB_PUSH_QUEUE_CAPACITY` devices are queued; further pushes are dropped (counted and
   logged). Four workers send concurrently.

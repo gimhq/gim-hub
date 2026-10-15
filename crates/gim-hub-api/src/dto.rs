@@ -485,16 +485,16 @@ pub struct GroupList {
     pub groups: Vec<Group>,
 }
 
-/// Submit an MLS Commit.
+/// Submit an MLS Commit or Proposal.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SubmitCommitRequest {
     /// Sender-chosen idempotency key, unique per sending device and group (1-64 chars).
     #[schema(min_length = 1, max_length = 64, example = json!(CLIENT_ID_EXAMPLE))]
     pub client_id: String,
-    /// MLSMessage carrying the Commit as a PublicMessage (TLS encoding), base64.
+    /// MLSMessage carrying the Commit or Proposal as a PublicMessage (TLS encoding), base64.
     #[schema(content_encoding = "base64")]
     pub mls_message: String,
-    /// MLS Welcome for the devices added by this Commit, base64.
+    /// MLS Welcome for the devices added by this Commit, base64. Not allowed with a Proposal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(content_encoding = "base64")]
     pub welcome: Option<String>,
@@ -509,14 +509,14 @@ pub struct SubmitCommitRequest {
     pub ratchet_tree: Option<String>,
 }
 
-/// An accepted Commit.
+/// An accepted Commit or Proposal.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CommitResult {
-    /// Per-group sequence number of the Commit.
+    /// Per-group sequence number of the Commit or Proposal.
     pub seq: u64,
-    /// Group epoch after the Commit.
+    /// Group epoch after the Commit; for a Proposal, the (unchanged) epoch it was sent in.
     pub epoch: u64,
-    /// True if this exact Commit had already been accepted (nothing was emitted again).
+    /// True if this exact Commit or Proposal had already been accepted (nothing was emitted again).
     pub duplicate: bool,
 }
 
@@ -529,6 +529,7 @@ pub struct CommitResult {
 pub enum MessageKind {
     Commit,
     Application,
+    Proposal,
 }
 
 /// Send an MLS application message.
