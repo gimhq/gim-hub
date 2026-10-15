@@ -1,12 +1,33 @@
 //! Optional per-hub handle directory.
 
-use axum::response::IntoResponse;
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    Json,
+};
+use gim_hub_db::handles::{self, Claim};
 
-use super::not_implemented;
 use crate::{
     auth::AuthDevice,
     dto::{Error, Handle},
+    error::ApiError,
+    state::AppState,
 };
+
+/// `^[a-z0-9_]{3,32}$`.
+fn validate(handle: &str) -> Result<(), ApiError> {
+    let valid = (3..=32).contains(&handle.len())
+        && handle
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    if valid {
+        Ok(())
+    } else {
+        Err(ApiError::ValidationFailed(
+            "handle must be 3-32 characters of a-z, 0-9, _".into(),
+        ))
+    }
+}
 
 #[utoipa::path(
     put,
@@ -25,8 +46,25 @@ the previous one. Re-claiming the caller's own handle is a no-op.",
         (status = 409, description = "Handle belongs to another user (`handle_taken`)", body = Error),
     ),
 )]
-pub async fn put_handle(_auth: AuthDevice) -> impl IntoResponse {
-    not_implemented()
+pub async fn put_handle(
+    auth: AuthDevice,
+    State(state): State<AppState>,
+    Path(handle): Path<String>,
+) -> Result<Json<Handle>, ApiError> {
+    validate(&handle)?;
+    let now = state.clock.now_ms();
+    let (handle_, user_id) = (handle.clone(), auth.user_id.clone());
+    match state
+        .db
+        .write(move |tx| handles::claim(tx, &handle_, &user_id, now))
+        .await?
+    {
+        Claim::Claimed => Ok(Json(Handle {
+            handle,
+            user_id: auth.user_id,
+        })),
+        Claim::Taken => Err(ApiError::HandleTaken),
+    }
 }
 
 #[utoipa::path(
@@ -43,8 +81,25 @@ pub async fn put_handle(_auth: AuthDevice) -> impl IntoResponse {
         (status = 404, description = "Not found (`not_found`)", body = Error),
     ),
 )]
-pub async fn delete_handle(_auth: AuthDevice) -> impl IntoResponse {
-    not_implemented()
+pub async fn delete_handle(
+    auth: AuthDevice,
+    State(state): State<AppState>,
+    Path(handle): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    validate(&handle)?;
+    state
+        .db
+        .write(move |tx| match handles::owner(tx, &handle)? {
+            None => Err(ApiError::NotFound),
+            Some(owner) if owner != auth.user_id => {
+                Err(ApiError::Forbidden("handle belongs to another user".into()))
+            }
+            Some(_) => {
+                handles::release(tx, &handle)?;
+                Ok(StatusCode::NO_CONTENT)
+            }
+        })
+        .await
 }
 
 #[utoipa::path(
@@ -60,6 +115,17 @@ pub async fn delete_handle(_auth: AuthDevice) -> impl IntoResponse {
         (status = 404, description = "Not found (`not_found`)", body = Error),
     ),
 )]
-pub async fn get_handle(_auth: AuthDevice) -> impl IntoResponse {
-    not_implemented()
+pub async fn get_handle(
+    _auth: AuthDevice,
+    State(state): State<AppState>,
+    Path(handle): Path<String>,
+) -> Result<Json<Handle>, ApiError> {
+    validate(&handle)?;
+    let handle_ = handle.clone();
+    let user_id = state
+        .db
+        .read(move |conn| handles::owner(conn, &handle_))
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(Handle { handle, user_id }))
 }

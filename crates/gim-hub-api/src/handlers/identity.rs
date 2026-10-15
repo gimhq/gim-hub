@@ -1,12 +1,56 @@
 //! Users and their self-certifying DeviceLists.
 
-use axum::response::IntoResponse;
+use axum::{
+    extract::{rejection::JsonRejection, Path, State},
+    http::StatusCode,
+    Json,
+};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use gim_hub_db::{
+    events, handles,
+    users::{self, StoredDeviceList},
+};
+use gim_hub_identity::UserId;
 
-use super::not_implemented;
 use crate::{
     auth::AuthDevice,
     dto::{DeviceList, Error, Me, PutDeviceListRequest, User},
+    error::ApiError,
+    state::AppState,
 };
+
+const DEVICE_LIST_UPDATED: &str = "device_list.updated";
+
+/// The body of a JSON request; a body that is not acceptable JSON is 400
+/// `validation_failed` (413 `payload_too_large` past the body limit).
+pub(super) fn json_body<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
+    match body {
+        Ok(Json(value)) => Ok(value),
+        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            Err(ApiError::PayloadTooLarge)
+        }
+        Err(rejection) => Err(ApiError::ValidationFailed(rejection.body_text())),
+    }
+}
+
+/// Decodes a standard base64 field, `None` if it is not valid base64.
+pub(super) fn decode_base64(value: &str) -> Option<Vec<u8>> {
+    STANDARD.decode(value).ok()
+}
+
+fn device_list_dto(list: &StoredDeviceList) -> DeviceList {
+    DeviceList {
+        user_id: list.user_id.clone(),
+        device_list: STANDARD.encode(&list.device_list),
+    }
+}
+
+/// What a DeviceList upload did.
+enum Upload {
+    Created,
+    Replaced { notify: Vec<String> },
+    Unchanged,
+}
 
 #[utoipa::path(
     put,
@@ -27,8 +71,87 @@ re-uploading the identical list (same `seq`, same bytes) is idempotent and retur
         (status = 413, description = "Payload too large (`payload_too_large`)", body = Error),
     ),
 )]
-pub async fn put_device_list() -> impl IntoResponse {
-    not_implemented()
+pub async fn put_device_list(
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+    body: Result<Json<PutDeviceListRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<DeviceList>), ApiError> {
+    let body = json_body(body)?;
+    let invalid =
+        |err: gim_hub_identity::IdentityError| ApiError::InvalidDeviceList(err.to_string());
+    let expected = UserId::parse(&user_id).map_err(invalid)?;
+    let bytes = decode_base64(&body.device_list)
+        .ok_or_else(|| ApiError::InvalidDeviceList("device_list is not valid base64".into()))?;
+    let list = gim_hub_identity::DeviceList::verify(&bytes, &expected).map_err(invalid)?;
+    let seq = i64::try_from(list.seq())
+        .map_err(|_| ApiError::InvalidDeviceList("seq is out of range".into()))?;
+    let stored = StoredDeviceList {
+        user_id: list.user_id().to_string(),
+        root_pubkey: list.root_pubkey().as_bytes().to_vec(),
+        device_list: list.as_bytes().to_vec(),
+        seq,
+        updated_at: state.clock.now_ms(),
+    };
+    let active: Vec<(String, Vec<u8>)> = list
+        .certs()
+        .iter()
+        .map(|cert| {
+            (
+                cert.device_id().to_string(),
+                cert.device_sig_pubkey().as_bytes().to_vec(),
+            )
+        })
+        .collect();
+    let response = device_list_dto(&stored);
+    let payload =
+        serde_json::to_string(&response).map_err(|err| ApiError::Internal(err.to_string()))?;
+
+    let upload = state
+        .db
+        .write(move |tx| {
+            // Ordering per the identity spec ("Ordering and updates"); the
+            // stored list was verified when it was stored.
+            if let Some(current) = users::get_device_list(tx, &stored.user_id)? {
+                if stored.seq < current.seq
+                    || (stored.seq == current.seq && stored.device_list != current.device_list)
+                {
+                    return Err(ApiError::StaleDeviceList);
+                }
+                if stored.seq == current.seq {
+                    return Ok(Upload::Unchanged);
+                }
+            }
+            let created = users::put_device_list(tx, &stored)?;
+            users::set_active_devices(tx, &stored.user_id, &active, stored.updated_at)?;
+            if created {
+                return Ok(Upload::Created);
+            }
+            let notify = users::active_device_ids(tx, &stored.user_id)?;
+            for device_id in &notify {
+                events::append(
+                    tx,
+                    &stored.user_id,
+                    device_id,
+                    DEVICE_LIST_UPDATED,
+                    &payload,
+                    stored.updated_at,
+                )?;
+            }
+            Ok(Upload::Replaced { notify })
+        })
+        .await?;
+
+    let status = match upload {
+        Upload::Created => StatusCode::CREATED,
+        Upload::Replaced { notify } => {
+            for device_id in &notify {
+                state.notifier.notify(&response.user_id, device_id);
+            }
+            StatusCode::OK
+        }
+        Upload::Unchanged => StatusCode::OK,
+    };
+    Ok((status, Json(response)))
 }
 
 #[utoipa::path(
@@ -44,8 +167,17 @@ pub async fn put_device_list() -> impl IntoResponse {
         (status = 404, description = "Not found (`not_found`)", body = Error),
     ),
 )]
-pub async fn get_device_list(_auth: AuthDevice) -> impl IntoResponse {
-    not_implemented()
+pub async fn get_device_list(
+    _auth: AuthDevice,
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+) -> Result<Json<DeviceList>, ApiError> {
+    let list = state
+        .db
+        .read(move |conn| users::get_device_list(conn, &user_id))
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(device_list_dto(&list)))
 }
 
 #[utoipa::path(
@@ -61,8 +193,30 @@ pub async fn get_device_list(_auth: AuthDevice) -> impl IntoResponse {
         (status = 404, description = "Not found (`not_found`)", body = Error),
     ),
 )]
-pub async fn get_user(_auth: AuthDevice) -> impl IntoResponse {
-    not_implemented()
+pub async fn get_user(
+    _auth: AuthDevice,
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+) -> Result<Json<User>, ApiError> {
+    let (list, handle) = state
+        .db
+        .read(move |conn| {
+            let Some(list) = users::get_device_list(conn, &user_id)? else {
+                return Ok::<_, ApiError>((None, None));
+            };
+            Ok((Some(list), handles::handle_of(conn, &user_id)?))
+        })
+        .await?;
+    let list = list.ok_or(ApiError::NotFound)?;
+    let DeviceList {
+        user_id,
+        device_list,
+    } = device_list_dto(&list);
+    Ok(Json(User {
+        user_id,
+        device_list,
+        handle,
+    }))
 }
 
 #[utoipa::path(
@@ -76,6 +230,15 @@ pub async fn get_user(_auth: AuthDevice) -> impl IntoResponse {
         (status = 401, description = "Missing or invalid bearer token (`unauthorized`)", body = Error),
     ),
 )]
-pub async fn get_me(_auth: AuthDevice) -> impl IntoResponse {
-    not_implemented()
+pub async fn get_me(auth: AuthDevice, State(state): State<AppState>) -> Result<Json<Me>, ApiError> {
+    let user_id = auth.user_id.clone();
+    let handle = state
+        .db
+        .read(move |conn| handles::handle_of(conn, &user_id))
+        .await?;
+    Ok(Json(Me {
+        user_id: auth.user_id,
+        device_id: auth.device_id,
+        handle,
+    }))
 }
