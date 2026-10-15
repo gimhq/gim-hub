@@ -4,6 +4,10 @@
 //!
 //! The client endpoints live in `gim-hub-api` (`handlers/hosting.rs`); they
 //! store records through `gim_hub_db::hosting` and call [`Hosting::publish`].
+//!
+//! Every code path that stores a record superseding the stored one calls
+//! [`Hosting::superseded`] in its write transaction, which runs the
+//! [`HubSetHook`] when the listed hubs changed (docs/multihoming.md §4.3).
 
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -16,14 +20,14 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex, Weak,
+        Arc, Mutex, RwLock, Weak,
     },
     time::Duration,
 };
 
 use gim_hub_db::{
     hosting::{self as store, StoredHostingRecord},
-    Db, DbError,
+    Db, DbError, Transaction,
 };
 use gim_hub_identity::{HostingEntry, HostingRecord, HubId, IdentityError, UserId};
 use gim_hub_proto::{
@@ -80,6 +84,11 @@ pub enum Purpose {
     /// does not list the caller, it is refreshed once, asking the caller
     /// first.
     Authorize(HubId),
+    /// A peer refused an outbox entry with `UNAUTHORIZED` (federation.md
+    /// §7.4): a remote record is re-resolved bypassing the fresh cache; a
+    /// local user's record is republished to the DHT, where the peer's
+    /// refresh finds it.
+    Refresh,
 }
 
 /// Hosting settings, from [`FederationConfig`].
@@ -106,6 +115,53 @@ impl Default for HostingSettings {
     }
 }
 
+/// A change of the hubs listed for a user, seen in the write transaction
+/// that stores `record` over `previous` (docs/multihoming.md §4.3).
+#[derive(Debug, Clone, Copy)]
+pub struct HubSetChange<'a> {
+    pub user_id: &'a str,
+    /// The record just stored.
+    pub record: &'a HostingRecord,
+    /// The stored record it superseded.
+    pub previous: &'a HostingRecord,
+    /// Hubs listed by `record` and not by `previous`, sorted; may include
+    /// this hub.
+    pub added: &'a [HubId],
+    /// Hubs listed by `previous` and not by `record`, sorted; may include
+    /// this hub.
+    pub removed: &'a [HubId],
+    /// `user_id` is a local user of this hub (else `record` is a cached
+    /// record of a remote user).
+    pub local: bool,
+    /// `local` and `record` lists this hub.
+    pub hosted: bool,
+    /// Time of the store, unix ms.
+    pub now: i64,
+}
+
+/// The hub-set diff hook (docs/multihoming.md §4.3, §4.4, §12): called
+/// inside the write transaction that stores a record superseding the stored
+/// one, when the set of listed hubs changed (`added` or `removed` not
+/// empty). Paths: the client `PUT .../hosting-record`, `NotifyHostingRecord`
+/// (local users and the remote cache) and a resolution that stores a newer
+/// record of a remote user ([`Hosting::resolve_for`]). Priority-only changes
+/// and the first record of a user do not call it.
+///
+/// The hook may queue outbox entries in `tx` (they commit with the record);
+/// an error rolls the record store back. Install it with
+/// [`Hosting::set_hub_set_hook`].
+pub trait HubSetHook: Send + Sync + 'static {
+    fn hub_set_changed(
+        &self,
+        tx: &Transaction<'_>,
+        change: &HubSetChange<'_>,
+    ) -> Result<(), DbError>;
+}
+
+/// Called with every record of a local user this hub stores over a
+/// different one (see [`Hosting::set_local_record_listener`]).
+pub type LocalRecordListener = Arc<dyn Fn(&HostingRecord) + Send + Sync>;
+
 /// Hosting records of this hub. Cheap to clone.
 #[derive(Clone)]
 pub struct Hosting {
@@ -121,6 +177,8 @@ struct Inner {
     now: Now,
     flights: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     publish_failures: AtomicU64,
+    hub_set_hook: RwLock<Option<Arc<dyn HubSetHook>>>,
+    local_record_listener: RwLock<Option<LocalRecordListener>>,
 }
 
 impl std::fmt::Debug for Hosting {
@@ -152,6 +210,8 @@ impl Hosting {
                 now,
                 flights: Mutex::default(),
                 publish_failures: AtomicU64::new(0),
+                hub_set_hook: RwLock::default(),
+                local_record_listener: RwLock::default(),
             }),
         }
     }
@@ -170,6 +230,117 @@ impl Hosting {
 
     pub fn hub_id(&self) -> &HubId {
         &self.inner.hub_id
+    }
+
+    pub(crate) fn db(&self) -> &Db {
+        &self.inner.db
+    }
+
+    /// Installs the [`HubSetHook`], replacing any previous one.
+    pub fn set_hub_set_hook(&self, hook: Arc<dyn HubSetHook>) {
+        *self.inner.hub_set_hook.write().expect("hook lock") = Some(hook);
+    }
+
+    /// Installs the listener for stored records of local users, replacing
+    /// any previous one: it sees every record [`Self::publish`] gets (a new
+    /// record listing this hub, including a user's first) and every
+    /// superseding local record passed to [`Self::superseded`] (including
+    /// one that removes this hub). The push gate keeps its view current with
+    /// it (docs/multihoming.md §8).
+    pub fn set_local_record_listener(&self, listener: LocalRecordListener) {
+        *self
+            .inner
+            .local_record_listener
+            .write()
+            .expect("listener lock") = Some(listener);
+    }
+
+    fn local_record_stored(&self, record: &HostingRecord) {
+        let listener = self
+            .inner
+            .local_record_listener
+            .read()
+            .expect("listener lock")
+            .clone();
+        if let Some(listener) = listener {
+            listener(record);
+        }
+    }
+
+    /// To be called in the write transaction `tx` that stored `record` of
+    /// `user_id` over `previous` (both verified): runs the [`HubSetHook`]
+    /// when the listed hubs changed. `local`: the user is a local user.
+    pub fn superseded(
+        &self,
+        tx: &Transaction<'_>,
+        previous: &HostingRecord,
+        record: &HostingRecord,
+        local: bool,
+        now: i64,
+    ) -> Result<(), DbError> {
+        if local {
+            self.local_record_stored(record);
+        }
+        let hook = self.inner.hub_set_hook.read().expect("hook lock").clone();
+        let Some(hook) = hook else {
+            return Ok(());
+        };
+        let (added, removed) = hub_diff(previous, record);
+        if added.is_empty() && removed.is_empty() {
+            return Ok(());
+        }
+        hook.hub_set_changed(
+            tx,
+            &HubSetChange {
+                user_id: record.user_id().as_str(),
+                record,
+                previous,
+                added: &added,
+                removed: &removed,
+                local,
+                hosted: local && record.entry(self.hub_id()).is_some(),
+                now,
+            },
+        )
+    }
+
+    /// Stores verified `record` of a remote user in the cache with the seq
+    /// rules (fed §4.5 step 5) in `tx`: a superseding record replaces the
+    /// cached one (running [`Self::superseded`]), the identical record
+    /// refreshes `fetched_at`, an older or conflicting one is ignored. Does
+    /// nothing for a local user. Returns whether `record` was stored.
+    pub fn store_remote_in_tx(
+        &self,
+        tx: &Transaction<'_>,
+        record: &HostingRecord,
+        now: i64,
+    ) -> Result<bool, DbError> {
+        let Ok(stored) = stored_record(record, false, now) else {
+            return Ok(false);
+        };
+        if store::is_local(tx, &stored.user_id)? {
+            return Ok(false);
+        }
+        let Some(current) = store::get(tx, &stored.user_id)? else {
+            store::put(tx, &stored)?;
+            return Ok(true);
+        };
+        if current.record == stored.record {
+            store::touch_fetched(tx, &stored.user_id, stored.seq, now)?;
+            return Ok(false);
+        }
+        match decode_stored(&current.record) {
+            Ok(previous) if record.supersedes(&previous) != Ok(true) => Ok(false),
+            Ok(previous) => {
+                store::put(tx, &stored)?;
+                self.superseded(tx, &previous, record, false, now)?;
+                Ok(true)
+            }
+            Err(_) => {
+                store::put(tx, &stored)?;
+                Ok(true)
+            }
+        }
     }
 
     /// DHT puts that failed so far (retried on the next republish).
@@ -286,14 +457,20 @@ impl Hosting {
         let valid_cached = cached.clone().filter(|record| unexpired(record, now));
         // 1. Local user: no network.
         if local {
+            if let (Purpose::Refresh, Some(record)) = (purpose, &valid_cached) {
+                self.publish(record.clone());
+            }
             return valid_cached.ok_or(HostingError::NotFound);
         }
-        // 2. Fresh cache, unless it does not list the authorizing caller.
+        // 2. Fresh cache, unless it does not list the authorizing caller or
+        // is being refreshed.
         let caller = match purpose {
-            Purpose::Lookup => None,
+            Purpose::Lookup | Purpose::Refresh => None,
             Purpose::Authorize(caller) => Some(caller),
         };
-        if let (Some(row), Some(record)) = (&row, &valid_cached) {
+        if let (Some(row), Some(record), false) =
+            (&row, &valid_cached, *purpose == Purpose::Refresh)
+        {
             let age = now.saturating_sub(row.fetched_at);
             let fresh =
                 u128::try_from(age).unwrap_or(0) < self.inner.settings.cache_ttl.as_millis();
@@ -326,9 +503,9 @@ impl Hosting {
                 Err(err) => unavailable = Some(format!("{hub}: {err}")),
             }
         }
-        // 4. The DHT.
-        if found.is_empty() {
-            found = self.fetch_from_dht(user_id, now).await;
+        // 4. The DHT (always on a refresh: the listed hubs may be stale).
+        if found.is_empty() || *purpose == Purpose::Refresh {
+            found.extend(self.fetch_from_dht(user_id, now).await);
         }
 
         // A record from the network never replaces a cached one with a
@@ -349,31 +526,12 @@ impl Hosting {
         // 5. Store the winner, or note that the network confirmed the cache.
         let confirmed = found.iter().any(|record| record == &winner);
         if confirmed {
-            let Ok(stored) = stored_record(&winner, false, now) else {
-                return Ok(winner);
-            };
-            let record = winner.clone();
+            // Re-checked in the transaction: the user may have become local,
+            // or another record may have been stored.
+            let (hosting, record) = (self.clone(), winner.clone());
             self.inner
                 .db
-                .write(move |tx| {
-                    // Re-checked in the transaction: the user may have become
-                    // local, or another record may have been stored.
-                    if store::is_local(tx, &stored.user_id)? {
-                        return Ok(());
-                    }
-                    match store::get(tx, &stored.user_id)? {
-                        Some(current) if current.record == stored.record => {
-                            store::touch_fetched(tx, &stored.user_id, stored.seq, now)
-                        }
-                        Some(current)
-                            if decode_stored(&current.record)
-                                .is_ok_and(|current| record.supersedes(&current) != Ok(true)) =>
-                        {
-                            Ok(())
-                        }
-                        _ => store::put(tx, &stored),
-                    }
-                })
+                .write(move |tx| hosting.store_remote_in_tx(tx, &record, now))
                 .await?;
         }
         Ok(winner)
@@ -430,9 +588,12 @@ impl Hosting {
             .collect()
     }
 
-    /// Publishes `record` to the DHT in the background (no-op without
-    /// federation); failures are retried by the republish task.
+    /// Publishes `record`, a just stored record of a local user listing
+    /// this hub, to the DHT in the background (no DHT without federation);
+    /// failures are retried by the republish task. Passes it to the local
+    /// record listener first.
     pub fn publish(&self, record: HostingRecord) {
+        self.local_record_stored(&record);
         if self.inner.dht.is_none() {
             return;
         }
@@ -616,6 +777,33 @@ pub fn stored_record(
         published_at: None,
         updated_at: now,
     })
+}
+
+/// `(hub_id, priority)` of the entries of `record`, sorted by `hub_id`.
+pub fn entries(record: &HostingRecord) -> Vec<(HubId, u8)> {
+    let mut entries: Vec<(HubId, u8)> = record
+        .hubs()
+        .iter()
+        .map(|entry| (entry.hub_id().clone(), entry.priority()))
+        .collect();
+    entries.sort();
+    entries
+}
+
+/// Hubs listed by `record` and not by `previous`, and the reverse; sorted.
+pub fn hub_diff(previous: &HostingRecord, record: &HostingRecord) -> (Vec<HubId>, Vec<HubId>) {
+    let ids = |record: &HostingRecord| -> std::collections::BTreeSet<HubId> {
+        record
+            .hubs()
+            .iter()
+            .map(|entry| entry.hub_id().clone())
+            .collect()
+    };
+    let (before, after) = (ids(previous), ids(record));
+    (
+        after.difference(&before).cloned().collect(),
+        before.difference(&after).cloned().collect(),
+    )
 }
 
 /// CBOR of a `HostingEntry`: `[hub_root_pubkey, priority, hub_sig]`.

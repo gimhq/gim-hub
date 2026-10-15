@@ -54,6 +54,10 @@ pub struct FederationConfig {
     pub outbox_max_bytes_per_peer: u64,
     /// `GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS`: maximum retry backoff per peer.
     pub outbox_backoff_max_seconds: u32,
+    /// `GIM_HUB_PUSH_FAILOVER_SECONDS`: a co-host without a successful ping
+    /// or S2S exchange for this long is down for the push rule
+    /// (docs/multihoming.md §8, §10).
+    pub push_failover_seconds: u32,
 }
 
 /// Invalid configuration value.
@@ -144,6 +148,7 @@ impl FederationConfig {
             parse(get, "GIM_HUB_OUTBOX_MAX_BYTES_PER_PEER", 1_073_741_824, 1)?;
         config.outbox_backoff_max_seconds =
             parse(get, "GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS", 300, 1)?;
+        config.push_failover_seconds = parse(get, "GIM_HUB_PUSH_FAILOVER_SECONDS", 30, 1)?;
         Ok(config)
     }
 
@@ -166,6 +171,7 @@ impl FederationConfig {
             outbox_max_entries_per_peer: 100_000,
             outbox_max_bytes_per_peer: 1_073_741_824,
             outbox_backoff_max_seconds: 300,
+            push_failover_seconds: 30,
         }
     }
 
@@ -307,6 +313,7 @@ mod tests {
         assert_eq!(config.outbox_max_entries_per_peer, 100_000);
         assert_eq!(config.outbox_max_bytes_per_peer, 1_073_741_824);
         assert_eq!(config.outbox_backoff_max_seconds, 300);
+        assert_eq!(config.push_failover_seconds, 30);
         assert_eq!(
             config.runtime_key_path(),
             PathBuf::from("/data/runtime_key")
@@ -328,6 +335,7 @@ mod tests {
             ("GIM_HUB_RUNTIME_CERT_DAYS", "2"),
             ("GIM_HUB_S2S_TIMEOUT_SECONDS", "3"),
             ("GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS", "5"),
+            ("GIM_HUB_PUSH_FAILOVER_SECONDS", "2"),
         ])
         .unwrap();
         assert_eq!(config.listen.len(), 2);
@@ -337,6 +345,7 @@ mod tests {
         assert_eq!(config.runtime_cert_days, 2);
         assert_eq!(config.s2s_timeout, Duration::from_secs(3));
         assert_eq!(config.outbox_backoff_max_seconds, 5);
+        assert_eq!(config.push_failover_seconds, 2);
     }
 
     #[test]
@@ -350,6 +359,7 @@ mod tests {
             ("GIM_HUB_S2S_TIMEOUT_SECONDS", "0"),
             ("GIM_HUB_DHT_REPUBLISH_HOURS", "-1"),
             ("GIM_HUB_OUTBOX_MAX_BYTES_PER_PEER", "big"),
+            ("GIM_HUB_PUSH_FAILOVER_SECONDS", "0"),
             ("GIM_HUB_P2P_PSK_FILE", "/nonexistent/swarm.key"),
         ];
         for (name, value) in cases {

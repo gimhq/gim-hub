@@ -170,6 +170,7 @@ impl FederationService {
             bootstrap: config.bootstrap.clone(),
             timeout: config.s2s_timeout,
             psk: config.psk,
+            failover: Duration::from_secs(config.push_failover_seconds.into()),
         };
         let (transport, mut inbound) =
             Transport::start(transport_config, hub_id, &runtime, policy.clone()).await?;
@@ -442,6 +443,18 @@ mod tests {
         .await;
         assert_eq!(code(&missing), ErrorCode::Invalid);
         assert_eq!(missing.request_id, "r-2");
+    }
+
+    #[test]
+    fn multihoming_ops_are_implemented() {
+        // NotifyHostingRecord is registered by ops::hosting_record; the
+        // bootstrap ops by the group service.
+        for op in [
+            Op::SeedReplica(Default::default()),
+            Op::CopyPendingWelcomes(Default::default()),
+        ] {
+            assert!(crate::ops::GROUP_OPS.contains(&OpKind::of(&op)));
+        }
     }
 
     #[tokio::test]

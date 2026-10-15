@@ -26,6 +26,8 @@ const BATCH: u32 = 500;
 pub struct DispatcherSettings {
     /// Also push membership events.
     pub member_events: bool,
+    /// Send minimal wake-up payloads (see [`PushNotification::minimal`]).
+    pub minimal: bool,
     /// Most devices with a queued push.
     pub queue_capacity: usize,
     /// How often the event path is tailed.
@@ -42,6 +44,7 @@ impl Default for DispatcherSettings {
     fn default() -> Self {
         Self {
             member_events: false,
+            minimal: false,
             queue_capacity: 10_000,
             poll_interval: Duration::from_millis(500),
             workers: 4,
@@ -55,6 +58,7 @@ impl From<&PushConfig> for DispatcherSettings {
     fn from(config: &PushConfig) -> Self {
         Self {
             member_events: config.member_events,
+            minimal: config.minimal,
             queue_capacity: config.queue_capacity,
             ..Self::default()
         }
@@ -238,11 +242,14 @@ impl Dispatcher {
         let mut queued = 0;
         loop {
             let after = *cursor;
-            let member_events = self.inner.settings.member_events;
+            let (member_events, minimal) = (
+                self.inner.settings.member_events,
+                self.inner.settings.minimal,
+            );
             let (last, read, jobs) = self
                 .inner
                 .db
-                .read(move |conn| collect_jobs(conn, after, member_events))
+                .read(move |conn| collect_jobs(conn, after, member_events, minimal))
                 .await?;
             *cursor = last;
             for job in jobs {
@@ -401,6 +408,7 @@ fn collect_jobs(
     conn: &Connection,
     after: i64,
     member_events: bool,
+    minimal: bool,
 ) -> Result<(i64, usize, Vec<Job>), DbError> {
     let events = events::list_all_after(conn, after, BATCH)?;
     let last = events.last().map_or(after, |e| e.event.id);
@@ -412,11 +420,15 @@ fn collect_jobs(
         if !kind.is_alert() && !member_events {
             continue;
         }
+        // MLS Proposals change nothing until a Commit covers them.
+        if matches!(kind, PushKind::Message) && is_proposal(&addressed.event.payload) {
+            continue;
+        }
         let Some(registration) = push::get_active(conn, &addressed.user_id, &addressed.device_id)?
         else {
             continue;
         };
-        match notification(conn, kind, &addressed.event.payload)? {
+        match notification(conn, kind, &addressed.event.payload, minimal)? {
             Some(notification) => jobs.push(Job {
                 registration,
                 notification,
@@ -431,23 +443,22 @@ fn collect_jobs(
     Ok((last, events.len(), jobs))
 }
 
+/// Whether a `message` event carries an MLS Proposal.
+fn is_proposal(payload: &str) -> bool {
+    serde_json::from_str::<Value>(payload).is_ok_and(|data| data["kind"] == "proposal")
+}
+
 /// The notification for an event's data.
 fn notification(
     conn: &Connection,
     kind: PushKind,
     payload: &str,
+    minimal: bool,
 ) -> Result<Option<PushNotification>, DbError> {
     let Ok(data) = serde_json::from_str::<Value>(payload) else {
         return Ok(None);
     };
     let (Some(gid), Some(seq)) = (data["gid"].as_str(), data["seq"].as_u64()) else {
-        return Ok(None);
-    };
-    let sender = match kind {
-        PushKind::Message | PushKind::Welcome => data["sender_user_id"].as_str(),
-        PushKind::MemberAdded | PushKind::MemberRemoved => data["by_user_id"].as_str(),
-    };
-    let Some(sender) = sender else {
         return Ok(None);
     };
     let mls_message = match kind {
@@ -456,18 +467,26 @@ fn notification(
         PushKind::Welcome if data["ratchet_tree"].is_null() => data["welcome"].as_str(),
         _ => None,
     };
-    let message_id = match push::message_id_at(conn, gid, i64::try_from(seq).unwrap_or(i64::MAX))? {
-        Some(id) => id,
-        None => fallback_message_id(gid, seq),
-    };
+    let message_id = message_id(conn, gid, seq)?;
     Ok(Some(PushNotification {
         kind,
         gid: gid.to_owned(),
         seq,
         message_id,
-        sender_user_id: sender.to_owned(),
         mls_message: mls_message.map(str::to_owned),
+        minimal,
     }))
+}
+
+/// The push `message_id` / `collapse_id` of `(gid, seq)`: the stored
+/// message's ID, else a deterministic stand-in.
+pub fn message_id(conn: &Connection, gid: &str, seq: u64) -> Result<String, DbError> {
+    Ok(
+        match push::message_id_at(conn, gid, i64::try_from(seq).unwrap_or(i64::MAX))? {
+            Some(id) => id,
+            None => fallback_message_id(gid, seq),
+        },
+    )
 }
 
 /// Deterministic stand-in when `(gid, seq)` is not stored here.
@@ -564,6 +583,8 @@ mod tests {
                         token: format!("tok-{device_id}"),
                         app_id: None,
                         sandbox: false,
+                        p256dh: None,
+                        auth: None,
                         updated_at: 0,
                     },
                 )?;
@@ -619,6 +640,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proposals_are_not_pushed() {
+        let db = db_with_devices(&[("u2", "d1", "fcm")]).await;
+        let fake = Fake::new("fcm", Vec::new());
+        let d = dispatcher(&db, vec![fake.clone()], DispatcherSettings::default());
+        let mut proposal = message(1);
+        proposal["kind"] = "proposal".into();
+        append(&db, "d1", "message", proposal).await;
+        assert_eq!(d.poll_once().await.unwrap(), 0);
+        let mut commit = message(2);
+        commit["kind"] = "commit".into();
+        append(&db, "d1", "message", commit).await;
+        assert_eq!(d.poll_once().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
     async fn member_events_are_opt_in_and_welcomes_inline_without_tree() {
         let db = db_with_devices(&[("u2", "d1", "fcm")]).await;
         let member = serde_json::json!({
@@ -640,7 +676,11 @@ mod tests {
         assert_eq!(on.poll_once().await.unwrap(), 1);
         on.run_pending().await;
         assert_eq!(fake.sent()[0].1.kind, PushKind::MemberAdded);
-        assert_eq!(fake.sent()[0].1.sender_user_id, "u1");
+        assert!(fake.sent()[0]
+            .1
+            .payload(true)
+            .get("sender_user_id")
+            .is_none());
 
         let welcome = serde_json::json!({
             "gid": "g1", "seq": 3, "sender_user_id": "u1", "sender_device_id": "d1",
@@ -657,6 +697,30 @@ mod tests {
         let last = fake.sent().pop().unwrap().1;
         assert_eq!(last.kind, PushKind::Welcome);
         assert_eq!(last.mls_message, None);
+    }
+
+    #[tokio::test]
+    async fn minimal_mode_sends_wake_ups() {
+        let db = db_with_devices(&[("u2", "d1", "fcm")]).await;
+        let fake = Fake::new("fcm", Vec::new());
+        let d = dispatcher(
+            &db,
+            vec![fake.clone()],
+            DispatcherSettings {
+                minimal: true,
+                ..DispatcherSettings::default()
+            },
+        );
+        append(&db, "d1", "message", message(1)).await;
+        d.poll_once().await.unwrap();
+        d.run_pending().await;
+        let sent = fake.sent().pop().unwrap().1;
+        assert!(sent.minimal);
+        assert_eq!(sent.kind, PushKind::Message);
+        assert_eq!(
+            sent.payload(true),
+            serde_json::json!({ "v": 1, "type": "wake", "collapse_id": sent.message_id }),
+        );
     }
 
     #[tokio::test]

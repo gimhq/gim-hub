@@ -11,8 +11,8 @@ use gim_hub_api::{AppState, Clock, Config, HubIdentity};
 use gim_hub_db::Db;
 use gim_hub_push::{Dispatcher, DispatcherSettings, PushLog};
 use gim_hub_s2s::{
-    FederationConfig, FederationService, GroupService, GroupSource, Hosting, HostingSettings,
-    Outbox, OutboxConfig,
+    ops::hosting_record::HostingRecordService, FederationConfig, FederationService, GroupService,
+    GroupSource, Hosting, HostingSettings, Outbox, OutboxConfig, PushGate,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -36,10 +36,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             return Ok(());
         }
+        Some("version" | "--version") => {
+            println!(
+                "gim-hub {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                option_env!("GIM_HUB_BUILD_REV").unwrap_or("unknown")
+            );
+            return Ok(());
+        }
         Some(other) => {
-            return Err(
-                format!("unknown command {other:?}; usage: gim-hub [healthcheck|hub-id]").into(),
+            return Err(format!(
+                "unknown command {other:?}; usage: gim-hub [healthcheck|hub-id|version]"
             )
+            .into())
         }
     }
 
@@ -62,6 +71,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => (None, None),
     };
+    let push_gate = match &federation {
+        Some(service) => Some(install_push_gate(&state, service).await),
+        None => None,
+    };
     // Registered last: the handlers keep a copy of the final state.
     let _ops = federation
         .as_ref()
@@ -71,15 +84,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(listen = %state.config.listen, "gim-hub listening");
 
     let pruning = tokio::spawn(prune_periodically(state.clone()));
-    axum::serve(listener, gim_hub_api::router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        gim_hub_api::router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     pruning.abort();
     for task in push {
         task.abort();
     }
     if let Some(republish) = republish {
         republish.abort();
+    }
+    if let Some(push_gate) = push_gate {
+        push_gate.abort();
     }
     if let Some(outbox) = outbox {
         outbox.shutdown();
@@ -148,8 +167,6 @@ fn enable_federation(
     service: &FederationService,
     config: &FederationConfig,
 ) -> (Option<tokio::task::JoinHandle<()>>, Outbox) {
-    let outbox = start_outbox(config, state, service);
-    state.outbox = Arc::new(outbox.clone());
     state.federation = Arc::new(service.clone());
     state.hosting = Hosting::new(
         state.db.clone(),
@@ -160,6 +177,8 @@ fn enable_federation(
         state.clock.as_now(),
     );
     state.hosting.register(service);
+    let outbox = start_outbox(config, state, service);
+    state.outbox = Arc::new(outbox.clone());
     state.device_lists = state.device_lists.with_federation(
         state.federation.clone(),
         state.hosting.clone(),
@@ -168,23 +187,50 @@ fn enable_federation(
     (state.hosting.spawn_republisher(), outbox)
 }
 
+/// Installs the multi-homing push gate (docs/multihoming.md §8) on the push
+/// dispatcher. Stored records of local users update its view at once; the
+/// returned task reloads the view and keeps the co-host connections current.
+async fn install_push_gate(
+    state: &AppState,
+    service: &FederationService,
+) -> tokio::task::JoinHandle<()> {
+    let (gate, task) =
+        PushGate::start(state.db.clone(), service.transport(), state.clock.as_now()).await;
+    let listener = gate.clone();
+    state
+        .hosting
+        .set_local_record_listener(Arc::new(move |record| listener.set_record(record)));
+    state.push.set_gate(Arc::new(move |user_id, _device_id| {
+        gate.should_push(user_id)
+    }));
+    task
+}
+
 /// Registers the remote identity ops (`GetDeviceList`, `NotifyDeviceList`,
-/// `ClaimKeyPackage`) and the group ops (`SubmitCommit`, `SubmitMessage`,
-/// `Deliver`, `DeliverWelcome`, `FetchLog`) with handlers on `state`.
-/// Returns the claim and group handlers, which must be kept alive.
+/// `ClaimKeyPackage`), the group ops (`SubmitCommit`, `SubmitMessage`,
+/// `Deliver`, `DeliverWelcome`, `FetchLog`, `SeedReplica`,
+/// `CopyPendingWelcomes`, plus the replica bootstrap hub-set hook) and
+/// `NotifyHostingRecord` with handlers on `state`. Returns the claim, group and hosting record
+/// handlers, which must be kept alive.
 fn register_ops(
     state: &AppState,
     service: &FederationService,
-) -> (Arc<gim_hub_s2s::ClaimService>, Arc<GroupService>) {
+) -> (
+    Arc<gim_hub_s2s::ClaimService>,
+    Arc<GroupService>,
+    Arc<HostingRecordService>,
+) {
     gim_hub_api::handlers::register_device_list_ops(state, service);
     (
         gim_hub_api::handlers::register_claim_op(state, service),
         gim_hub_api::handlers::register_group_ops(state, service),
+        gim_hub_api::handlers::register_hosting_record_op(state, service),
     )
 }
 
 /// Starts the S2S outbox worker, sending through `federation`. Entries are
-/// built from the group log and the `users` table ([`GroupSource`]).
+/// built from the group log and the `users` table ([`GroupSource`]); an
+/// `UNAUTHORIZED` refreshes hosting records through `state.hosting`.
 fn start_outbox(
     config: &FederationConfig,
     state: &AppState,
@@ -193,23 +239,26 @@ fn start_outbox(
     let outbox = Outbox::new(
         state.db.clone(),
         Arc::new(federation.clone()),
-        Arc::new(GroupSource::new(state.hub.hub_id().clone())),
+        Arc::new(GroupSource::new(state.hub.hub_id().clone()).with_hosting(state.hosting.clone())),
         OutboxConfig::from(config),
     );
     outbox.start(Some(federation.transport().subscribe()));
     outbox
 }
 
-/// Deletes events older than the retention window and expired link bundles,
-/// expires hosting records and emits `hosting_record.expiring`, now and then
-/// hourly.
+/// Deletes events and detached replicas older than the retention window and
+/// expired link bundles, expires hosting records and emits `hosting_record.expiring`, and purges
+/// users removed longer than `GIM_HUB_UNHOSTED_GRACE_HOURS` ago, now and
+/// then hourly.
 async fn prune_periodically(state: AppState) {
     let mut interval = tokio::time::interval(PRUNE_INTERVAL);
     loop {
         interval.tick().await;
         match prune(&state).await {
-            Ok((0, 0)) => {}
-            Ok((events, link_bundles)) => tracing::info!(events, link_bundles, "pruned"),
+            Ok((0, 0, 0)) => {}
+            Ok((events, link_bundles, replicas)) => {
+                tracing::info!(events, link_bundles, replicas, "pruned")
+            }
             Err(err) => tracing::error!(%err, "pruning failed"),
         }
         match gim_hub_api::handlers::prune_remote_claims(&state).await {
@@ -224,11 +273,17 @@ async fn prune_periodically(state: AppState) {
             }
             Err(err) => tracing::error!(%err, "hosting record check failed"),
         }
+        match gim_hub_api::handlers::purge_removed_users(&state).await {
+            Ok(0) => {}
+            Ok(users) => tracing::info!(users, "removed users purged"),
+            Err(err) => tracing::error!(%err, "purging removed users failed"),
+        }
     }
 }
 
-/// Runs one pruning pass; returns the deleted events and link bundles.
-async fn prune(state: &AppState) -> Result<(usize, usize), gim_hub_db::DbError> {
+/// Runs one pruning pass; returns the deleted events, link bundles and
+/// detached replicas (docs/federation.md §5.4).
+async fn prune(state: &AppState) -> Result<(usize, usize, usize), gim_hub_db::DbError> {
     let now = state.clock.now_ms();
     let cutoff = now - i64::from(state.config.event_retention_days) * DAY_MS;
     state
@@ -237,6 +292,7 @@ async fn prune(state: &AppState) -> Result<(usize, usize), gim_hub_db::DbError> 
             Ok((
                 gim_hub_db::events::prune_before(tx, cutoff)?,
                 gim_hub_db::links::prune_expired(tx, now)?,
+                gim_hub_db::groups::delete_detached_replicas(tx, cutoff)?,
             ))
         })
         .await
@@ -391,8 +447,43 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(prune(&hub.state).await.unwrap(), (0, 1));
-        assert_eq!(prune(&hub.state).await.unwrap(), (0, 0));
+        assert_eq!(prune(&hub.state).await.unwrap(), (0, 1, 0));
+        assert_eq!(prune(&hub.state).await.unwrap(), (0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn prune_deletes_detached_replicas_past_retention() {
+        let hub = TestHub::new();
+        let now = hub.state.clock.now_ms();
+        let retention = i64::from(hub.state.config.event_retention_days) * DAY_MS;
+        hub.state
+            .db
+            .write(move |tx| {
+                for gid in ["h2/old", "h2/recent"] {
+                    let group = gim_hub_db::groups::Group {
+                        gid: gid.into(),
+                        kind: "group".into(),
+                        epoch: 0,
+                        last_seq: 0,
+                        created_by_user_id: "u".into(),
+                        created_by_device_id: "d".into(),
+                        created_at: 0,
+                    };
+                    gim_hub_db::groups::create_replica(tx, &group, &[], now)?;
+                }
+                gim_hub_db::groups::set_detached(tx, "h2/old", Some(now - retention - 1))?;
+                gim_hub_db::groups::set_detached(tx, "h2/recent", Some(now - retention + 60_000))
+            })
+            .await
+            .unwrap();
+        assert_eq!(prune(&hub.state).await.unwrap(), (0, 0, 1));
+        let left = |gid: &'static str| {
+            hub.state
+                .db
+                .read(move |conn| gim_hub_db::groups::get(conn, gid))
+        };
+        assert!(left("h2/old").await.unwrap().is_none());
+        assert!(left("h2/recent").await.unwrap().is_some());
     }
 
     #[tokio::test]
