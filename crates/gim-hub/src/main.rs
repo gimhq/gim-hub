@@ -2,8 +2,7 @@
 
 use std::net::SocketAddr;
 
-use axum::{routing::get, Json, Router};
-use serde_json::{json, Value};
+use axum::Router;
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
@@ -30,11 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn router() -> Router {
-    Router::new().route("/healthz", get(healthz))
-}
-
-async fn healthz() -> Json<Value> {
-    Json(json!({ "status": "ok", "version": env!("CARGO_PKG_VERSION") }))
+    gim_hub_api::router()
 }
 
 async fn shutdown_signal() {
@@ -74,6 +69,7 @@ mod tests {
         body::{to_bytes, Body},
         http::{Request, StatusCode},
     };
+    use serde_json::{json, Value};
     use tower::ServiceExt;
 
     use super::*;
