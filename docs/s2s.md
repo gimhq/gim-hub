@@ -153,8 +153,8 @@ Notes:
 - `FetchLog` returns messages with `seq >= from_seq`, at most `limit` (the owning hub may cap
   lower). Continue with `from_seq = next_seq` until `complete = true`.
 - The multi-homing operations (`NotifyHostingRecord`, `SeedReplica`, `CopyPendingWelcomes`) are
-  specified in [`multihoming.md`](multihoming.md) §4.2-§4.4. Multi-homing (H4), implementation in
-  progress: until it lands, a hub answers them with `INTERNAL` ("not implemented").
+  specified in [`multihoming.md`](multihoming.md) §4.2-§4.4. All three are served with
+  federation.
 
 ## Error codes
 

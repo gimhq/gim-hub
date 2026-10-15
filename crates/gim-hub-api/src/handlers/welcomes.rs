@@ -7,7 +7,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use gim_hub_db::{events, groups, users, welcomes};
-use gim_hub_proto::s2s::DeliverWelcomeRequest;
+use gim_hub_proto::s2s::{CopyPendingWelcomesRequest, DeliverWelcomeRequest};
 use serde_json::{json, Value};
 
 use crate::{
@@ -191,6 +191,62 @@ pub(crate) async fn deliver_welcome(
         .await?;
     for (user_id, device_id) in &wake {
         state.notifier.notify(user_id, device_id);
+    }
+    Ok(())
+}
+
+/// Stores the pending Welcomes of a hosted user copied by a co-host
+/// (multihoming.md §4.4): for each item whose device is an active device
+/// here and whose payload is a JSON object, the pending Welcome and the
+/// `welcome` event, deduplicated by `(message_id, user_id, device_id)`. The
+/// replica is not needed: it arrives with `SeedReplica` from the owner.
+pub(crate) async fn copy_pending_welcomes(
+    state: &AppState,
+    request: CopyPendingWelcomesRequest,
+) -> Result<(), ApiError> {
+    let now = state.clock.now_ms();
+    let user_id = request.user_id.clone();
+    let wake = state
+        .db
+        .write(move |tx| {
+            let user_id = &request.user_id;
+            let active = users::active_device_ids(tx, user_id)?;
+            let mut wake = Vec::new();
+            for welcome in &request.welcomes {
+                let object = serde_json::from_str::<Value>(&welcome.payload_json)
+                    .is_ok_and(|payload| payload.is_object());
+                if !object
+                    || welcome.message_id.is_empty()
+                    || welcome.gid.is_empty()
+                    || !active.contains(&welcome.device_id)
+                {
+                    continue;
+                }
+                if welcomes::insert_delivered(
+                    tx,
+                    user_id,
+                    &welcome.device_id,
+                    &welcome.gid,
+                    &welcome.payload_json,
+                    &welcome.message_id,
+                    now,
+                )? {
+                    events::append(
+                        tx,
+                        user_id,
+                        &welcome.device_id,
+                        "welcome",
+                        &welcome.payload_json,
+                        now,
+                    )?;
+                    wake.push(welcome.device_id.clone());
+                }
+            }
+            Ok::<_, ApiError>(wake)
+        })
+        .await?;
+    for device_id in &wake {
+        state.notifier.notify(&user_id, device_id);
     }
     Ok(())
 }

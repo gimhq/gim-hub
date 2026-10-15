@@ -444,20 +444,15 @@ mod tests {
         assert_eq!(missing.request_id, "r-2");
     }
 
-    #[tokio::test]
-    async fn multihoming_ops_are_not_implemented_yet() {
-        let handlers = Handlers::default();
-        // NotifyHostingRecord has a handler (ops::hosting_record).
-        assert!(!crate::ops::MULTIHOMING_OPS.contains(&OpKind::NotifyHostingRecord));
+    #[test]
+    fn multihoming_ops_are_implemented() {
+        // NotifyHostingRecord is registered by ops::hosting_record; the
+        // bootstrap ops by the group service.
         for op in [
             Op::SeedReplica(Default::default()),
             Op::CopyPendingWelcomes(Default::default()),
         ] {
-            assert!(crate::ops::MULTIHOMING_OPS.contains(&OpKind::of(&op)));
-            let response = dispatch(caller(), request(op), &Limits, &handlers).await;
-            assert_eq!(response.result, None);
-            assert_eq!(code(&response), ErrorCode::Internal);
-            assert_eq!(response.error.unwrap().message, "not implemented");
+            assert!(crate::ops::GROUP_OPS.contains(&OpKind::of(&op)));
         }
     }
 

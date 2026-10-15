@@ -289,6 +289,12 @@ client keeps one connection and cursor per listed hub and merges by `message_id`
   `hosting_record_required`. The unclaimed KeyPackages are deleted at once; after the grace
   period the user's data is purged, keeping the hosting record. A later record that lists this
   hub again ends the removal (§7.3). Live with federation.
+- Bootstrap of an added hub: once a hub is listed, the owners of the user's groups seed its
+  replicas at their current seq (no events; history before the seed is not served there), and the
+  user's other hubs copy the unacknowledged pending Welcomes, which appear in
+  `GET /v2/welcomes/pending` and as `welcome` events and are acknowledged on each hub
+  independently (§4.3, §4.4). Commits, messages and Welcomes reach every listed hub of a member
+  (§2.2). Live with federation.
 
 ## Push
 

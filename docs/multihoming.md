@@ -5,9 +5,9 @@ messages fan out to every listed hub) is a deliberate deviation from arch §9.2,
 simplicity and failure tolerance at our scale, at a bandwidth cost. Q6 (blobs are not replicated)
 is a known limit. The migration is `0007_multihoming.sql` (`0006` is taken).
 
-Status: design, normative for the M2c hub subtasks (§12). Nothing in this document is implemented
-yet. Every contract change (§9) is a proposal that needs L1 / gim-core sign-off before the
-subtask that implements it starts.
+Status: design, normative for the M2c hub subtasks (§12). Every contract change (§9) is a proposal that needs L1 / gim-core sign-off before the
+subtask that implements it starts. Implemented so far: §2.2, §3.2, §4.2-§4.5, §5 and §7.3
+(H4-M1 to H4-M4).
 
 This document specifies how a hub behaves when a user's hosting record lists several hubs:
 fan-out, per-hub state and bootstrap of a new hub, KeyPackages, idempotent submission through
@@ -219,6 +219,12 @@ its roster:
    epoch, `seq` = `last_seq`, roster);
 2. enqueues `SeedReplica{gid, user_id: U, group: snapshot}` (kind `seed_replica`, payload stored)
    to every added hub that is not this hub.
+
+A hub that hosts U under either record also queues `NotifyHostingRecord` to each added hub ahead
+of the seeds and the `CopyPendingWelcomes` entry (the later queueing of §4.2 coalesces with it),
+so the added hub stores the record before it authorizes them, even when the client's `PUT` to it
+comes later. An owner that only caches U's record has no such ordering: a seed that reaches the
+added hub before the record is refused with `NOT_FOUND` and dropped.
 
 Because the fan-out of every later message is computed in a later transaction from the stored
 record, and the outbox is FIFO per peer (fed §7.2), the seed reaches the added hub ahead of every

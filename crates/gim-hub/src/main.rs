@@ -182,8 +182,9 @@ fn enable_federation(
 
 /// Registers the remote identity ops (`GetDeviceList`, `NotifyDeviceList`,
 /// `ClaimKeyPackage`), the group ops (`SubmitCommit`, `SubmitMessage`,
-/// `Deliver`, `DeliverWelcome`, `FetchLog`) and `NotifyHostingRecord` with
-/// handlers on `state`. Returns the claim, group and hosting record
+/// `Deliver`, `DeliverWelcome`, `FetchLog`, `SeedReplica`,
+/// `CopyPendingWelcomes`, plus the replica bootstrap hub-set hook) and
+/// `NotifyHostingRecord` with handlers on `state`. Returns the claim, group and hosting record
 /// handlers, which must be kept alive.
 fn register_ops(
     state: &AppState,

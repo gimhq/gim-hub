@@ -314,6 +314,23 @@ pub fn owned_with_member_on(
     Ok(gids)
 }
 
+/// Groups owned by `own_hub_id` with `user_id` in the roster, ordered.
+pub fn owned_with_user(
+    conn: &Connection,
+    own_hub_id: &str,
+    user_id: &str,
+) -> Result<Vec<String>, DbError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT DISTINCT gid FROM group_members \
+         WHERE user_id = ?2 AND substr(gid, 1, length(?1) + 1) = ?1 || '/' \
+         ORDER BY gid",
+    )?;
+    let gids = stmt
+        .query_map(params![own_hub_id, user_id], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(gids)
+}
+
 /// Active devices of the other users sharing at least one group with
 /// `user_id`, as distinct `(user_id, device_id)`, ordered.
 pub fn peer_devices(conn: &Connection, user_id: &str) -> Result<Vec<(String, String)>, DbError> {
@@ -382,6 +399,39 @@ mod tests {
             .unwrap()
             .is_empty());
         assert_eq!(db.read(|conn| get(conn, "nope")).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn owned_with_user_lists_owned_groups_of_a_member() {
+        let db = Db::open_in_memory().unwrap();
+        db.write(|tx| {
+            tx.execute(
+                "INSERT INTO groups (gid, kind, epoch, created_by_user_id, created_by_device_id, \
+                 created_at) VALUES ('h1/a', 'group', 0, 'u1', 'd1', 0), \
+                 ('h1/b', 'group', 0, 'u1', 'd1', 0), ('h10/c', 'group', 0, 'u1', 'd1', 0)",
+                [],
+            )?;
+            tx.execute(
+                "INSERT INTO group_members (gid, user_id, device_id, added_at) VALUES \
+                 ('h1/b', 'u1', 'd1', 0), ('h1/b', 'u1', 'd2', 0), ('h1/a', 'u1', 'd1', 0), \
+                 ('h1/a', 'u2', 'd1', 0), ('h10/c', 'u1', 'd1', 0)",
+                [],
+            )?;
+            Ok::<_, DbError>(())
+        })
+        .await
+        .unwrap();
+        let owned = |user: &'static str| {
+            let db = db.clone();
+            async move {
+                db.read(move |conn| owned_with_user(conn, "h1", user))
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(owned("u1").await, ["h1/a", "h1/b"]);
+        assert_eq!(owned("u2").await, ["h1/a"]);
+        assert!(owned("u3").await.is_empty());
     }
 
     #[tokio::test]
