@@ -218,10 +218,10 @@ impl LeafCredential {
 /// Validates the gim credential (type `0xF001`) of a leaf that must belong
 /// to the device `(user_id, device_id)`, against `device_list`, the stored
 /// `SignedDeviceList` of `user_id` on this hub. Fails closed: without a
-/// valid stored list, and for a device the list does not certify, the leaf
-/// is rejected. The `validation_failed` message carries the
-/// [`CredentialError::code`] or one of the hub's codes `no_device_list`,
-/// `unknown_device` and `identity_mismatch`.
+/// valid stored list (`device_list_unknown`), and for a device the list does
+/// not certify with the leaf's key (`device_not_in_list`), the leaf is
+/// rejected. The `validation_failed` message carries the
+/// [`CredentialError::code`] or the hub's code `identity_mismatch`.
 pub fn check_leaf_credential(
     leaf: &LeafCredential,
     device_list: Option<&[u8]>,
@@ -234,10 +234,9 @@ pub fn check_leaf_credential(
     let list = UserId::parse(user_id)
         .ok()
         .zip(device_list)
-        .and_then(|(user, bytes)| DeviceList::verify(bytes, &user).ok())
-        .ok_or_else(|| reject("no_device_list"))?;
+        .and_then(|(user, bytes)| DeviceList::verify(bytes, &user).ok());
     let (user, device) = credential
-        .verify(Some(&list), &leaf.signature_key)
+        .verify(list.as_ref(), &leaf.signature_key)
         .map_err(|err| match err {
             // The credential certifies another user.
             CredentialError::DeviceListUserMismatch { .. } => reject("identity_mismatch"),
@@ -245,9 +244,6 @@ pub fn check_leaf_credential(
         })?;
     if user.as_str() != user_id || device.as_str() != device_id {
         return Err(reject("identity_mismatch"));
-    }
-    if !list.is_active(&device) {
-        return Err(reject("unknown_device"));
     }
     Ok(())
 }
