@@ -30,9 +30,3 @@ pub use messages::*;
 pub use push::*;
 pub use recovery::*;
 pub use welcomes::*;
-
-use crate::error::ApiError;
-
-fn not_implemented() -> ApiError {
-    ApiError::NotImplemented
-}

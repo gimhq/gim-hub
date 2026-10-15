@@ -4,6 +4,8 @@
 
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, str::FromStr};
 
+use gim_hub_push::{ApnsConfig, FcmConfig, PushConfig};
+
 /// Hub configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -25,6 +27,8 @@ pub struct Config {
     pub longpoll_max_wait_seconds: u32,
     /// `GIM_HUB_SESSION_TTL_DAYS`: lifetime of device bearer tokens.
     pub session_ttl_days: u32,
+    /// `GIM_HUB_PUSH_*`: push gateway.
+    pub push: PushConfig,
 }
 
 /// Invalid configuration value.
@@ -69,6 +73,7 @@ impl Config {
             max_blob_bytes: parse(get, "GIM_HUB_MAX_BLOB_BYTES", 104_857_600, Some(1))?,
             longpoll_max_wait_seconds: parse(get, "GIM_HUB_LONGPOLL_MAX_WAIT_SECONDS", 30, None)?,
             session_ttl_days: parse(get, "GIM_HUB_SESSION_TTL_DAYS", 30, Some(1))?,
+            push: push_config(get)?,
             data_dir,
             database_path,
         })
@@ -83,6 +88,48 @@ impl Config {
     pub fn blobs_dir(&self) -> PathBuf {
         self.data_dir.join("blobs")
     }
+}
+
+/// Push settings; APNs needs all four `GIM_HUB_PUSH_APNS_*` credentials
+/// variables, FCM a service account path.
+fn push_config<'a>(
+    get: impl Fn(&str) -> Option<&'a str> + Copy,
+) -> Result<PushConfig, ConfigError> {
+    let apns = match (
+        get("GIM_HUB_PUSH_APNS_TEAM_ID"),
+        get("GIM_HUB_PUSH_APNS_KEY_ID"),
+        get("GIM_HUB_PUSH_APNS_KEY_PATH"),
+        get("GIM_HUB_PUSH_APNS_TOPIC"),
+    ) {
+        (None, None, None, None) => None,
+        (Some(team_id), Some(key_id), Some(key_path), Some(topic)) => Some(ApnsConfig {
+            team_id: team_id.to_owned(),
+            key_id: key_id.to_owned(),
+            key_path: PathBuf::from(key_path),
+            topic: topic.to_owned(),
+            sandbox: parse(get, "GIM_HUB_PUSH_APNS_SANDBOX", false, None)?,
+        }),
+        (team_id, ..) => {
+            return Err(ConfigError {
+                name: "GIM_HUB_PUSH_APNS_TEAM_ID",
+                value: team_id.unwrap_or_default().to_owned(),
+                reason: "set GIM_HUB_PUSH_APNS_TEAM_ID, _KEY_ID, _KEY_PATH and _TOPIC together"
+                    .into(),
+            })
+        }
+    };
+    let fcm = get("GIM_HUB_PUSH_FCM_SERVICE_ACCOUNT_PATH").map(|path| FcmConfig {
+        service_account_path: PathBuf::from(path),
+        project_id: get("GIM_HUB_PUSH_FCM_PROJECT_ID").map(str::to_owned),
+    });
+    Ok(PushConfig {
+        member_events: parse(get, "GIM_HUB_PUSH_MEMBER_EVENTS", false, None)?,
+        queue_capacity: parse(get, "GIM_HUB_PUSH_QUEUE_CAPACITY", 10_000, Some(1))?,
+        log_endpoint: parse(get, "GIM_HUB_PUSH_LOG_ENDPOINT", false, None)?,
+        apns,
+        fcm,
+        unifiedpush: parse(get, "GIM_HUB_PUSH_UNIFIEDPUSH", false, None)?,
+    })
 }
 
 /// Parses `name` or returns `default`; `min` is the smallest accepted value.
@@ -139,6 +186,39 @@ mod tests {
         assert_eq!(config.session_ttl_days, 30);
         assert_eq!(config.hub_key_path(), PathBuf::from("./data/hub_key"));
         assert_eq!(config.blobs_dir(), PathBuf::from("./data/blobs"));
+        assert_eq!(config.push, PushConfig::default());
+    }
+
+    #[test]
+    fn push_settings() {
+        let config = Config::from_vars(vars(&[
+            ("GIM_HUB_PUSH_MEMBER_EVENTS", "true"),
+            ("GIM_HUB_PUSH_QUEUE_CAPACITY", "5"),
+            ("GIM_HUB_PUSH_LOG_ENDPOINT", "true"),
+            ("GIM_HUB_PUSH_APNS_TEAM_ID", "TEAM123456"),
+            ("GIM_HUB_PUSH_APNS_KEY_ID", "KEY1234567"),
+            ("GIM_HUB_PUSH_APNS_KEY_PATH", "/run/secrets/apns.p8"),
+            ("GIM_HUB_PUSH_APNS_TOPIC", "im.g.apps"),
+            (
+                "GIM_HUB_PUSH_FCM_SERVICE_ACCOUNT_PATH",
+                "/run/secrets/fcm.json",
+            ),
+            ("GIM_HUB_PUSH_UNIFIEDPUSH", "true"),
+        ]))
+        .unwrap()
+        .push;
+        assert!(config.member_events && config.log_endpoint && config.unifiedpush);
+        assert_eq!(config.queue_capacity, 5);
+        let apns = config.apns.unwrap();
+        assert_eq!(apns.key_path, PathBuf::from("/run/secrets/apns.p8"));
+        assert!(!apns.sandbox);
+        let fcm = config.fcm.unwrap();
+        assert_eq!(fcm.project_id, None);
+
+        let err = Config::from_vars(vars(&[("GIM_HUB_PUSH_APNS_KEY_ID", "K")])).unwrap_err();
+        assert_eq!(err.name, "GIM_HUB_PUSH_APNS_TEAM_ID");
+        assert!(Config::from_vars(vars(&[("GIM_HUB_PUSH_LOG_ENDPOINT", "yes")])).is_err());
+        assert!(Config::from_vars(vars(&[("GIM_HUB_PUSH_QUEUE_CAPACITY", "0")])).is_err());
     }
 
     #[test]

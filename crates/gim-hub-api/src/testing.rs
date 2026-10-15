@@ -158,6 +158,13 @@ impl TestHub {
             .await
             .expect("update device");
     }
+
+    /// Runs the push dispatcher once: reads new events and sends the
+    /// resulting pushes. Returns the number of pushes processed.
+    pub async fn deliver_pushes(&self) -> usize {
+        self.state.push.poll_once().await.expect("read events");
+        self.state.push.run_pending().await
+    }
 }
 
 impl Default for TestHub {
