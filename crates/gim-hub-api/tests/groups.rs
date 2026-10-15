@@ -416,7 +416,10 @@ async fn add_must_match_the_claimed_key_package_owner() {
         .unwrap();
     plant_key_package(&hub, &nolist, kp.key_package()).await;
 
-    for (target, expected) in [(&bob, "identity_mismatch"), (&nolist, "no_device_list")] {
+    for (target, expected) in [
+        (&bob, "identity_mismatch"),
+        (&nolist, "device_list_unknown"),
+    ] {
         let kp = alice.claim(&hub, target).await;
         let (commit, _, _) = group
             .add_members(&alice.provider, &alice.signer, &[kp])

@@ -157,13 +157,14 @@ impl HostingRecord {
         let [_version, _user_id, _user_root, seq, expires_at, hubs] = cbor::body(body)?;
         let seq = cbor::uint(seq)?;
         let expires_at = cbor::uint(expires_at)?;
-        let hubs = cbor::list(hubs)?
-            .into_iter()
-            .map(HostingEntry::decode)
-            .collect::<Result<Vec<_>, _>>()?;
+        let hubs = cbor::list(hubs)?;
         if hubs.is_empty() || hubs.len() > MAX_HUBS {
             return Err(IdentityError::HubCount(hubs.len()));
         }
+        let hubs = hubs
+            .into_iter()
+            .map(HostingEntry::decode)
+            .collect::<Result<Vec<_>, _>>()?;
         let mut seen = HashSet::new();
         let mut previous = None;
         for entry in &hubs {
