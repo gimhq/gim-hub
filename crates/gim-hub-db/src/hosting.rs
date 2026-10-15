@@ -483,10 +483,17 @@ mod tests {
             Some(10)
         );
 
-        assert!(db.write(|tx| purge_removed(tx, 9)).await.unwrap().is_empty());
+        assert!(db
+            .write(|tx| purge_removed(tx, 9))
+            .await
+            .unwrap()
+            .is_empty());
         assert_eq!(db.write(|tx| purge_removed(tx, 10)).await.unwrap(), ["u1"]);
         assert!(!db.read(|conn| is_local(conn, "u1")).await.unwrap());
-        assert_eq!(count("SELECT count(*) FROM devices WHERE user_id = 'u1'").await, 0);
+        assert_eq!(
+            count("SELECT count(*) FROM devices WHERE user_id = 'u1'").await,
+            0
+        );
         assert_eq!(count("SELECT count(*) FROM sessions").await, 0);
         assert_eq!(count("SELECT count(*) FROM key_packages").await, 0);
         assert_eq!(count("SELECT count(*) FROM events").await, 1);

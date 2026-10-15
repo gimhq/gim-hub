@@ -156,7 +156,16 @@ mod tests {
             .unwrap();
         let summary: Vec<_> = entries
             .iter()
-            .map(|e| (e.id, e.kind, e.gid.clone(), e.seq, e.user_id.clone(), e.attempts))
+            .map(|e| {
+                (
+                    e.id,
+                    e.kind,
+                    e.gid.clone(),
+                    e.seq,
+                    e.user_id.clone(),
+                    e.attempts,
+                )
+            })
             .collect();
         assert_eq!(
             summary,
@@ -195,9 +204,21 @@ mod tests {
         let (first, again, deliver) = db
             .write(move |tx| {
                 use crate::outbox::{enqueue, NewEntry};
-                let first = enqueue(tx, "h1", NewEntry::HostingRecord { user_id: "u1" }, &limits, 5)?;
+                let first = enqueue(
+                    tx,
+                    "h1",
+                    NewEntry::HostingRecord { user_id: "u1" },
+                    &limits,
+                    5,
+                )?;
                 let id = tx.last_insert_rowid();
-                let again = enqueue(tx, "h1", NewEntry::HostingRecord { user_id: "u1" }, &limits, 5)?;
+                let again = enqueue(
+                    tx,
+                    "h1",
+                    NewEntry::HostingRecord { user_id: "u1" },
+                    &limits,
+                    5,
+                )?;
                 let deliver = enqueue(
                     tx,
                     "h1",

@@ -33,7 +33,9 @@ use gim_hub_s2s::{
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
-use mls_support::{b64, code, device_list, group_path, key, put_device_list, send, user_id, Client};
+use mls_support::{
+    b64, code, device_list, group_path, key, put_device_list, send, user_id, Client,
+};
 
 const HOUR: i64 = 60 * 60 * 1000;
 const DAY: i64 = 24 * HOUR;
@@ -279,11 +281,14 @@ where
 
 /// Waits until `node` stores the record `seq` of `user_id`.
 async fn wait_seq(node: &Node, user_id: &str, seq: i64) {
-    eventually(&format!("record seq {seq} on hub {}", node.seed), || async {
-        node.stored(user_id)
-            .await
-            .is_some_and(|(stored, ..)| stored == seq)
-    })
+    eventually(
+        &format!("record seq {seq} on hub {}", node.seed),
+        || async {
+            node.stored(user_id)
+                .await
+                .is_some_and(|(stored, ..)| stored == seq)
+        },
+    )
     .await;
 }
 
@@ -502,7 +507,11 @@ async fn removed_hub_refuses_writes_then_purges_and_can_be_listed_again() {
             "/v2/keypackages".to_owned(),
             json!({ "key_packages": [b64(&alice.key_package())] }),
         ),
-        (Method::POST, "/v2/groups".to_owned(), json!({ "kind": "group" })),
+        (
+            Method::POST,
+            "/v2/groups".to_owned(),
+            json!({ "kind": "group" }),
+        ),
         (
             Method::POST,
             "/v2/keypackages/claim".to_owned(),
@@ -514,7 +523,12 @@ async fn removed_hub_refuses_writes_then_purges_and_can_be_listed_again() {
         assert_eq!(code(&body), "hosting_record_required", "{path}");
     }
     // ...reads and acks are served; the unclaimed KeyPackages are gone.
-    for path in ["/v2/me", "/v2/events", "/v2/welcomes/pending", "/v2/keypackages/count"] {
+    for path in [
+        "/v2/me",
+        "/v2/events",
+        "/v2/welcomes/pending",
+        "/v2/keypackages/count",
+    ] {
         let (status, body) = send_b(Method::GET, path.into(), None).await;
         assert_eq!(status, StatusCode::OK, "{path}: {body}");
     }

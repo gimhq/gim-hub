@@ -548,7 +548,13 @@ mod tests {
                 enqueue(tx, "h1", NewEntry::HostingRecord { user_id }, &LIMITS, 0)?;
                 enqueue(tx, "h1", NewEntry::PendingWelcomes { user_id }, &LIMITS, 0)?;
             }
-            enqueue(tx, "h2", NewEntry::HostingRecord { user_id: "u1" }, &LIMITS, 0)?;
+            enqueue(
+                tx,
+                "h2",
+                NewEntry::HostingRecord { user_id: "u1" },
+                &LIMITS,
+                0,
+            )?;
             enqueue(tx, "h1", NewEntry::DeviceList { user_id: "u1" }, &LIMITS, 0)?;
             enqueue(tx, "h2", NewEntry::DeviceList { user_id: "u1" }, &LIMITS, 0)?;
             // Over both caps, nothing was evicted.

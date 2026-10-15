@@ -9,9 +9,7 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::{collections::BTreeSet, sync::Arc};
 
-use gim_hub_db::{
-    events, hosting as store, outbox, remote_identity, users, DbError, Transaction,
-};
+use gim_hub_db::{events, hosting as store, outbox, remote_identity, users, DbError, Transaction};
 use gim_hub_identity::{HostingEntry, HostingRecord, HubId, IdentityError, UserId};
 use gim_hub_s2s::{
     hosting::{self as hosting, MAX_RECORD_BYTES},
@@ -172,9 +170,7 @@ async fn store_local_record(
         })
         .await?;
     for device_id in &notify {
-        state
-            .notifier
-            .notify(record.user_id().as_str(), device_id);
+        state.notifier.notify(record.user_id().as_str(), device_id);
     }
     if hosted && !matches!(upload, Upload::Unchanged) {
         state.hosting.publish(record.clone());
@@ -200,7 +196,8 @@ fn superseded(
     record: &HostingRecord,
 ) -> Result<Vec<String>, ApiError> {
     let user_id = record.user_id().as_str();
-    ctx.hosting.superseded(tx, previous, record, true, ctx.now)?;
+    ctx.hosting
+        .superseded(tx, previous, record, true, ctx.now)?;
     let was_hosted = previous.entry(ctx.hub_id).is_some();
     let hosted = record.entry(ctx.hub_id).is_some();
     if hosted {

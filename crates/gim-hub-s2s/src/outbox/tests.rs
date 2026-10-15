@@ -86,13 +86,13 @@ impl FakePeer {
             }
             Op::DeliverWelcome(_) => Ok(OpOutput::DeliverWelcome(DeliverWelcomeResponse {})),
             Op::NotifyDeviceList(_) => Ok(OpOutput::NotifyDeviceList(NotifyDeviceListResponse {})),
-            Op::NotifyHostingRecord(_) => {
-                Ok(OpOutput::NotifyHostingRecord(NotifyHostingRecordResponse {}))
-            }
+            Op::NotifyHostingRecord(_) => Ok(OpOutput::NotifyHostingRecord(
+                NotifyHostingRecordResponse {},
+            )),
             Op::SeedReplica(_) => Ok(OpOutput::SeedReplica(SeedReplicaResponse {})),
-            Op::CopyPendingWelcomes(_) => {
-                Ok(OpOutput::CopyPendingWelcomes(CopyPendingWelcomesResponse {}))
-            }
+            Op::CopyPendingWelcomes(_) => Ok(OpOutput::CopyPendingWelcomes(
+                CopyPendingWelcomesResponse {},
+            )),
             _ => Err(error(ErrorCode::Internal, "unexpected op")),
         }
     }

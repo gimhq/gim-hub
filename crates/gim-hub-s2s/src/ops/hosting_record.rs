@@ -94,19 +94,22 @@ impl HostingRecordService {
         let user_id = UserId::parse(&request.user_id)
             .map_err(|_| error(ErrorCode::Invalid, "invalid user_id"))?;
         let now = (self.now)();
-        let record = hosting::verify(&request.hosting_record_cbor, &user_id, now).map_err(|err| {
-            error(
-                ErrorCode::Invalid,
-                &format!("invalid hosting record ({})", err.code()),
-            )
-        })?;
+        let record =
+            hosting::verify(&request.hosting_record_cbor, &user_id, now).map_err(|err| {
+                error(
+                    ErrorCode::Invalid,
+                    &format!("invalid hosting record ({})", err.code()),
+                )
+            })?;
         if hosting::stored_record(&record, false, now).is_err() {
             return Err(error(ErrorCode::Invalid, "seq is out of range"));
         }
         let key = user_id.to_string();
         let (local, stored) = self
             .db
-            .read(move |conn| Ok::<_, DbError>((store::is_local(conn, &key)?, store::get(conn, &key)?)))
+            .read(move |conn| {
+                Ok::<_, DbError>((store::is_local(conn, &key)?, store::get(conn, &key)?))
+            })
             .await
             .map_err(|err| internal(&err))?;
         let previous = stored.and_then(|row| hosting::decode_stored(&row.record).ok());
