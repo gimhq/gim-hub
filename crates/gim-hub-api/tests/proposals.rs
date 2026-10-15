@@ -178,6 +178,12 @@ async fn self_remove_proposal_then_commit_by_reference() {
     )
     .await;
     assert_eq!(log["messages"][0]["kind"], "proposal");
+    let message_id = log["messages"][0]["message_id"].as_str().unwrap();
+    assert!(!message_id.is_empty());
+    for client in [&alice, &carol] {
+        let event = message_event(&hub, client, 2).await.unwrap();
+        assert_eq!(event["message_id"], message_id);
+    }
 
     // A Commit referencing a Proposal the hub never sequenced (Carol's).
     let bob_leave = message_event(&hub, &carol, 2).await.unwrap();

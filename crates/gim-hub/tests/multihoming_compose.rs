@@ -12,9 +12,9 @@
 //! is owned by C (alice, bob, carol, mia), H by A (alice, carol, mia), W by C
 //! (carol; alice's Welcome stays unacknowledged).
 //!
-//! Message events carry no `message_id` (api-v2 `Message`), so views are
-//! merged by `(gid, seq)`, which the owner assigns once, and the copies on
-//! each hub are compared byte for byte. Pushes are matched by the `gid` and
+//! Views are merged by `(gid, seq)`, which the owner assigns once together
+//! with the `message_id` that message events also carry (api-v2 `Message`),
+//! and the copies on each hub are compared byte for byte. Pushes are matched by the `gid` and
 //! `seq` of their payload (`collapse_id` = `message_id`).
 //!
 //! Ignored by default: `GIM_FED_SUITE=mh scripts/fed-test.sh` starts the
