@@ -92,15 +92,15 @@ pub async fn create_session() -> impl IntoResponse {
     summary = "Upload a signed DeviceList",
     description = "No authentication: the DeviceList is self-certifying. The hub verifies the root \
 key signature and that the list's user ID matches `user_id` (derived from the root key). The first \
-upload creates the user on this hub. A later upload must have a higher `seq` than the stored list. \
-Devices revoked by the new list lose their tokens; a `device_list.updated` event is emitted.",
+upload creates the user on this hub. A later upload with a higher `seq` replaces the stored list; \
+re-uploading the identical list (same `seq`, same bytes) is idempotent and returns 200. Devices revoked by the new list lose their tokens; a `device_list.updated` event is emitted.",
     params(("user_id" = String, Path, description = "Opaque user ID (format owned by gim-core)", example = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa")),
     request_body = PutDeviceListRequest,
     responses(
-        (status = 200, description = "DeviceList replaced", body = DeviceList),
+        (status = 200, description = "DeviceList replaced, or identical to the stored one", body = DeviceList),
         (status = 201, description = "User created with this DeviceList", body = DeviceList),
         (status = 400, description = "Malformed or invalid DeviceList, or user ID mismatch (`invalid_device_list`)", body = Error),
-        (status = 409, description = "`seq` is not higher than the stored DeviceList (`stale_device_list`)", body = Error),
+        (status = 409, description = "`seq` is lower than the stored DeviceList, or equal with different bytes (`stale_device_list`)", body = Error),
         (status = 413, description = "Payload too large (`payload_too_large`)", body = Error),
     ),
 )]
@@ -433,10 +433,12 @@ pub async fn get_group() -> impl IntoResponse {
     path = "/v2/groups/{gid}/commits",
     tag = "groups",
     summary = "Submit an MLS Commit",
-    description = "The hub reads the epoch from the MLS framing (there is no client epoch field) and \
+    description = "`mls_message` is an MLS PublicMessage (Commit or Proposal), so the hub can parse \
+it. The hub reads the epoch from the MLS framing (there is no client epoch field) and \
 accepts the Commit only for the group's current epoch, advancing it by one. Membership changes \
-are derived from the Commit; members are identified by user ID + device ID from their \
-credentials, and `group.member_added` / `group.member_removed` events carry the `user_id`. The \
+are derived from the Add/Remove/Update proposals; each added member's gim-core credential \
+(type 0xF001) is validated against their DeviceList, members are identified by user ID + device \
+ID from their credentials, and `group.member_added` / `group.member_removed` events carry the `user_id`. The \
 optional Welcome is delivered as a `welcome` event to `welcome_recipients`.\n\n\
 Resubmitting the same Commit (same hash) returns the original result with `duplicate: true` \
 and emits nothing. Any other Commit for a past epoch fails with 409 `stale_epoch`.",
@@ -446,9 +448,9 @@ and emits nothing. Any other Commit for a past epoch fails with 409 `stale_epoch
     responses(
         (status = 200, description = "Duplicate of an accepted Commit (`duplicate: true`)", body = CommitResult),
         (status = 201, description = "Commit accepted", body = CommitResult),
-        (status = 400, description = "Not an MLS Commit for this group, or Welcome fields inconsistent (`validation_failed`)", body = Error),
+        (status = 400, description = "Not a PublicMessage Commit for this group, invalid credential of an added member, or Welcome fields inconsistent (`validation_failed`)", body = Error),
         (status = 401, description = "Missing or invalid bearer token (`unauthorized`)", body = Error),
-        (status = 403, description = "Caller is not a member of the group (`not_member`)", body = Error),
+        (status = 403, description = "Caller is not a member of the group (`not_member`), or group policy forbids the change (`forbidden`)", body = Error),
         (status = 404, description = "Not found (`not_found`)", body = Error),
         (status = 409, description = "Commit epoch is not the group epoch (`stale_epoch`)", body = StaleEpochError),
         (status = 413, description = "Payload too large (`payload_too_large`)", body = Error),

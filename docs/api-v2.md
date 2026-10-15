@@ -27,8 +27,10 @@ DeviceCert in the user's stored DeviceList. There is no handle-only registration
 
 1. Create the identity locally (gim-core), then upload the signed DeviceList:
    `PUT /v2/users/{user_id}/device-list {device_list}`. No token is needed: the list is
-   self-certifying. The first upload creates the user on this hub; later uploads must carry a
-   higher `seq` (409 otherwise).
+   self-certifying. The first upload creates the user on this hub. A later upload with a higher
+   `seq` replaces the stored list (200); re-uploading the identical list (same `seq`, same bytes)
+   is idempotent and also returns 200. A lower `seq`, or the same `seq` with different bytes, is
+   409 `stale_device_list`.
 2. `POST /v2/auth/challenge {user_id, device_id}` returns
    `{challenge_id, challenge, expires_at, hub_peer_id}`. `challenge` is a gim-core AuthChallenge
    (CBOR, base64) binding this hub's PeerID.
@@ -46,6 +48,34 @@ without a token (the bundle is deleted on first fetch) and then signs in as abov
 Recovery: `PUT /v2/users/{user_id}/recovery-backup` stores the encrypted backup (own user only,
 at most 65536 bytes); after losing every device, `GET /v2/users/{user_id}/recovery-backup` (no
 token, rate limited) returns it for decryption with the recovery code.
+
+## Membership and wire format
+
+Handshake messages (Commit, Proposal) are sent as MLS `PublicMessage`; application messages stay
+`PrivateMessage`. Membership is therefore visible to the owning hub, which enforces group policy
+anyway (arch §7.3, MIMI hub model). Clients do not declare roster changes: a client-declared
+roster delta cannot be verified by the hub and is not part of the API.
+
+On `POST /v2/groups/{gid}/commits` the owning hub:
+
+1. parses the `PublicMessage` and reads the epoch from its framing;
+2. extracts the Add, Remove and Update proposals (inline in the Commit or referenced);
+3. for every added member, validates the gim-core MLS credential (custom credential type
+   `0xF001`, format owned by gim-core `docs/identity.md`) against the member's DeviceList: the
+   device must be active in the user's current DeviceList and the credential's key must match its
+   DeviceCert;
+4. checks group policy (who may add or remove members);
+5. derives the member events (`group.member_added` / `group.member_removed` with `user_id` and
+   `device_ids`), the group roster and the fan-out set from the parsed proposals.
+
+| Rejection | Status | Code |
+|---|---|---|
+| `mls_message` is not a `PublicMessage` Commit/Proposal for this group, or Welcome fields inconsistent | 400 | `validation_failed` |
+| Added member's credential is malformed, not type `0xF001`, or does not match an active device in the member's DeviceList | 400 | `validation_failed` |
+| Sender is not a member, or group policy does not allow the change | 403 | `not_member` / `forbidden` |
+
+`POST /v2/groups/{gid}/messages` carries only `PrivateMessage` application messages; the hub reads
+the epoch from the framing but cannot see their content.
 
 ## Changes from v1
 
