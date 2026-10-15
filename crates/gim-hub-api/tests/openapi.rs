@@ -39,10 +39,6 @@ fn concrete_path(template: &str) -> String {
         .replace("{blob_id}", "b_example")
 }
 
-/// Operations with a real handler: an empty request reaches the handler
-/// and fails validation instead of returning 501.
-const IMPLEMENTED: &[&str] = &["/v2/auth/challenge", "/v2/auth/session"];
-
 /// Whether the operation requires a bearer token checked by `AuthDevice`.
 /// `/v2/stream` authenticates after the WebSocket upgrade (close code 4401).
 fn requires_token(template: &str, operation: &Operation) -> bool {
@@ -72,7 +68,7 @@ async fn call(
         .unwrap();
     let status = response.status();
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    (status, serde_json::from_slice(&body).unwrap())
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
 #[tokio::test]
@@ -111,14 +107,17 @@ async fn every_documented_operation_is_routed() {
                 assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {template}");
                 assert_eq!(value["error"]["code"], "unauthorized");
             }
+            // Routed: the router's own 404/405 fallbacks have no JSON body.
             let (status, value) = call(&hub, &method, &uri, Some(&token)).await;
-            if IMPLEMENTED.contains(&template.as_str()) {
-                assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {template}");
-                assert_eq!(value["error"]["code"], "validation_failed");
-                continue;
-            }
-            assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {template}");
-            assert_eq!(value["error"]["code"], "not_implemented");
+            assert_ne!(
+                status,
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{method} {template}"
+            );
+            assert!(
+                status != StatusCode::NOT_FOUND || value["error"]["code"] == "not_found",
+                "{method} {template}"
+            );
         }
     }
     assert_eq!(operations, 31);

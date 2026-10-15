@@ -1,5 +1,4 @@
-//! Bearer-token authentication through `AuthDevice`, observed on GET /v2/me
-//! (401 until authenticated, then the 501 stub).
+//! Bearer-token authentication through `AuthDevice`, observed on GET /v2/me.
 
 use axum::{
     body::{to_bytes, Body},
@@ -23,7 +22,11 @@ async fn get_me(hub: &TestHub, authorization: Option<&str>) -> (StatusCode, Stri
     let status = response.status();
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let value: Value = serde_json::from_slice(&body).unwrap();
-    (status, value["error"]["code"].as_str().unwrap().to_owned())
+    let outcome = value["error"]["code"]
+        .as_str()
+        .or(value["device_id"].as_str())
+        .unwrap();
+    (status, outcome.to_owned())
 }
 
 fn unauthorized() -> (StatusCode, String) {
@@ -51,7 +54,7 @@ async fn missing_or_malformed_credentials_are_rejected() {
 async fn valid_token_passes_authentication() {
     let hub = TestHub::new();
     let token = hub.create_session("u1", "d1").await;
-    let expected = (StatusCode::NOT_IMPLEMENTED, "not_implemented".to_owned());
+    let expected = (StatusCode::OK, "d1".to_owned());
     assert_eq!(
         get_me(&hub, Some(&format!("Bearer {token}"))).await,
         expected
