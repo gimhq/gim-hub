@@ -127,5 +127,5 @@ async fn every_documented_operation_is_routed() {
         }
     }
     assert_eq!(operations, 35);
-    assert_eq!(authenticated, 25);
+    assert_eq!(authenticated, 23);
 }

@@ -71,9 +71,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(listen = %state.config.listen, "gim-hub listening");
 
     let pruning = tokio::spawn(prune_periodically(state.clone()));
-    axum::serve(listener, gim_hub_api::router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        gim_hub_api::router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     pruning.abort();
     for task in push {
         task.abort();

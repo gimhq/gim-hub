@@ -78,10 +78,16 @@ resp="$(get "/v2/link-bundles/$rand")"
     || fail "GET /v2/link-bundles/<random>: $resp"
 echo "smoke: ok   GET /v2/link-bundles/<random> -> $resp"
 
-# Bearer-protected route without a token -> 401 unauthorized.
+# Public user read, unknown user, no token -> 404 not_found.
 resp="$(get "/v2/users/u$rand")"
-[[ "$resp" == "401 "* && "$(jq -r .error.code <<<"${resp#* }")" == "unauthorized" ]] \
+[[ "$resp" == "404 "* && "$(jq -r .error.code <<<"${resp#* }")" == "not_found" ]] \
     || fail "GET /v2/users/<random> without token: $resp"
 echo "smoke: ok   GET /v2/users/<random> (no token) -> $resp"
+
+# Bearer-protected route without a token -> 401 unauthorized.
+resp="$(get /v2/me)"
+[[ "$resp" == "401 "* && "$(jq -r .error.code <<<"${resp#* }")" == "unauthorized" ]] \
+    || fail "GET /v2/me without token: $resp"
+echo "smoke: ok   GET /v2/me (no token) -> $resp"
 
 echo "smoke: PASS"

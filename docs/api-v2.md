@@ -65,6 +65,25 @@ Recovery: `PUT /v2/users/{user_id}/recovery-backup` stores the encrypted backup 
 at most 65536 bytes); after losing every device, `GET /v2/users/{user_id}/recovery-backup` (no
 token, rate limited) returns it for decryption with the recovery code.
 
+### Public reads
+
+`GET /v2/users/{user_id}/device-list` and `GET /v2/users/{user_id}` need no token; a bearer token,
+if sent, is ignored (an invalid one is not rejected). A device restoring from a recovery code is
+not yet in the DeviceList, so it cannot sign in, but it must read the current list to publish the
+next `seq`. This exposes nothing new: DeviceLists are self-certifying and already uploaded without
+a token, and `user_id` is an unguessable hash (the same exposure as hosting records in the DHT).
+
+- They return only public data: `{user_id, device_list}` and, for `GET /v2/users/{user_id}`, the
+  optional `handle` of this hub's directory. No presence, last-seen time, device activity, group
+  or session information.
+- Remote users resolve as described under *Remote users and cross-hub claims* (cached copy, fetch
+  from the user's hub, or 503 `peer_unavailable` with `Retry-After`).
+- Both endpoints share token-bucket limits, checked per client IP first (before any lookup or
+  remote fetch) and then per target `user_id`: `GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN` (default 120)
+  and `GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN` (default 60) requests per minute, with a burst of the
+  same size. IPv6 clients are counted per /64. Over a limit the answer is 429 `rate_limited` with
+  `Retry-After` seconds (at least 1).
+
 ## Membership and wire format
 
 Handshake messages (Commit, Proposal) are sent as MLS `PublicMessage`; application messages stay
