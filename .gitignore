@@ -1,0 +1,6 @@
+/target
+/.tmp
+*.db
+*.db-wal
+*.db-shm
+.env
