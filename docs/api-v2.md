@@ -344,12 +344,15 @@ client keeps one connection and cursor per listed hub and merges by `message_id`
 ## Push
 
 `PUT /v2/push/registration` stores the calling device's push registration (one per device,
-replacing the previous one) and `DELETE` removes it; both return 204. Tokens are validated per
-provider (400 `validation_failed`); `unifiedpush` also requires the RFC 8291 keys `p256dh` and
-`auth`, which encrypt its bodies. The hub then pushes `message` and `welcome` events to the
-device's provider (never to the sender's own device; never for `message` events of kind
-`proposal`). Payload, provider mapping and the test-only
-`GET /v2/debug/push-log` (off by default): [`push.md`](push.md).
+replacing the previous one) and `DELETE` removes it; both return 204. The body is
+`{provider, token, app_id?, sandbox?, p256dh?, auth?}`, all opaque to the hub: `provider` is 1-64
+chars of `a-z 0-9 . _ -`, `token` 1-4096 bytes without control characters, `app_id` 1-255 chars of
+`A-Z a-z 0-9 . - _ :`, `sandbox` a bool, `p256dh` and `auth` base64url strings of at most 256
+chars, none of them required by any provider (400 `validation_failed` otherwise). The hub then
+pushes `message` and `welcome` events for the device (never to the sender's own device; never for
+`message` events of kind `proposal`) as signed webhooks to the external push server, which owns
+platform delivery; provider `log` stays in the hub for tests. Webhook contract, payload and the
+test-only `GET /v2/debug/push-log` (off by default): [`push.md`](push.md).
 
 ## Differences from v1
 
@@ -390,9 +393,9 @@ federation (remote users and KeyPackage claims, groups across hubs), multi-homin
 [`multihoming.md`](multihoming.md): fan-out to every listed hub, record propagation and
 `hosting_record.updated`, replica seeding and Welcome copies for an added hub, claim routing
 across a user's hubs, removal with a grace period, primary-only push with failover) and push
-(registration and delivery for local and federated events; log provider, APNs, FCM and
-UnifiedPush when configured; payload v1 without `sender_user_id`, optional minimal wake-up mode
-`GIM_HUB_PUSH_MINIMAL`, UnifiedPush bodies encrypted per RFC 8291 `aes128gcm`).
+(registration and delivery for local and federated events; log provider and the signed webhook
+to an external push server; payload v1 without `sender_user_id`, optional minimal wake-up mode
+`GIM_HUB_PUSH_MINIMAL`).
 
 Pending:
 
@@ -403,7 +406,7 @@ Pending:
   history before its replica seed; pushes in the failover window after the primary stops are
   not sent late; pending Welcome acknowledgements are per hub; `message` events carry no
   `message_id`, so clients merge the streams of several hubs by `(gid, seq)`.
-- Push: no real APNs/FCM credentials have been exercised yet.
+- Push: tested against a mock push server only; no production push server exists yet.
 - Validation of an added member's MLS credential (type `0xF001`) against their DeviceList is not
   enforced yet: the hub accepts every added member until gim-core identity part 3 defines the
   credential format. The 400 `validation_failed` rejection for credentials in the commit table

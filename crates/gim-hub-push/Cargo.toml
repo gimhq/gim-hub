@@ -1,6 +1,6 @@
 [package]
 name = "gim-hub-push"
-description = "Push gateway of the gim hub: providers and dispatcher"
+description = "Push gateway of the gim hub: dispatcher and webhook provider"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -22,8 +22,7 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
 tracing = { workspace = true }
-url = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+axum = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "test-util"] }

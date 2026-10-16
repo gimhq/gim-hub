@@ -12,8 +12,8 @@ use serde_json::Value;
 
 use crate::{encode_within, PushError, PushNotification, PushProvider, Registration};
 
-/// Payload limit of the log provider (as for APNs), so tests see the same
-/// inline/omit decision as real devices.
+/// Payload limit of the log provider (`docs/push.md` §5); the webhook uses
+/// the smaller [`crate::webhook::MAX_PAYLOAD`].
 pub const LOG_MAX_PAYLOAD: usize = 4096;
 /// Entries kept by [`PushLog`].
 const CAPACITY: usize = 256;
@@ -124,7 +124,7 @@ mod tests {
             provider: "log".into(),
             token: "t".into(),
             app_id: None,
-            sandbox: false,
+            sandbox: None,
             p256dh: None,
             auth: None,
             updated_at: 0,
