@@ -89,6 +89,7 @@ impl PushProvider for LogProvider {
             user_id = %registration.user_id,
             device_id = %registration.device_id,
             r#type = notification.kind.as_str(),
+            priority = notification.priority(),
             gid = %notification.gid,
             seq = notification.seq,
             message_id = %notification.message_id,
