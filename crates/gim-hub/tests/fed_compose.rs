@@ -845,7 +845,11 @@ async fn webhook_push(a: &Hub, b: &Hub, alice: &User) {
     })
     .await;
     let (proposal, _) = alice_group
-        .propose_self_update(&alice.provider, &alice.signer, LeafNodeParameters::default())
+        .propose_self_update(
+            &alice.provider,
+            &alice.signer,
+            LeafNodeParameters::default(),
+        )
         .unwrap();
     let (status, result) = alice
         .submit_commit(&gid, commit_body("p1", &proposal))
