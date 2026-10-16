@@ -444,3 +444,32 @@ async fn priority_by_event_type_proposals_skipped_and_log_stays_local() {
     assert_eq!(logged.len(), 1);
     assert_eq!(logged[0].device_id, "d2");
 }
+
+#[tokio::test]
+async fn membership_push_that_coalesced_an_alert_is_sent_high() {
+    let (mock, url) = mock_server(Vec::new()).await;
+    let db = db_with(vec![registration("d1", "fcm", "tok")]).await;
+    let settings = DispatcherSettings {
+        member_events: true,
+        ..DispatcherSettings::default()
+    };
+    let d = dispatcher(&db, &url, &PushLog::default(), settings);
+    // A Commit: its `message` event, then its membership event.
+    append(&db, "d1", "message", message(2)).await;
+    let member = json!({
+        "gid": "h1/g", "seq": 2, "user_id": "u3", "device_ids": ["d9"],
+        "by_user_id": "u1", "by_device_id": "d1", "epoch": 2,
+    });
+    append(&db, "d1", "group.member_added", member).await;
+    drive(&d, || d.metrics().sent == 1).await;
+
+    let received = mock.received();
+    assert_eq!(received.len(), 1);
+    let body = &received[0].body;
+    assert_eq!(body["priority"], "high");
+    assert_eq!(body["payload"]["type"], "group.member_added");
+    assert_eq!(body["payload"]["seq"], 2);
+    assert!(body["payload"].get("mls_message").is_none());
+    assert_eq!(body["collapse_id"], body["payload"]["collapse_id"]);
+    assert_eq!(d.metrics().upgraded, 1);
+}

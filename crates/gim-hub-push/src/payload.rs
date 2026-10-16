@@ -44,6 +44,10 @@ impl PushKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushNotification {
     pub kind: PushKind,
+    /// Alert (user-visible, webhook priority `high`) rather than silent.
+    /// Starts as [`PushKind::is_alert`]; a push that coalesced an alert
+    /// stays one (`docs/push.md` §4).
+    pub alert: bool,
     pub gid: String,
     pub seq: u64,
     /// ID of the stored message at `(gid, seq)`; also the collapse id.
@@ -66,6 +70,15 @@ impl PushNotification {
     /// several hubs of a multi-homed user) collapse on the device.
     pub fn collapse_id(&self) -> &str {
         &self.message_id
+    }
+
+    /// Webhook `priority`: `high` for alerts, `normal` for silent pushes.
+    pub fn priority(&self) -> &'static str {
+        if self.alert {
+            "high"
+        } else {
+            "normal"
+        }
     }
 
     /// The contract payload; `mls_message` is included only if `inline`.
@@ -110,6 +123,7 @@ pub fn encode_within(
 pub(crate) fn sample(mls_len: usize) -> PushNotification {
     PushNotification {
         kind: PushKind::Message,
+        alert: true,
         gid: "g1".into(),
         seq: 7,
         message_id: "m7".into(),

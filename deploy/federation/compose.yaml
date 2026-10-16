@@ -13,7 +13,7 @@
 # its own allowlist lists hub-a, so it keeps trying to federate and is
 # refused. Each hub's GIM_HUB_PUBLIC_URL is the base URL the driver uses
 # (http://hub-<n>:8080). Every hub sends its pushes to the `push-mock` service
-# (docs/push-mock.md). The libp2p host has no DNS transport, so peers are addressed by
+# (docs/push-mock.md); hub-c also pushes membership events. The libp2p host has no DNS transport, so peers are addressed by
 # fixed IPs (/ip4) on the project network. Every container, the network and
 # the volumes carry `ai-agent=true` and `ai-agent-run=${GIM_FED_RUN_LABEL}`
 # (default `gim-fed`), so one run's resources can be removed by label.
@@ -73,6 +73,7 @@ services:
     environment:
       <<: *env
       GIM_HUB_PUBLIC_URL: http://hub-c:8080
+      GIM_HUB_PUSH_MEMBER_EVENTS: "true"
       GIM_HUB_P2P_EXTERNAL_ADDRS: /ip4/${GIM_FED_SUBNET:?}.13/tcp/4001,/ip4/${GIM_FED_SUBNET:?}.13/udp/4001/quic-v1
     volumes:
       - c-data:/data

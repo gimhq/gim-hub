@@ -79,6 +79,8 @@ pub struct MetricsSnapshot {
     pub enqueued: u64,
     /// Queued notifications replaced by a newer one for the same device.
     pub coalesced: u64,
+    /// Silent notifications raised to alert by coalescing with an alert.
+    pub upgraded: u64,
     /// Notifications dropped because the queue was full.
     pub dropped: u64,
     /// Notifications delivered to a provider.
@@ -97,6 +99,7 @@ pub struct MetricsSnapshot {
 struct Metrics {
     enqueued: AtomicU64,
     coalesced: AtomicU64,
+    upgraded: AtomicU64,
     dropped: AtomicU64,
     sent: AtomicU64,
     skipped: AtomicU64,
@@ -125,6 +128,16 @@ impl Job {
             self.registration.device_id.clone(),
         )
     }
+}
+
+/// What [`Inner::insert`] did with a job.
+enum Insert {
+    /// Queued for a device without a pending push.
+    Added,
+    /// Coalesced into the device's pending push.
+    Replaced,
+    /// Not queued: a retry behind a newer push, or the queue is full.
+    Rejected,
 }
 
 /// Pending pushes, at most one per device, in arrival order.
@@ -202,6 +215,7 @@ impl Dispatcher {
         MetricsSnapshot {
             enqueued: get(&m.enqueued),
             coalesced: get(&m.coalesced),
+            upgraded: get(&m.upgraded),
             dropped: get(&m.dropped),
             sent: get(&m.sent),
             skipped: get(&m.skipped),
@@ -255,11 +269,8 @@ impl Dispatcher {
                 .read(move |conn| collect_jobs(conn, after, member_events, minimal))
                 .await?;
             *cursor = last;
-            for job in jobs {
-                if self.inner.admits(&job) && self.inner.enqueue(job, false) {
-                    queued += 1;
-                }
-            }
+            let jobs = jobs.into_iter().filter(|job| self.inner.admits(job));
+            queued += self.inner.enqueue(jobs, false);
             if read < BATCH as usize {
                 return Ok(queued);
             }
@@ -285,18 +296,48 @@ impl Inner {
             .is_none_or(|gate| gate(&job.registration.user_id, &job.registration.device_id))
     }
 
-    /// Queues `job`, replacing a queued push for the same device. A retry
-    /// never replaces a newer queued push. Returns whether it was queued.
-    fn enqueue(&self, job: Job, retry: bool) -> bool {
+    /// Queues `jobs` under one lock, so no worker takes a job before the
+    /// later jobs of the same batch could coalesce with it. Returns how many
+    /// were queued (or replaced a queued one).
+    fn enqueue(&self, jobs: impl IntoIterator<Item = Job>, retry: bool) -> usize {
         let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        let (mut queued, mut added) = (0, 0);
+        for job in jobs {
+            match self.insert(&mut queue, job, retry) {
+                Insert::Added => (queued, added) = (queued + 1, added + 1),
+                Insert::Replaced => queued += 1,
+                Insert::Rejected => {}
+            }
+        }
+        drop(queue);
+        for _ in 0..added {
+            self.wake.notify_one();
+        }
+        queued
+    }
+
+    /// Queues `job`, coalescing with a queued push for the same device: the
+    /// newest notification is kept with the higher priority of the two, so
+    /// a queued alert is never downgraded. A retry never replaces a newer
+    /// queued push, but an alert retry raises a queued silent one to alert.
+    fn insert(&self, queue: &mut Queue, mut job: Job, retry: bool) -> Insert {
         let key = job.key();
         if let Some(pending) = queue.pending.get_mut(&key) {
             bump(&self.metrics.coalesced);
+            let upgrade = job.notification.alert && !pending.notification.alert;
             if retry {
-                return false;
+                if upgrade {
+                    pending.notification.alert = true;
+                    bump(&self.metrics.upgraded);
+                }
+                return Insert::Rejected;
+            }
+            if pending.notification.alert && !job.notification.alert {
+                job.notification.alert = true;
+                bump(&self.metrics.upgraded);
             }
             *pending = job;
-            return true;
+            return Insert::Replaced;
         }
         if queue.pending.len() >= self.settings.queue_capacity {
             bump(&self.metrics.dropped);
@@ -306,14 +347,12 @@ impl Inner {
                 capacity = self.settings.queue_capacity,
                 "push: queue full, notification dropped"
             );
-            return false;
+            return Insert::Rejected;
         }
         queue.order.push_back(key.clone());
         queue.pending.insert(key, job);
-        drop(queue);
         bump(&self.metrics.enqueued);
-        self.wake.notify_one();
-        true
+        Insert::Added
     }
 
     fn pop(&self) -> Option<Job> {
@@ -395,10 +434,10 @@ impl Inner {
                 tokio::spawn(async move {
                     tokio::time::sleep(delay).await;
                     inner.enqueue(
-                        Job {
+                        [Job {
                             attempt: job.attempt + 1,
                             ..job
-                        },
+                        }],
                         true,
                     );
                 });
@@ -484,6 +523,7 @@ fn notification(
     let message_id = message_id(conn, gid, seq)?;
     Ok(Some(PushNotification {
         kind,
+        alert: kind.is_alert(),
         gid: gid.to_owned(),
         seq,
         message_id,
@@ -668,6 +708,107 @@ mod tests {
         assert_eq!(sent[0].1.mls_message.as_deref(), Some("AAAA"));
         let m = d.metrics();
         assert_eq!((m.enqueued, m.coalesced, m.sent), (1, 1, 1));
+    }
+
+    fn member_added(seq: u64) -> Value {
+        serde_json::json!({
+            "gid": "g1", "seq": seq, "user_id": "u3", "device_ids": ["d9"],
+            "by_user_id": "u1", "by_device_id": "d1", "epoch": 2,
+        })
+    }
+
+    fn with_member_events() -> DispatcherSettings {
+        DispatcherSettings {
+            member_events: true,
+            ..DispatcherSettings::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn coalescing_keeps_the_newest_push_at_the_higher_priority() {
+        // (first, second, sent kind, sent as alert)
+        let cases = [
+            ("message", "group.member_added", PushKind::MemberAdded, true),
+            ("group.member_added", "message", PushKind::Message, true),
+            (
+                "group.member_removed",
+                "group.member_added",
+                PushKind::MemberAdded,
+                false,
+            ),
+            ("message", "message", PushKind::Message, true),
+        ];
+        for (first, second, kind, alert) in cases {
+            let db = db_with_devices(&[("u2", "d1", "fcm")]).await;
+            let fake = Fake::new("fcm", Vec::new());
+            let d = dispatcher(&db, vec![fake.clone()], with_member_events());
+            for (seq, event_type) in [(1, first), (2, second)] {
+                let data = match event_type {
+                    "message" => message(seq),
+                    _ => member_added(seq),
+                };
+                append(&db, "d1", event_type, data).await;
+            }
+            assert_eq!(d.poll_once().await.unwrap(), 2, "{first} then {second}");
+            assert_eq!(d.run_pending().await, 1, "{first} then {second}");
+            let sent = fake.sent();
+            assert_eq!(sent.len(), 1, "{first} then {second}");
+            let n = &sent[0].1;
+            assert_eq!(
+                (n.kind, n.alert, n.seq),
+                (kind, alert, 2),
+                "{first} then {second}"
+            );
+            assert_eq!(n.message_id, fallback_message_id("g1", 2));
+            assert_eq!(n.collapse_id(), n.message_id);
+            let mls_message = (kind == PushKind::Message).then_some("AAAA");
+            assert_eq!(n.mls_message.as_deref(), mls_message);
+            let m = d.metrics();
+            let upgraded = u64::from(alert && !kind.is_alert());
+            assert_eq!(
+                (m.enqueued, m.coalesced, m.upgraded, m.sent),
+                (1, 1, upgraded, 1),
+                "{first} then {second}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_alert_retry_upgrades_a_queued_silent_push() {
+        let db = db_with_devices(&[("u2", "d1", "fcm")]).await;
+        let fake = Fake::new("fcm", vec![Err(PushError::Retryable("503".into(), None))]);
+        let d = dispatcher(
+            &db,
+            vec![fake.clone()],
+            DispatcherSettings {
+                retry_base: Duration::from_millis(200),
+                ..with_member_events()
+            },
+        );
+        append(&db, "d1", "message", message(1)).await;
+        d.poll_once().await.unwrap();
+        assert_eq!(d.run_pending().await, 1);
+        // Queued while the alert waits for its retry.
+        append(&db, "d1", "group.member_added", member_added(2)).await;
+        assert_eq!(d.poll_once().await.unwrap(), 1);
+        for _ in 0..200 {
+            if d.metrics().upgraded == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(d.run_pending().await, 1);
+        let sent = fake.sent();
+        assert_eq!(sent.len(), 2);
+        let n = &sent[1].1;
+        // The newer payload, at the retried alert's priority.
+        assert_eq!((n.kind, n.alert, n.seq), (PushKind::MemberAdded, true, 2));
+        assert_ne!(n.delivery_id, sent[0].1.delivery_id);
+        let m = d.metrics();
+        assert_eq!(
+            (m.retried, m.coalesced, m.upgraded, m.sent, m.failed),
+            (1, 1, 1, 1, 0)
+        );
     }
 
     #[tokio::test]
