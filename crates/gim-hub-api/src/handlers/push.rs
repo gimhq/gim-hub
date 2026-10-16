@@ -12,26 +12,17 @@ use serde_json::{json, Value};
 use super::identity::json_body;
 use crate::{
     auth::AuthDevice,
-    dto::{Error, PushProvider, PushRegistration},
+    dto::{Error, PushRegistration},
     error::ApiError,
     state::AppState,
 };
-
-fn provider_name(provider: PushProvider) -> &'static str {
-    match provider {
-        PushProvider::Apns => "apns",
-        PushProvider::Fcm => "fcm",
-        PushProvider::Unifiedpush => "unifiedpush",
-        PushProvider::Log => "log",
-    }
-}
 
 #[utoipa::path(
     put,
     path = "/v2/push/registration",
     tag = "push",
     summary = "Register the calling device for push",
-    description = "Replaces the calling device's push registration. `unifiedpush` requires `p256dh` and `auth` (RFC 8291 encryption keys); other providers ignore them.",
+    description = "Replaces the calling device's push registration. `provider`, `token`, `app_id`, `sandbox`, `p256dh` and `auth` are opaque to the hub and passed to the push server's webhook; `log` registrations are only recorded by the hub (tests).",
     request_body = PushRegistration,
     security(("bearerAuth" = [])),
     responses(
@@ -46,22 +37,21 @@ pub async fn put_push_registration(
     body: Result<Json<PushRegistration>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let body = json_body(body)?;
-    let provider = provider_name(body.provider);
-    let token = gim_hub_push::validate_registration(provider, &body.token, body.app_id.as_deref())
+    gim_hub_push::validate_registration(&body.provider, &body.token, body.app_id.as_deref())
         .map_err(ApiError::ValidationFailed)?;
-    let keys =
-        gim_hub_push::validate_webpush_keys(provider, body.p256dh.as_deref(), body.auth.as_deref())
-            .map_err(ApiError::ValidationFailed)?;
-    let (p256dh, webpush_auth) = keys.unzip();
+    let p256dh = gim_hub_push::decode_key("p256dh", body.p256dh.as_deref())
+        .map_err(ApiError::ValidationFailed)?;
+    let key_auth = gim_hub_push::decode_key("auth", body.auth.as_deref())
+        .map_err(ApiError::ValidationFailed)?;
     let registration = Registration {
         user_id: auth.user_id,
         device_id: auth.device_id,
-        provider: provider.to_owned(),
-        token,
+        provider: body.provider,
+        token: body.token,
         app_id: body.app_id,
         sandbox: body.sandbox,
         p256dh,
-        auth: webpush_auth,
+        auth: key_auth,
         updated_at: state.clock.now_ms(),
     };
     state

@@ -140,10 +140,11 @@ clocks, so the purge after the grace period is covered by the in-process test
 
 ### Push
 
-Push design and payload: [`push.md`](push.md). The `log` provider is always available. Each other
-provider is inert until configured: registrations for it are accepted and its sends are logged as
-skipped. Unreadable or invalid credentials stop startup. Keep credentials out of the image (mount
-them, e.g. under `/run/secrets`).
+Push design, webhook contract and payload: [`push.md`](push.md). The hub integrates no push
+platform: every push for a registration whose provider is not `log` is POSTed, signed, to the push
+server at `GIM_HUB_PUSH_WEBHOOK_URL`, which owns platform delivery and credentials. Without the URL
+those pushes are logged as skipped. The `log` provider is always available. A URL without a valid
+secret stops startup. Keep the secret out of the image (e.g. inject it from `/run/secrets`).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -151,14 +152,9 @@ them, e.g. under `/run/secrets`).
 | `GIM_HUB_PUSH_MINIMAL` | `false` | `true` sends minimal wake-up payloads `{"v":1,"type":"wake","collapse_id"}` only (no group, sequence or MLS message; see `push.md`) |
 | `GIM_HUB_PUSH_QUEUE_CAPACITY` | `10000` | Most devices with a queued push; further pushes are dropped (minimum 1) |
 | `GIM_HUB_PUSH_LOG_ENDPOINT` | `false` | Serve the unauthenticated, test-only `GET /v2/debug/push-log`; never enable in production |
-| `GIM_HUB_PUSH_APNS_TEAM_ID` | unset | APNs team ID; the four `APNS` variables below enable APNs together |
-| `GIM_HUB_PUSH_APNS_KEY_ID` | unset | ID of the APNs auth key |
-| `GIM_HUB_PUSH_APNS_KEY_PATH` | unset | Path of the APNs auth key (`.p8`) |
-| `GIM_HUB_PUSH_APNS_TOPIC` | unset | Default APNs topic (bundle ID) for registrations without `app_id` |
-| `GIM_HUB_PUSH_APNS_SANDBOX` | `false` | Send every APNs push through the sandbox |
-| `GIM_HUB_PUSH_FCM_SERVICE_ACCOUNT_PATH` | unset | Service account JSON key; enables FCM |
-| `GIM_HUB_PUSH_FCM_PROJECT_ID` | service account's `project_id` | Firebase project ID |
-| `GIM_HUB_PUSH_UNIFIEDPUSH` | `false` | `true` delivers to UnifiedPush endpoints |
+| `GIM_HUB_PUSH_WEBHOOK_URL` | unset | `http` or `https` URL of the push server; every non-`log` push is POSTed there. Unset: those pushes are skipped |
+| `GIM_HUB_PUSH_WEBHOOK_SECRET` | unset | HMAC-SHA256 key of `X-Gim-Signature`; required with the URL, at least 32 bytes |
+| `GIM_HUB_PUSH_WEBHOOK_TIMEOUT_SECONDS` | `10` | Timeout of one webhook request; a timeout is retried (minimum 1) |
 
 ## Data directory
 

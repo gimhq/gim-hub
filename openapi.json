@@ -1532,7 +1532,7 @@
           "push"
         ],
         "summary": "Register the calling device for push",
-        "description": "Replaces the calling device's push registration. `unifiedpush` requires `p256dh` and `auth` (RFC 8291 encryption keys); other providers ignore them.",
+        "description": "Replaces the calling device's push registration. `provider`, `token`, `app_id`, `sandbox`, `p256dh` and `auth` are opaque to the hub and passed to the push server's webhook; `log` registrations are only recorded by the hub (tests).",
         "operationId": "put_push_registration",
         "requestBody": {
           "content": {
@@ -3578,18 +3578,9 @@
           }
         }
       },
-      "PushProvider": {
-        "type": "string",
-        "enum": [
-          "apns",
-          "fcm",
-          "unifiedpush",
-          "log"
-        ]
-      },
       "PushRegistration": {
         "type": "object",
-        "description": "Push registration of the calling device.",
+        "description": "Push registration of the calling device. Everything but `log` is opaque\nto the hub and passed to the push server's webhook (`docs/push.md`).",
         "required": [
           "provider",
           "token"
@@ -3600,7 +3591,7 @@
               "string",
               "null"
             ],
-            "description": "APNs topic (app bundle ID) or FCM app ID; ignored by other providers.",
+            "description": "App identifier for the push server (e.g. bundle ID): 1-255\ncharacters of `A-Z a-z 0-9 . - _ :`.",
             "example": "im.g.apps"
           },
           "auth": {
@@ -3608,28 +3599,37 @@
               "string",
               "null"
             ],
-            "description": "UnifiedPush only (required there, ignored otherwise): the RFC 8291\nauthentication secret, base64url of 16 bytes.",
-            "example": "BTBZMqHH6r4Tts7J_aSIgg"
+            "description": "Opaque secret for the push server (e.g. a Web Push `auth`):\nbase64url, padding optional, at most 256 characters.",
+            "example": "BTBZMqHH6r4Tts7J_aSIgg",
+            "maxLength": 256,
+            "minLength": 1
           },
           "p256dh": {
             "type": [
               "string",
               "null"
             ],
-            "description": "UnifiedPush only (required there, ignored otherwise): the device's\nRFC 8291 Web Push public key, base64url of the 65-byte uncompressed\nP-256 point.",
-            "example": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+            "description": "Opaque key for the push server (e.g. a Web Push `p256dh`): base64url,\npadding optional, at most 256 characters.",
+            "example": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+            "maxLength": 256,
+            "minLength": 1
           },
           "provider": {
-            "$ref": "#/components/schemas/PushProvider"
+            "type": "string",
+            "description": "Push platform name, interpreted by the push server (e.g. `apns`,\n`fcm`, `unifiedpush`). `log` is the hub's test provider and is never\nsent to the webhook.",
+            "example": "apns",
+            "pattern": "^[a-z0-9._-]{1,64}$"
           },
           "sandbox": {
-            "type": "boolean",
-            "description": "APNs only: deliver through the sandbox environment.",
-            "default": false
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Platform sandbox flag for the push server; absent if not set."
           },
           "token": {
             "type": "string",
-            "description": "Provider token: APNs device token (hex), FCM registration token,\nUnifiedPush endpoint URL, or any string for `log`.",
+            "description": "Platform token, opaque to the hub: 1-4096 bytes without control\ncharacters.",
             "maxLength": 4096,
             "minLength": 1
           }

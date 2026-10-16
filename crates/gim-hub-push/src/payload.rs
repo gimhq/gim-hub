@@ -54,6 +54,11 @@ pub struct PushNotification {
     /// Minimal mode (`GIM_HUB_PUSH_MINIMAL`): the payload is only a wake-up
     /// with the collapse id; `mls_message` is never inlined.
     pub minimal: bool,
+    /// Unique id of this push, identical across its retries (the webhook's
+    /// idempotency key).
+    pub delivery_id: String,
+    /// Unix ms of the first send attempt; set by the dispatcher.
+    pub sent_at: i64,
 }
 
 impl PushNotification {
@@ -110,6 +115,8 @@ pub(crate) fn sample(mls_len: usize) -> PushNotification {
         message_id: "m7".into(),
         mls_message: (mls_len > 0).then(|| "A".repeat(mls_len)),
         minimal: false,
+        delivery_id: "d7".into(),
+        sent_at: 0,
     }
 }
 
