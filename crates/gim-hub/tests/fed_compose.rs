@@ -92,6 +92,7 @@ async fn compose_federation() {
     refusal(&a, &x_id, &alice, &eve, psk).await;
     leave_by_proposal(&a, &b, &c, &alice).await;
     webhook_push(&a, &b, &alice).await;
+    push_coalescing(&a, &c, &alice).await;
     println!("fed: PASS ({:.1}s)", start.elapsed().as_secs_f64());
 }
 
@@ -921,6 +922,131 @@ async fn webhook_push(a: &Hub, b: &Hub, alice: &User) {
     assert!(mock_deliveries(&mock, &ivan_token).await.is_empty());
     ok(
         "webhook push: one signed delivery per message, none for a Proposal, 410 deletes",
+        start,
+    );
+}
+
+/// H8 (docs/push.md §4): kate@C registers a webhook provider on hub-c (which
+/// pushes membership events) and joins a group of alice@A. Two alerts, and
+/// an alert followed by a silent membership push, that reach hub-c's
+/// dispatcher together are each one delivery at the mock push server: the
+/// newest payload and `collapse_id`, priority `high`.
+///
+/// Deterministic because each pair is applied on hub-c in one transaction,
+/// which the dispatcher reads in one tail batch and queues under one lock:
+/// the two application messages are sent while hub-c is stopped, so hub-a's
+/// outbox delivers them in one `Deliver` batch (or hub-c fetches them in one
+/// `FetchLog` page); the `message` and `group.member_added` events of a
+/// Commit come from one `Deliver`.
+async fn push_coalescing(a: &Hub, c: &Hub, alice: &User) {
+    let start = Instant::now();
+    let mock = Hub::from_env("push-mock", "GIM_FED_PUSH_MOCK");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let kate_token = format!("t-{nonce:x}-kate");
+    let kate = User::sign_up("kate", c, 10, 101, 1).await;
+    let leo = User::sign_up("leo", a, 13, 131, 1).await;
+    let (status, body) = kate
+        .call(
+            Method::PUT,
+            "/v2/push/registration",
+            Some(json!({ "provider": "mock-android", "token": kate_token })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let path = format!("/v2/users/{}/hosting-record", kate.user_id);
+    eventually("kate's record on hub-a", || async {
+        let (status, body) = a.call(Method::GET, &path, None, None).await;
+        status == StatusCode::OK && body["seq"] == 1
+    })
+    .await;
+
+    // seq 1: kate joins.
+    let (gid, mut alice_group) = alice.create_group("group").await;
+    let kps = vec![alice.claim(&kate).await];
+    let (commit, welcome, _) = alice_group
+        .add_members(&alice.provider, &alice.signer, &kps)
+        .unwrap();
+    let body = with_welcome(commit_body("c1", &commit), &welcome, &[&kate]);
+    let (status, result) = alice.submit_commit(&gid, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    alice_group.merge_pending_commit(&alice.provider).unwrap();
+    kate.join(&gid).await;
+    // Pushes of kate's seq >= 2, as `(type, seq, priority, collapse_id)`.
+    let pushes = || async {
+        mock_deliveries(&mock, &kate_token)
+            .await
+            .iter()
+            .map(|d| &d["body"])
+            .filter(|body| body["payload"]["gid"] == json!(gid))
+            .filter(|body| body["payload"]["seq"].as_u64().unwrap() >= 2)
+            .map(|body| {
+                assert_eq!(body["collapse_id"], body["payload"]["collapse_id"]);
+                (
+                    body["payload"]["type"].as_str().unwrap().to_owned(),
+                    body["payload"]["seq"].as_u64().unwrap(),
+                    body["priority"].as_str().unwrap().to_owned(),
+                    body["collapse_id"].clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // seq 2 and 3: a text and a receipt-like application message, delivered
+    // to hub-c together.
+    c.stop();
+    alice.send_text(&mut alice_group, &gid, "coalesce", 2).await;
+    let receipt = application(alice, &mut alice_group, b"receipt");
+    let (status, result) = alice.post_message(&gid, "receipt", &receipt).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result["seq"], 3, "{result}");
+    c.start().await;
+    let receipt = kate.wait_message(&gid, 3).await;
+    eventually("kate's push of seq 3", || async {
+        pushes().await.iter().any(|push| push.1 == 3)
+    })
+    .await;
+
+    // seq 4: a Commit adding leo@A: kate's `message` (alert) and
+    // `group.member_added` (silent) events of it.
+    let kps = vec![alice.claim(&leo).await];
+    let (commit, welcome, _) = alice_group
+        .add_members(&alice.provider, &alice.signer, &kps)
+        .unwrap();
+    let body = with_welcome(commit_body("c2", &commit), &welcome, &[&leo]);
+    let (status, result) = alice.submit_commit(&gid, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result["seq"], 4, "{result}");
+    alice_group.merge_pending_commit(&alice.provider).unwrap();
+    let commit = kate.wait_message(&gid, 4).await;
+    eventually("kate's push of seq 4", || async {
+        pushes().await.iter().any(|push| push.1 == 4)
+    })
+    .await;
+
+    // Late pushes, if any, would arrive by now.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(
+        pushes().await,
+        [
+            (
+                "message".to_owned(),
+                3,
+                "high".to_owned(),
+                receipt["message_id"].clone()
+            ),
+            (
+                "group.member_added".to_owned(),
+                4,
+                "high".to_owned(),
+                commit["message_id"].clone()
+            ),
+        ]
+    );
+    ok(
+        "push coalescing: newest payload, alert priority kept (message+receipt, Commit+membership)",
         start,
     );
 }

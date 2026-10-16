@@ -137,7 +137,7 @@ impl WebhookProvider {
             "delivery_id": notification.delivery_id,
             "sent_at": notification.sent_at,
             "registration": target,
-            "priority": if notification.kind.is_alert() { "high" } else { "normal" },
+            "priority": notification.priority(),
             "collapse_id": notification.collapse_id(),
             "ttl": TTL_SECONDS,
             "payload": payload,
@@ -287,6 +287,7 @@ mod tests {
             })
         );
         n.kind = PushKind::MemberAdded;
+        n.alert = false;
         assert_eq!(provider().body(&registration(), &n)["priority"], "normal");
         let big = provider().body(&registration(), &sample(MAX_PAYLOAD));
         assert!(big["payload"].get("mls_message").is_none());
