@@ -76,12 +76,16 @@ PeerId; allowlists are unaffected because they name `hub_id`s. `gim-hub hub-id` 
 `scripts/fed-test.sh` is the closed-federation acceptance test (CI job `federation`). It needs
 only Docker:
 
-1. builds the hub image from the `Dockerfile` (`GIM_FED_SKIP_BUILD=1` reuses `GIM_FED_IMAGE`);
+1. builds the hub image from the `Dockerfile` and the mock push server image from
+   `Dockerfile.push-mock` (`GIM_FED_SKIP_BUILD=1` reuses `GIM_FED_IMAGE` and
+   `GIM_FED_PUSH_MOCK_IMAGE`);
 2. generates fresh hub root keys in the hubs' volumes with `gim-hub hub-id` and writes the
    allowlists into `.tmp/fed-<pid>/` (nothing key-related is committed);
 3. starts `deploy/federation/compose.yaml`: `hub-a`, `hub-b`, `hub-c` allowing each other and
    `hub-x`, which is on nobody's allowlist, on an isolated network with fixed IPs
-   (`GIM_FED_SUBNET`, default `10.231.64`; change it if that /24 is taken);
+   (`GIM_FED_SUBNET`, default `10.231.64`; change it if that /24 is taken), and `push-mock`
+   ([`push-mock.md`](push-mock.md)), the target of every hub's push webhook with a secret
+   generated for the run;
 4. runs the driver `crates/gim-hub/tests/fed_compose.rs` (`cargo test -p gim-hub --test
    fed_compose -- --ignored`) in a `rust:1.99-bookworm` container attached to that network. The
    driver speaks the client API to every hub with openmls clients and stops and starts hubs
@@ -89,8 +93,9 @@ only Docker:
    message, a Commit adding a revoked device of a remote user (400 `revoked_device`), a group
    across three hubs with add and remove from a non-owning hub, a concurrent
    Commit conflict (one 201, one 409 `stale_epoch`), a member-hub outage (50 messages, no loss,
-   no duplicates), an owner-hub outage (503 `peer_unavailable`, then delivery) and the refusal of
-   `hub-x`;
+   no duplicates), an owner-hub outage (503 `peer_unavailable`, then delivery), the refusal of
+   `hub-x`, a leave by Proposal and webhook push (one signed delivery per message at the mock,
+   none for a Proposal, a registration answered 410 deleted);
 5. prints the hub logs on failure and always removes the containers, network and volumes.
 
 All containers, the network and the volumes carry the label `ai-agent=true`. Other variables:
@@ -140,10 +145,11 @@ clocks, so the purge after the grace period is covered by the in-process test
 
 ### Push
 
-Push design and payload: [`push.md`](push.md). The `log` provider is always available. Each other
-provider is inert until configured: registrations for it are accepted and its sends are logged as
-skipped. Unreadable or invalid credentials stop startup. Keep credentials out of the image (mount
-them, e.g. under `/run/secrets`).
+Push design, webhook contract and payload: [`push.md`](push.md). The hub integrates no push
+platform: every push for a registration whose provider is not `log` is POSTed, signed, to the push
+server at `GIM_HUB_PUSH_WEBHOOK_URL`, which owns platform delivery and credentials. Without the URL
+those pushes are logged as skipped. The `log` provider is always available. A URL without a valid
+secret stops startup. Keep the secret out of the image (e.g. inject it from `/run/secrets`).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -151,14 +157,9 @@ them, e.g. under `/run/secrets`).
 | `GIM_HUB_PUSH_MINIMAL` | `false` | `true` sends minimal wake-up payloads `{"v":1,"type":"wake","collapse_id"}` only (no group, sequence or MLS message; see `push.md`) |
 | `GIM_HUB_PUSH_QUEUE_CAPACITY` | `10000` | Most devices with a queued push; further pushes are dropped (minimum 1) |
 | `GIM_HUB_PUSH_LOG_ENDPOINT` | `false` | Serve the unauthenticated, test-only `GET /v2/debug/push-log`; never enable in production |
-| `GIM_HUB_PUSH_APNS_TEAM_ID` | unset | APNs team ID; the four `APNS` variables below enable APNs together |
-| `GIM_HUB_PUSH_APNS_KEY_ID` | unset | ID of the APNs auth key |
-| `GIM_HUB_PUSH_APNS_KEY_PATH` | unset | Path of the APNs auth key (`.p8`) |
-| `GIM_HUB_PUSH_APNS_TOPIC` | unset | Default APNs topic (bundle ID) for registrations without `app_id` |
-| `GIM_HUB_PUSH_APNS_SANDBOX` | `false` | Send every APNs push through the sandbox |
-| `GIM_HUB_PUSH_FCM_SERVICE_ACCOUNT_PATH` | unset | Service account JSON key; enables FCM |
-| `GIM_HUB_PUSH_FCM_PROJECT_ID` | service account's `project_id` | Firebase project ID |
-| `GIM_HUB_PUSH_UNIFIEDPUSH` | `false` | `true` delivers to UnifiedPush endpoints |
+| `GIM_HUB_PUSH_WEBHOOK_URL` | unset | `http` or `https` URL of the push server; every non-`log` push is POSTed there. Unset: those pushes are skipped |
+| `GIM_HUB_PUSH_WEBHOOK_SECRET` | unset | HMAC-SHA256 key of `X-Gim-Signature`; required with the URL, at least 32 bytes |
+| `GIM_HUB_PUSH_WEBHOOK_TIMEOUT_SECONDS` | `10` | Timeout of one webhook request; a timeout is retried (minimum 1) |
 
 ## Data directory
 
@@ -222,8 +223,10 @@ docker run -d --name gim-hub -p 8080:8080 -v gim-hub-data:/data \
   -e GIM_HUB_EVENT_RETENTION_DAYS=14 gim-hub
 ```
 
-`scripts/docker-smoke.sh` builds the image and checks a running container; CI
-runs it on every push.
+`scripts/docker-smoke.sh` builds the image and checks a running container, then
+does the same for the mock push server (signed webhook 200, bad signature 401);
+CI runs it on every push. `scripts/docker-build.sh IMAGE push-mock` builds
+`Dockerfile.push-mock`.
 
 Build notes:
 

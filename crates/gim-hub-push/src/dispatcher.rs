@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex, PoisonError, RwLock,
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use gim_hub_db::{events, push, Connection, Db, DbError};
@@ -20,6 +20,8 @@ use crate::{
 
 /// Events read per database round trip while tailing.
 const BATCH: u32 = 500;
+/// Longest honoured `Retry-After`.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// Dispatcher tuning.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,9 +83,9 @@ pub struct MetricsSnapshot {
     pub dropped: u64,
     /// Notifications delivered to a provider.
     pub sent: u64,
-    /// Notifications for a provider that is not configured.
+    /// Notifications without a provider (no webhook configured).
     pub skipped: u64,
-    /// Registrations deleted after the provider rejected the token.
+    /// Registrations deleted after the push server rejected them.
     pub invalid_token: u64,
     /// Retries scheduled.
     pub retried: u64,
@@ -134,7 +136,7 @@ struct Queue {
 
 struct Inner {
     db: Db,
-    providers: HashMap<&'static str, Arc<dyn PushProvider>>,
+    providers: Vec<Arc<dyn PushProvider>>,
     settings: DispatcherSettings,
     log: PushLog,
     gate: RwLock<Option<PushGate>>,
@@ -152,8 +154,9 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
-    /// A dispatcher delivering through `providers` (by
-    /// [`PushProvider::name`]) that will tail events after `start_after`.
+    /// A dispatcher delivering through the first of `providers` that
+    /// [handles](PushProvider::handles) a registration, that will tail
+    /// events after `start_after`.
     /// `log` is the sink of the `log` provider. Nothing runs until
     /// [`Dispatcher::start`].
     pub fn new(
@@ -166,7 +169,7 @@ impl Dispatcher {
         Self {
             inner: Arc::new(Inner {
                 db,
-                providers: providers.into_iter().map(|p| (p.name(), p)).collect(),
+                providers,
                 settings,
                 log,
                 gate: RwLock::new(None),
@@ -332,9 +335,16 @@ impl Inner {
         }
     }
 
-    async fn deliver(self: &Arc<Self>, job: Job) {
+    async fn deliver(self: &Arc<Self>, mut job: Job) {
+        if job.attempt == 0 {
+            job.notification.sent_at = now_ms();
+        }
         let registration = &job.registration;
-        let Some(provider) = self.providers.get(registration.provider.as_str()) else {
+        let Some(provider) = self
+            .providers
+            .iter()
+            .find(|p| p.handles(&registration.provider))
+        else {
             bump(&self.metrics.skipped);
             tracing::info!(
                 provider = %registration.provider,
@@ -353,7 +363,7 @@ impl Inner {
                     user_id = %registration.user_id,
                     device_id = %registration.device_id,
                     %reason,
-                    "push token rejected; registration removed"
+                    "push registration rejected; removed"
                 );
                 let r = registration.clone();
                 let removed = self
@@ -366,9 +376,13 @@ impl Inner {
                     tracing::error!(%err, "push: removing registration failed");
                 }
             }
-            Err(PushError::Retryable(reason)) if job.attempt + 1 < self.settings.max_attempts => {
+            Err(PushError::Retryable(reason, retry_after))
+                if job.attempt + 1 < self.settings.max_attempts =>
+            {
                 bump(&self.metrics.retried);
-                let delay = self.settings.retry_base * 2u32.saturating_pow(job.attempt);
+                let backoff = self.settings.retry_base * 2u32.saturating_pow(job.attempt);
+                let delay =
+                    retry_after.map_or(backoff, |after| backoff.max(after.min(MAX_RETRY_AFTER)));
                 tracing::warn!(
                     provider = %registration.provider,
                     device_id = %registration.device_id,
@@ -475,7 +489,24 @@ fn notification(
         message_id,
         mls_message: mls_message.map(str::to_owned),
         minimal,
+        delivery_id: delivery_id(),
+        sent_at: 0,
     }))
+}
+
+/// A fresh random delivery id: 128 bits, lowercase hex.
+fn delivery_id() -> String {
+    let mut bytes = [0u8; 16];
+    // The system RNG does not fail on supported platforms; a zero id is
+    // still delivered.
+    let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 /// The push `message_id` / `collapse_id` of `(gid, seq)`: the stored
@@ -582,7 +613,7 @@ mod tests {
                         provider: provider.clone(),
                         token: format!("tok-{device_id}"),
                         app_id: None,
-                        sandbox: false,
+                        sandbox: None,
                         p256dh: None,
                         auth: None,
                         updated_at: 0,
@@ -745,8 +776,8 @@ mod tests {
         let fake = Fake::new(
             "fcm",
             vec![
-                Err(PushError::Retryable("503".into())),
-                Err(PushError::Retryable("503".into())),
+                Err(PushError::Retryable("503".into(), None)),
+                Err(PushError::Retryable("503".into(), None)),
             ],
         );
         let d = dispatcher(
@@ -769,6 +800,13 @@ mod tests {
         let m = d.metrics();
         assert_eq!((m.retried, m.sent, m.failed), (2, 1, 0));
         assert_eq!(fake.sent().len(), 3);
+        // One delivery: the same id and first-attempt time on every retry.
+        let sent = fake.sent();
+        let first = &sent[0].1;
+        assert!(first.sent_at > 0 && first.delivery_id.len() == 32);
+        assert!(sent
+            .iter()
+            .all(|(_, n)| (&n.delivery_id, n.sent_at) == (&first.delivery_id, first.sent_at)));
 
         let fake = Fake::new("fcm", vec![Err(PushError::Permanent("400".into()))]);
         let d = dispatcher(&db, vec![fake], DispatcherSettings::default());

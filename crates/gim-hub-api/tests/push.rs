@@ -17,7 +17,7 @@ use gim_hub_api::{dto::GID_EXAMPLE, testing::TestHub};
 use gim_hub_db::push::{self, Registration};
 use gim_hub_push::{Dispatcher, DispatcherSettings, LogProvider, PushLog};
 
-/// RFC 8291 Appendix A user agent public key and authentication secret.
+/// Opaque Web Push-style keys (RFC 8291 Appendix A values).
 const P256DH: &str =
     "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4";
 const AUTH: &str = "BTBZMqHH6r4Tts7J_aSIgg";
@@ -78,52 +78,55 @@ async fn registration_validates_replaces_and_deletes() {
     let hub = TestHub::new();
     let token = hub.create_session("u1", "d1").await;
 
-    let apns = "AB".repeat(32);
-    let (status, _) = register(
-        &hub,
-        &token,
-        json!({ "provider": "apns", "token": apns, "app_id": "im.g.apps", "sandbox": true }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-    let registration = stored(&hub, "u1", "d1").await.unwrap();
-    assert_eq!(registration.provider, "apns");
-    assert_eq!(registration.token, "ab".repeat(32));
-    assert_eq!(registration.app_id.as_deref(), Some("im.g.apps"));
-    assert!(registration.sandbox);
-
-    // One registration per device: a new one replaces it.
-    assert_eq!((registration.p256dh, registration.auth), (None, None));
+    // Provider and token are opaque: no per-platform token format.
     let (status, _) = register(
         &hub,
         &token,
         json!({
-            "provider": "unifiedpush", "token": "https://push.example.eu/up/abc",
-            "p256dh": P256DH, "auth": AUTH,
+            "provider": "acme.push-2", "token": "opaque token: ü/+=", "app_id": "im.g.apps",
+            "sandbox": true, "p256dh": P256DH, "auth": AUTH,
         }),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let registration = stored(&hub, "u1", "d1").await.unwrap();
-    assert_eq!(registration.provider, "unifiedpush");
-    assert!(!registration.sandbox);
+    assert_eq!(registration.provider, "acme.push-2");
+    assert_eq!(registration.token, "opaque token: ü/+=");
+    assert_eq!(registration.app_id.as_deref(), Some("im.g.apps"));
+    assert_eq!(registration.sandbox, Some(true));
     assert_eq!(registration.p256dh.as_ref().map(Vec::len), Some(65));
     assert_eq!(registration.auth.as_ref().map(Vec::len), Some(16));
 
-    let up = "https://push.example.eu/up/abc";
+    // One registration per device: a new one replaces it. The former
+    // platform names are plain opaque providers now.
+    for provider in ["apns", "fcm", "unifiedpush"] {
+        let (status, _) = register(
+            &hub,
+            &token,
+            json!({ "provider": provider, "token": "not-hex" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{provider}");
+        let registration = stored(&hub, "u1", "d1").await.unwrap();
+        assert_eq!(registration.provider, provider);
+        assert_eq!(registration.sandbox, None);
+        assert_eq!((registration.p256dh, registration.auth), (None, None));
+    }
+
     for body in [
-        json!({ "provider": "unifiedpush", "token": up }),
-        json!({ "provider": "unifiedpush", "token": up, "p256dh": P256DH }),
-        json!({ "provider": "unifiedpush", "token": up, "auth": AUTH }),
-        json!({ "provider": "unifiedpush", "token": up, "p256dh": &P256DH[..86], "auth": AUTH }),
-        json!({ "provider": "unifiedpush", "token": up, "p256dh": P256DH, "auth": &AUTH[..20] }),
-        json!({ "provider": "unifiedpush", "token": up, "p256dh": "!!", "auth": AUTH }),
-        json!({ "provider": "apns", "token": "not-hex" }),
-        json!({ "provider": "fcm", "token": "short" }),
-        json!({ "provider": "unifiedpush", "token": "http://push.example.eu/up" }),
-        json!({ "provider": "unifiedpush", "token": "https://127.0.0.1/up" }),
-        json!({ "provider": "log", "token": "" }),
-        json!({ "provider": "smoke", "token": "x" }),
+        json!({ "provider": "APNS", "token": "x" }),
+        json!({ "provider": "a b", "token": "x" }),
+        json!({ "provider": "a/b", "token": "x" }),
+        json!({ "provider": "", "token": "x" }),
+        json!({ "provider": "a".repeat(65), "token": "x" }),
+        json!({ "provider": "fcm", "token": "" }),
+        json!({ "provider": "fcm", "token": "bad\ntoken" }),
+        json!({ "provider": "fcm", "token": "x".repeat(4097) }),
+        json!({ "provider": "fcm", "token": "x", "app_id": "bad id" }),
+        json!({ "provider": "fcm", "token": "x", "p256dh": "!!" }),
+        json!({ "provider": "fcm", "token": "x", "p256dh": "" }),
+        json!({ "provider": "fcm", "token": "x", "auth": "A".repeat(257) }),
+        json!({ "provider": "fcm", "token": "x", "sandbox": "yes" }),
         json!({ "token": "x" }),
     ] {
         let (status, error) = register(&hub, &token, body.clone()).await;
@@ -150,18 +153,22 @@ async fn registration_validates_replaces_and_deletes() {
 }
 
 #[tokio::test]
-async fn webpush_keys_are_ignored_for_other_providers() {
+async fn keys_are_optional_and_stored_for_any_provider() {
     let hub = TestHub::new();
     let token = hub.create_session("u1", "d1").await;
     let (status, _) = register(
         &hub,
         &token,
-        json!({ "provider": "log", "token": "t", "p256dh": "bad", "auth": AUTH }),
+        json!({ "provider": "log", "token": "t", "auth": "BAQ=", "sandbox": false }),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let registration = stored(&hub, "u1", "d1").await.unwrap();
-    assert_eq!((registration.p256dh, registration.auth), (None, None));
+    assert_eq!(registration.sandbox, Some(false));
+    assert_eq!(
+        (registration.p256dh, registration.auth),
+        (None, Some(vec![4, 4]))
+    );
 }
 
 #[tokio::test]

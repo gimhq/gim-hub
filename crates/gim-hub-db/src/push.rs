@@ -4,8 +4,8 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
 use crate::DbError;
 
-/// A device's push registration. `provider` is one of `apns`, `fcm`,
-/// `unifiedpush` or `log`.
+/// A device's push registration. `provider` is an opaque name (`log` is
+/// the hub's test provider; every other one goes to the push webhook).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Registration {
     pub user_id: String,
@@ -13,11 +13,10 @@ pub struct Registration {
     pub provider: String,
     pub token: String,
     pub app_id: Option<String>,
-    pub sandbox: bool,
-    /// UnifiedPush only: the user agent's uncompressed P-256 public key
-    /// (RFC 8291 `p256dh`).
+    pub sandbox: Option<bool>,
+    /// Opaque key passed to the push server (base64url-decoded).
     pub p256dh: Option<Vec<u8>>,
-    /// UnifiedPush only: the RFC 8291 authentication secret.
+    /// Opaque secret passed to the push server (base64url-decoded).
     pub auth: Option<Vec<u8>>,
     pub updated_at: i64,
 }
@@ -159,7 +158,7 @@ mod tests {
             provider: "log".into(),
             token: token.into(),
             app_id: Some("im.g.apps".into()),
-            sandbox: true,
+            sandbox: Some(true),
             p256dh: Some(vec![4; 65]),
             auth: Some(vec![1; 16]),
             updated_at: 5,

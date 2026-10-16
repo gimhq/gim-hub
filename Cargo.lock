@@ -1277,6 +1277,7 @@ name = "gim-hub-push"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "base64 0.23.1",
  "gim-hub-db",
  "reqwest",
@@ -1284,11 +1285,9 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
- "url",
 ]
 
 [[package]]
@@ -1311,6 +1310,22 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "gim-push-mock"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "hex",
+ "http-body-util",
+ "ring",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3767,7 +3782,6 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "futures-core",
- "h2",
  "http",
  "http-body",
  "http-body-util",
