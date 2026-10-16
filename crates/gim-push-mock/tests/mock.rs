@@ -129,6 +129,18 @@ fn signature_roundtrip_and_rejections() {
     }
 }
 
+#[test]
+fn signature_matches_the_push_md_example() {
+    let body = br#"{"v":1,"hub_id":"hubexample","delivery_id":"3f1c0d9a8b7e6f5a4b3c2d1e0f9a8b7c"}"#;
+    let secret = b"example-secret-0123456789abcdef0123";
+    let header = "t=1760600000,v1=41f7f7c39db767f966e6c1cd60c6a460266194f33b271d1244ac9bb7b38e544e";
+    assert_eq!(sign(secret, 1_760_600_000, body), header);
+    assert_eq!(
+        verify_signature(secret, header, body, 1_760_600_000, 300),
+        Ok(())
+    );
+}
+
 #[tokio::test]
 async fn push_rejects_bad_signatures_with_401() {
     let app = app();
