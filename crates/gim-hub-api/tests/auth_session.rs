@@ -1,6 +1,9 @@
 //! Device sign-in: POST /v2/auth/challenge and POST /v2/auth/session, with
 //! the vendored gim-core vectors (`testdata/identity/auth.json`,
-//! `identity.json`) and freshly signed AuthResponses.
+//! `identity.json`), the hub-proposed `auth-v2.json` and freshly signed
+//! AuthResponses.
+
+use std::sync::Arc;
 
 use axum::{
     body::{to_bytes, Body},
@@ -16,7 +19,7 @@ use gim_hub_db::{
     auth::{self, Challenge},
     users::{self, Device, StoredDeviceList},
 };
-use gim_hub_identity::{AuthChallenge, DeviceList, UserId, AUTH_RESPONSE_CONTEXT};
+use gim_hub_identity::{AuthChallenge, DeviceList, HubId, UserId, AUTH_RESPONSE_CONTEXT};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
@@ -132,6 +135,31 @@ async fn issue_vector_challenge(hub: &TestHub) {
     hub.state
         .db
         .write(move |tx| auth::insert_challenge(tx, &row, issued_at))
+        .await
+        .unwrap();
+}
+
+/// `hub` serving the client API at `public_url`.
+fn with_public_url(mut hub: TestHub, public_url: &str) -> TestHub {
+    let mut config = (*hub.state.config).clone();
+    config.public_url = Some(public_url.to_owned());
+    hub.state.config = Arc::new(config);
+    hub
+}
+
+/// Stores `challenge` as issued now for `device_id`, valid for the TTL.
+async fn insert_challenge(hub: &TestHub, device_id: &str, challenge: &AuthChallenge) {
+    let now = hub.state.clock.now_ms();
+    let row = Challenge {
+        challenge_id: hex::encode(Sha256::digest(challenge.nonce())),
+        user_id: text(&vectors("auth")["user_id"]),
+        device_id: device_id.to_owned(),
+        challenge: challenge.to_bytes(),
+        expires_at: now + CHALLENGE_TTL_MS,
+    };
+    hub.state
+        .db
+        .write(move |tx| auth::insert_challenge(tx, &row, now))
         .await
         .unwrap();
 }
@@ -428,4 +456,95 @@ async fn malformed_responses_are_rejected() {
     let (status, value) = create_session(&hub, &response).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(value["error"]["code"], error("invalid_challenge"));
+}
+
+const PUBLIC_URL: &str = "https://hub.example.eu";
+
+#[tokio::test]
+async fn hub_with_public_url_issues_v2_and_signs_in() {
+    let hub = hub_with_user(with_public_url(TestHub::new(), PUBLIC_URL)).await;
+    let user_id = text(&vectors("auth")["user_id"]);
+    let (device_id, key) = devices().swap_remove(0);
+
+    let bytes = challenge_bytes(&hub, &device_id).await;
+    let challenge = AuthChallenge::decode(&bytes).unwrap();
+    assert_eq!(challenge.version(), 2);
+    assert_eq!(challenge.audience(), hub.state.hub.hub_id().as_str());
+    assert_eq!(challenge.audience_url(), Some(PUBLIC_URL));
+    assert_eq!(challenge.issued_at(), TEST_NOW as u64);
+    assert_eq!(challenge.to_bytes(), bytes);
+
+    let response = sign_response(&bytes, &user_id, &device_id, &key);
+    let (status, body) = create_session(&hub, &response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        get_me(&hub, &text(&body["token"])).await,
+        (user_id, device_id)
+    );
+}
+
+#[tokio::test]
+async fn hub_without_public_url_issues_v1() {
+    let hub = hub_with_user(TestHub::new()).await;
+    let (device_id, _) = devices().swap_remove(0);
+    let challenge = AuthChallenge::decode(&challenge_bytes(&hub, &device_id).await).unwrap();
+    assert_eq!(challenge.version(), 1);
+    assert_eq!(challenge.audience_url(), None);
+}
+
+#[tokio::test]
+async fn v2_vector_response_creates_session() {
+    let v = vectors("auth-v2");
+    let hub = with_public_url(
+        TestHub::with_hub_seed(seed(&v["hub_root_seed"])),
+        &text(&v["audience_url"]),
+    );
+    let hub = hub_with_user(hub).await;
+    let issued_at = v["challenge"]["issued_at"].as_i64().unwrap();
+    hub.state.clock.advance(issued_at - TEST_NOW);
+    let challenge = AuthChallenge::decode(&hex_bytes(&v["challenge"]["bytes"])).unwrap();
+    insert_challenge(&hub, &text(&v["device_id"]), &challenge).await;
+    let (status, body) = create_session(&hub, &hex_bytes(&v["response"])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+type BuildChallenge = fn(&HubId, [u8; 32], u64, u64) -> AuthChallenge;
+
+/// A challenge that this hub stored as issued but that names another URL
+/// or has the wrong version for its configuration is `invalid_challenge`.
+#[tokio::test]
+async fn challenge_url_and_version_mismatches_are_rejected() {
+    let user_id = text(&vectors("auth")["user_id"]);
+    let (device_id, key) = devices().swap_remove(0);
+    let at = TEST_NOW as u64;
+    let expires = at + CHALLENGE_TTL_MS as u64;
+    let cases: [(Option<&str>, BuildChallenge); 3] = [
+        // v2 for another URL, at a hub with a public URL.
+        (Some(PUBLIC_URL), |hub, nonce, at, exp| {
+            AuthChallenge::new_v2(hub, "https://other.example.eu", nonce, at, exp)
+        }),
+        // v1 at a hub with a public URL.
+        (Some(PUBLIC_URL), AuthChallenge::new),
+        // v2 at a hub without one.
+        (None, |hub, nonce, at, exp| {
+            AuthChallenge::new_v2(hub, PUBLIC_URL, nonce, at, exp)
+        }),
+    ];
+    for (i, (public_url, build)) in cases.into_iter().enumerate() {
+        let mut hub = TestHub::new();
+        if let Some(url) = public_url {
+            hub = with_public_url(hub, url);
+        }
+        let hub = hub_with_user(hub).await;
+        let challenge = build(hub.state.hub.hub_id(), [i as u8 + 1; 32], at, expires);
+        insert_challenge(&hub, &device_id, &challenge).await;
+        let response = sign_response(&challenge.to_bytes(), &user_id, &device_id, &key);
+        let (status, body) = create_session(&hub, &response).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "case {i}: {body}");
+        assert_eq!(
+            body["error"]["code"],
+            error("invalid_challenge"),
+            "case {i}"
+        );
+    }
 }

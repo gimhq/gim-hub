@@ -65,7 +65,7 @@ fn run(case: &Value) -> Result<(), IdentityError> {
             let user_id = auth_response_user_id(&input)?;
             let list = DeviceList::verify(&hex(&context["device_list"]), &user_id)?;
             let audience = HubId::parse(text(&context["audience"]))?;
-            verify_auth_response(&input, &audience, now(), &list)?;
+            verify_auth_response(&input, &audience, None, now(), &list)?;
         }
         kind => panic!("unknown kind {kind}"),
     }

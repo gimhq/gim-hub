@@ -11,7 +11,7 @@ use std::{
 };
 
 use ed25519_dalek::SigningKey;
-use gim_hub_identity::HubId;
+use gim_hub_identity::{sign_hub_proof, HubId, IdentityError};
 
 /// The hub's root signing key and the ids derived from it.
 #[derive(Clone)]
@@ -63,6 +63,19 @@ impl HubIdentity {
     /// The hub's id: the audience of sign-in challenges.
     pub fn hub_id(&self) -> &HubId {
         &self.hub_id
+    }
+
+    /// The proof of possession of GET /v2/hub: the root key's signature
+    /// over the fixed, domain-separated proof message for `nonce`, this
+    /// hub's id and `public_url` (never over caller-chosen bytes alone).
+    /// Fails only for a URL longer than 65535 bytes, which the config
+    /// rejects.
+    pub fn sign_proof(
+        &self,
+        nonce: &[u8; 32],
+        public_url: &str,
+    ) -> Result<[u8; 64], IdentityError> {
+        sign_hub_proof(&self.key, nonce, public_url)
     }
 }
 

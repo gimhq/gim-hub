@@ -54,6 +54,10 @@ pub enum IdentityError {
     NotYetValid,
     #[error("challenge audience does not match this hub")]
     AudienceMismatch,
+    /// A version 2 challenge names another public URL than this hub's, or
+    /// the challenge version does not match whether this hub has one.
+    #[error("challenge audience_url does not match this hub's public URL")]
+    AudienceUrlMismatch,
     /// A runtime cert body names another hub root key than its signer.
     #[error("hub root key does not match the expected hub")]
     HubKeyMismatch,
@@ -102,6 +106,7 @@ impl IdentityError {
             Self::Expired => "expired",
             Self::NotYetValid => "not_yet_valid",
             Self::AudienceMismatch => "audience_mismatch",
+            Self::AudienceUrlMismatch => "audience_url_mismatch",
             Self::HubKeyMismatch => "hub_key_mismatch",
             Self::BadHubSignature(_) => "bad_hub_signature",
             Self::DuplicateHub(_) => "duplicate_hub",

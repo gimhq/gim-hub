@@ -247,7 +247,7 @@ fn auth() {
 
     let list = DeviceList::verify(&hex(&v["device_list"]), &user_id).unwrap();
     let response = hex(&v["response"]);
-    let device_ref = verify_auth_response(&response, &audience, issued_at, &list).unwrap();
+    let device_ref = verify_auth_response(&response, &audience, None, issued_at, &list).unwrap();
     assert_eq!(device_ref.user_id, user_id);
     assert_eq!(device_ref.device_id, device_id);
     assert_eq!(device_ref.nonce, nonce);
@@ -270,15 +270,15 @@ fn auth() {
     // Negative: wrong audience, expired, tampered signature.
     let other = HubId::from_root_pubkey(&key(&v["user_root_seed"]).verifying_key());
     assert_eq!(
-        verify_auth_response(&response, &other, issued_at, &list),
+        verify_auth_response(&response, &other, None, issued_at, &list),
         Err(IdentityError::AudienceMismatch)
     );
     assert_eq!(
-        verify_auth_response(&response, &audience, expires_at, &list),
+        verify_auth_response(&response, &audience, None, expires_at, &list),
         Err(IdentityError::Expired)
     );
     assert_eq!(
-        verify_auth_response(&flip_last(&response), &audience, issued_at, &list),
+        verify_auth_response(&flip_last(&response), &audience, None, issued_at, &list),
         Err(IdentityError::BadSignature)
     );
 }
@@ -319,6 +319,7 @@ fn auth_revoked_device() {
         verify_auth_response(
             &response,
             &audience,
+            None,
             uint(&v["challenge"]["issued_at"]),
             &list
         ),
