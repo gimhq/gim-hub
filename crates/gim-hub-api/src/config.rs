@@ -44,6 +44,10 @@ pub struct Config {
     pub trust_forwarded_for: bool,
     /// `GIM_HUB_PUSH_*`: push gateway.
     pub push: PushConfig,
+    /// `GIM_HUB_PUBLIC_URL`: the canonical client-API base URL, normalized
+    /// (see [`normalize_public_url`]). Required with federation; without it
+    /// the hub issues v1 sign-in challenges and has no proof of possession.
+    pub public_url: Option<String>,
     /// `GIM_HUB_UNHOSTED_GRACE_HOURS`: how long the data of a user who
     /// removed this hub from their hosting record is kept before the purge
     /// (docs/multihoming.md §7.3). Only used with federation.
@@ -79,6 +83,23 @@ impl Config {
         let database_path = get("GIM_HUB_DATABASE_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|| data_dir.join("hub.db"));
+        let public_url = get("GIM_HUB_PUBLIC_URL")
+            .map(|raw| {
+                normalize_public_url(raw).map_err(|reason| ConfigError {
+                    name: "GIM_HUB_PUBLIC_URL",
+                    value: raw.to_owned(),
+                    reason,
+                })
+            })
+            .transpose()?;
+        // GIM_HUB_FEDERATION itself is validated by the federation config.
+        if public_url.is_none() && get("GIM_HUB_FEDERATION").map(str::trim) == Some("true") {
+            return Err(ConfigError {
+                name: "GIM_HUB_PUBLIC_URL",
+                value: String::new(),
+                reason: "required when GIM_HUB_FEDERATION=true".into(),
+            });
+        }
         Ok(Self {
             listen: parse(
                 get,
@@ -119,6 +140,7 @@ impl Config {
             trust_forwarded_for: parse(get, "GIM_HUB_TRUST_FORWARDED_FOR", false, None)?,
             push: push_config(get)?,
             unhosted_grace_hours: parse(get, "GIM_HUB_UNHOSTED_GRACE_HOURS", 168, Some(1))?,
+            public_url,
             data_dir,
             database_path,
         })
@@ -162,6 +184,81 @@ fn push_config<'a>(
         queue_capacity: parse(get, "GIM_HUB_PUSH_QUEUE_CAPACITY", 10_000, Some(1))?,
         log_endpoint: parse(get, "GIM_HUB_PUSH_LOG_ENDPOINT", false, None)?,
         webhook,
+    })
+}
+
+/// Normalizes a public URL to `scheme://host[:port]`: scheme `http` or
+/// `https`, lowercase host (DNS name, IPv4 or bracketed IPv6), the port
+/// omitted when it is the scheme default, no trailing slash. Userinfo, a
+/// path other than `/`, a query or a fragment are rejected.
+pub fn normalize_public_url(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    let (scheme, rest) = raw
+        .split_once("://")
+        .ok_or_else(|| "expected scheme://host[:port]".to_owned())?;
+    let scheme = scheme.to_ascii_lowercase();
+    let default_port = match scheme.as_str() {
+        "http" => 80,
+        "https" => 443,
+        _ => return Err("scheme must be http or https".into()),
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    if !tail.is_empty() && tail != "/" {
+        return Err("must not have a path, query or fragment".into());
+    }
+    if authority.contains('@') {
+        return Err("must not have userinfo".into());
+    }
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(v6) => {
+            let (addr, after) = v6
+                .split_once(']')
+                .ok_or_else(|| "unterminated IPv6 literal".to_owned())?;
+            addr.parse::<std::net::Ipv6Addr>()
+                .map_err(|_| "invalid IPv6 literal".to_owned())?;
+            let port = match after {
+                "" => None,
+                _ => Some(
+                    after
+                        .strip_prefix(':')
+                        .ok_or_else(|| "invalid authority".to_owned())?,
+                ),
+            };
+            (format!("[{}]", addr.to_ascii_lowercase()), port)
+        }
+        None => {
+            let (host, port) = match authority.split_once(':') {
+                Some((host, port)) => (host, Some(port)),
+                None => (authority, None),
+            };
+            let host = host.to_ascii_lowercase();
+            let label_ok = |label: &str| {
+                !label.is_empty()
+                    && label
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            };
+            if !host.split('.').all(label_ok) {
+                return Err("invalid host".into());
+            }
+            (host, port)
+        }
+    };
+    let port = match port {
+        None => None,
+        Some(port) => {
+            let port: u16 = Some(port)
+                .filter(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|port| port.parse().ok())
+                .filter(|port| *port != 0)
+                .ok_or_else(|| "invalid port".to_owned())?;
+            Some(port).filter(|port| *port != default_port)
+        }
+    };
+    Ok(match port {
+        Some(port) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://{host}"),
     })
 }
 
@@ -226,6 +323,68 @@ mod tests {
         assert_eq!(config.hub_key_path(), PathBuf::from("./data/hub_key"));
         assert_eq!(config.blobs_dir(), PathBuf::from("./data/blobs"));
         assert_eq!(config.push, PushConfig::default());
+        assert_eq!(config.public_url, None);
+    }
+
+    #[test]
+    fn public_url_is_normalized() {
+        for (raw, normalized) in [
+            ("https://hub.example.eu", "https://hub.example.eu"),
+            ("https://hub.example.eu/", "https://hub.example.eu"),
+            ("https://hub.example.eu:443", "https://hub.example.eu"),
+            ("http://hub-a:80/", "http://hub-a"),
+            ("http://hub-a:8080", "http://hub-a:8080"),
+            ("https://hub.example.eu:80", "https://hub.example.eu:80"),
+            ("HTTPS://Hub.Example.EU:8443/", "https://hub.example.eu:8443"),
+            ("http://10.0.0.1:8080", "http://10.0.0.1:8080"),
+            ("http://[::1]:8080/", "http://[::1]:8080"),
+            ("https://[FE80::1]:443", "https://[fe80::1]"),
+            (" https://hub.example.eu ", "https://hub.example.eu"),
+        ] {
+            assert_eq!(normalize_public_url(raw).as_deref(), Ok(normalized), "{raw}");
+            let config = Config::from_vars(vars(&[("GIM_HUB_PUBLIC_URL", raw)])).unwrap();
+            assert_eq!(config.public_url.as_deref(), Some(normalized));
+        }
+        for bad in [
+            "hub.example.eu",
+            "ftp://hub.example.eu",
+            "https://",
+            "https://hub.example.eu/v2",
+            "https://hub.example.eu//",
+            "https://hub.example.eu?x=1",
+            "https://hub.example.eu/?x=1",
+            "https://hub.example.eu#top",
+            "https://user@hub.example.eu",
+            "https://user:pw@hub.example.eu",
+            "https://hub.example.eu:",
+            "https://hub.example.eu:0",
+            "https://hub.example.eu:65536",
+            "https://hub.example.eu:+80",
+            "https://hub..eu",
+            "https://hub.example.eu.",
+            "https://hub_a.eu",
+            "https://h\u{fc}b.eu",
+            "https://[::1",
+            "https://[nope]",
+            "https://[::1]x",
+        ] {
+            let err = Config::from_vars(vars(&[("GIM_HUB_PUBLIC_URL", bad)])).unwrap_err();
+            assert_eq!(err.name, "GIM_HUB_PUBLIC_URL", "{bad}");
+        }
+    }
+
+    #[test]
+    fn federation_requires_public_url() {
+        let err = Config::from_vars(vars(&[("GIM_HUB_FEDERATION", "true")])).unwrap_err();
+        assert_eq!(err.name, "GIM_HUB_PUBLIC_URL");
+        assert!(err.to_string().contains("required when GIM_HUB_FEDERATION=true"));
+        let config = Config::from_vars(vars(&[
+            ("GIM_HUB_FEDERATION", "true"),
+            ("GIM_HUB_PUBLIC_URL", "http://hub-a:8080/"),
+        ]))
+        .unwrap();
+        assert_eq!(config.public_url.as_deref(), Some("http://hub-a:8080"));
+        assert!(Config::from_vars(vars(&[("GIM_HUB_FEDERATION", "false")])).is_ok());
     }
 
     #[test]

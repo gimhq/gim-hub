@@ -8,7 +8,8 @@
 //! with `--ignored` in a container attached to the federation network.
 //!
 //! Environment: `GIM_FED_HUB_{A,B,C,X}` (base URLs), `GIM_FED_HUB_X_ID`
-//! (hub-x's hub_id), `GIM_FED_HUB_B_ID` (hub-b's hub_id),
+//! (hub-x's hub_id), `GIM_FED_HUB_B_ID` (hub-b's hub_id; the base URLs are
+//! also the hubs' `GIM_HUB_PUBLIC_URL`),
 //! `GIM_FED_PUSH_MOCK` (base URL of the mock push server), `GIM_FED_PROJECT` (compose project name, for container
 //! names), `GIM_FED_DOCKER_SOCKET` (default `/var/run/docker.sock`),
 //! `GIM_FED_PSK` (`1`: hub-a, hub-b and hub-c run with a pnet key that
@@ -56,6 +57,9 @@ async fn compose_federation() {
     }
 
     let start = Instant::now();
+    let b_id = std::env::var("GIM_FED_HUB_B_ID").expect("GIM_FED_HUB_B_ID is not set");
+    b.check_proof(&b_id).await;
+    ok("hub-b proves possession of its hub_id at its public URL", start);
     let alice = User::sign_up("alice", &a, 1, 11, 2).await;
     let bob = User::sign_up("bob", &b, 2, 21, 2).await;
     let carol = User::sign_up("carol", &c, 3, 31, 2).await;

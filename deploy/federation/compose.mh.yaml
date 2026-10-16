@@ -12,8 +12,14 @@ x-mh: &mh
 
 services:
   hub-a:
-    environment: *mh
+    environment:
+      <<: *mh
+      GIM_HUB_PUBLIC_URL: http://hub-a:8080
   hub-b:
-    environment: *mh
+    environment:
+      <<: *mh
+      GIM_HUB_PUBLIC_URL: http://hub-b:8080
   hub-c:
-    environment: *mh
+    environment:
+      <<: *mh
+      GIM_HUB_PUBLIC_URL: http://hub-c:8080

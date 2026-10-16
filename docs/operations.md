@@ -22,7 +22,18 @@ the variable.
 | `GIM_HUB_RECOVERY_READ_PER_IP_PER_MIN` | `20` | Unauthenticated `GET /v2/users/{user_id}/recovery-backup` requests per client IP (IPv6: per /64) per minute, separate from the public reads (minimum 1) |
 | `GIM_HUB_RECOVERY_READ_PER_USER_PER_MIN` | `10` | Recovery backup reads of one `user_id` per minute, across all clients (minimum 1) |
 | `GIM_HUB_TRUST_FORWARDED_FOR` | `false` | `true` keys the per-IP limit by the left-most `X-Forwarded-For` address; set only behind a reverse proxy that overwrites the header |
+| `GIM_HUB_PUBLIC_URL` | unset | Canonical client-API base URL (`scheme://host[:port]`), required when `GIM_HUB_FEDERATION=true`. Normalized at startup; see below |
 | `RUST_LOG` | `info` | Log filter (`tracing_subscriber` `EnvFilter` syntax, e.g. `gim_hub_api=debug,info`) |
+
+`GIM_HUB_PUBLIC_URL` is the URL clients reach this hub's client API at, as listed for it by
+clients and other hubs. It is signed into `GET /v2/hub?nonce=` proofs and into sign-in
+challenges (AuthChallenge v2), so it must be exactly the URL clients use. It is normalized
+before use: the scheme must be `http` or `https` (lowercased), the host (DNS name, IPv4 or
+bracketed IPv6) is lowercased, a port equal to the scheme default (80, 443) is dropped and a
+single trailing `/` is removed. Userinfo, any other path, a query or a fragment is a startup
+error, as is an unset URL with `GIM_HUB_FEDERATION=true`. Example:
+`HTTPS://Hub.Example.EU:443/` becomes `https://hub.example.eu`. Without federation it is
+optional; a hub without it issues version 1 challenges and answers `GET /v2/hub?nonce=` with 400.
 
 ### Federation
 
@@ -82,14 +93,17 @@ only Docker:
 2. generates fresh hub root keys in the hubs' volumes with `gim-hub hub-id` and writes the
    allowlists into `.tmp/fed-<pid>/` (nothing key-related is committed);
 3. starts `deploy/federation/compose.yaml`: `hub-a`, `hub-b`, `hub-c` allowing each other and
-   `hub-x`, which is on nobody's allowlist, on an isolated network with fixed IPs
+   `hub-x`, which is on nobody's allowlist (each with `GIM_HUB_PUBLIC_URL=http://hub-<n>:8080`,
+   the base URL of the driver), on an isolated network with fixed IPs
    (`GIM_FED_SUBNET`, default `10.231.64`; change it if that /24 is taken), and `push-mock`
    ([`push-mock.md`](push-mock.md)), the target of every hub's push webhook with a secret
    generated for the run;
 4. runs the driver `crates/gim-hub/tests/fed_compose.rs` (`cargo test -p gim-hub --test
    fed_compose -- --ignored`) in a `rust:1.99-bookworm` container attached to that network. The
    driver speaks the client API to every hub with openmls clients and stops and starts hubs
-   through the mounted Docker socket. Scenarios: hosting-record resolution, a cross-hub direct
+   through the mounted Docker socket. Scenarios: hub-b's `GET /v2/hub?nonce=` proof (verified
+   with its root key and URL; every sign-in also checks that the challenge is v2 for the hub's
+   URL), hosting-record resolution, a cross-hub direct
    message, a Commit adding a revoked device of a remote user (400 `revoked_device`), a group
    across three hubs with add and remove from a non-owning hub, a concurrent
    Commit conflict (one 201, one 409 `stale_epoch`), a member-hub outage (50 messages, no loss,

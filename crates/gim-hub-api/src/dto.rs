@@ -105,6 +105,27 @@ pub struct HubInfo {
     /// Hub version.
     #[schema(example = "0.1.0")]
     pub version: String,
+    /// The hub's canonical client-API base URL (`GIM_HUB_PUBLIC_URL`,
+    /// normalized), if configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "https://hub.example.eu")]
+    pub public_url: Option<String>,
+    /// Only with `?nonce=`: Ed25519 signature by the hub root key
+    /// (`hub_root_pubkey`) over `"gim-hub-proof-v1" || 0x00 || nonce ||
+    /// UTF-8(hub_id) || UTF-8(public_url)`, base64url without padding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(content_encoding = "base64url")]
+    pub proof: Option<String>,
+}
+
+/// Query of GET /v2/hub.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct HubQuery {
+    /// Client nonce for a proof of possession: 32 random bytes, base64url
+    /// without padding (43 characters). Needs a configured `public_url`.
+    #[param(pattern = "^[A-Za-z0-9_-]{43}$")]
+    pub nonce: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

@@ -13,9 +13,11 @@
 //! - `SignedHostingRecord`: verify, primary hub, update rules; the hub
 //!   co-signs its own `HostingEntry` and `sort_hosting_entries` puts entries
 //!   in the canonical record order.
-//! - `AuthChallenge` (built, encoded and checked by the hub) and
-//!   `AuthResponse` verification. The issued-challenge / single-use nonce
-//!   store is the caller's.
+//! - `AuthChallenge` v1 and the hub-proposed v2 bound to the hub's public
+//!   URL (built, encoded and checked by the hub) and `AuthResponse`
+//!   verification. The issued-challenge / single-use nonce store is the
+//!   caller's.
+//! - The hub-proposed hub proof of possession (`GET /v2/hub?nonce=`).
 //! - The MLS credential `0xF001` (`GimCredential`), at the byte level of
 //!   its content.
 //! - `RootKeyBackup` and sealed `LinkBundle`: structural checks only; the hub
@@ -38,12 +40,13 @@ mod hosting;
 mod ids;
 mod keys;
 mod list;
+mod proof;
 mod relay;
 mod runtime;
 
 pub use auth::{
     auth_response_user_id, verify_auth_response, AuthChallenge, AuthenticatedDevice,
-    AUTH_CHALLENGE_MAX_LIFETIME_MS, AUTH_RESPONSE_CONTEXT,
+    AUTH_CHALLENGE_MAX_LIFETIME_MS, AUTH_CHALLENGE_V2, AUTH_RESPONSE_CONTEXT,
 };
 pub use cert::{DeviceCert, DEVICE_CERT_CONTEXT};
 pub use credential::{CredentialError, GimCredential, GIM_CREDENTIAL_TYPE};
@@ -56,10 +59,11 @@ pub use hosting::{
 pub use ids::{DeviceId, HubId, UserId};
 pub use keys::parse_public_key;
 pub use list::{DeviceList, DEVICE_LIST_CONTEXT};
+pub use proof::{sign_hub_proof, verify_hub_proof, HUB_PROOF_CONTEXT};
 pub use relay::{check_recovery_backup, check_sealed_link_bundle};
 pub use runtime::{libp2p_peer_id, HubRuntimeCert, HUB_RUNTIME_CERT_CONTEXT, PEER_ID_LEN};
 
-/// The only body format version defined by the spec.
+/// The body format version of every form except `AuthChallenge` v2.
 pub const FORMAT_VERSION: u64 = 1;
 
 #[cfg(test)]
