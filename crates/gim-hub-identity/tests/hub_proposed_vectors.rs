@@ -1,6 +1,7 @@
-//! Checks the hub-proposed vectors of `testdata/identity/auth-v2.json`:
-//! AuthChallenge v2 bound to the hub's public URL and the hub proof of
-//! possession of `GET /v2/hub?nonce=`.
+//! Checks the hub-proposed vectors of `testdata/identity/`: `auth-v2.json`
+//! (AuthChallenge v2 bound to the hub's public URL) and `hub-proof.json`
+//! (the hub proof of possession of `GET /v2/hub?nonce=`). `public-url.json`
+//! is checked by gim-hub-api, which owns the normalization.
 
 use ciborium::Value;
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
@@ -11,9 +12,9 @@ use gim_hub_identity::{
 };
 use serde_json::Value as Json;
 
-fn vectors() -> Json {
+fn vectors(name: &str) -> Json {
     let path = format!(
-        "{}/../../testdata/identity/auth-v2.json",
+        "{}/../../testdata/identity/{name}.json",
         env!("CARGO_MANIFEST_DIR")
     );
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
@@ -39,7 +40,7 @@ fn encode(value: &Value) -> Vec<u8> {
 
 #[test]
 fn auth_challenge_v2() {
-    let v = vectors();
+    let v = vectors("auth-v2");
     let audience = HubId::from_root_pubkey(&key(&v["hub_root_seed"]).verifying_key());
     assert_eq!(audience.as_str(), text(&v["audience"]));
     let url = text(&v["audience_url"]);
@@ -99,36 +100,43 @@ fn auth_challenge_v2() {
 
 #[test]
 fn hub_proof() {
-    let v = vectors();
-    let root = key(&v["hub_root_seed"]);
-    assert_eq!(
-        root.verifying_key().as_bytes().to_vec(),
-        hex(&v["hub_root_pubkey"])
-    );
-    let hub_id = HubId::parse(text(&v["audience"])).unwrap();
-    let url = text(&v["audience_url"]);
-    let p = &v["hub_proof"];
-    let nonce: [u8; 32] = hex(&p["nonce"]).try_into().unwrap();
-    assert_eq!(BASE64URL_NOPAD.encode(&nonce), text(&p["nonce_base64url"]));
+    let file = vectors("hub-proof");
+    let cases = file["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 2);
+    for v in cases {
+        let root = key(&v["root_seed"]);
+        assert_eq!(
+            root.verifying_key().as_bytes().to_vec(),
+            hex(&v["hub_root_pubkey"])
+        );
+        let hub_id = HubId::from_root_pubkey(&root.verifying_key());
+        assert_eq!(hub_id.as_str(), text(&v["hub_id"]));
+        let url = text(&v["public_url"]);
+        let nonce: [u8; 32] = hex(&v["nonce"]).try_into().unwrap();
+        assert_eq!(BASE64URL_NOPAD.encode(&nonce), text(&v["nonce_base64url"]));
 
-    // "gim-hub-proof-v1" || 0x00 || nonce || hub_id || public_url
-    let message = [
-        b"gim-hub-proof-v1".as_slice(),
-        &[0],
-        &nonce,
-        hub_id.as_str().as_bytes(),
-        url.as_bytes(),
-    ]
-    .concat();
-    assert_eq!(message, hex(&p["message"]));
-    let proof = sign_hub_proof(&root, &nonce, url);
-    assert_eq!(proof.to_vec(), hex(&p["proof"]));
-    assert_eq!(BASE64URL_NOPAD.encode(&proof), text(&p["proof_base64url"]));
-    root.verifying_key()
-        .verify(&message, &Signature::from_bytes(&proof))
-        .unwrap();
-    assert_eq!(
-        verify_hub_proof(&root.verifying_key(), &hub_id, &nonce, url, &proof),
-        Ok(())
-    );
+        // "gim-hub-proof-v1" || 0x00 || nonce || u16be(len(hub_id)) ||
+        // hub_id || u16be(len(public_url)) || public_url
+        let message = [
+            b"gim-hub-proof-v1".as_slice(),
+            &[0],
+            &nonce,
+            &u16::try_from(hub_id.as_str().len()).unwrap().to_be_bytes(),
+            hub_id.as_str().as_bytes(),
+            &u16::try_from(url.len()).unwrap().to_be_bytes(),
+            url.as_bytes(),
+        ]
+        .concat();
+        assert_eq!(message, hex(&v["message"]));
+        let proof = sign_hub_proof(&root, &nonce, url).unwrap();
+        assert_eq!(proof.to_vec(), hex(&v["proof"]));
+        assert_eq!(BASE64URL_NOPAD.encode(&proof), text(&v["proof_base64url"]));
+        root.verifying_key()
+            .verify(&message, &Signature::from_bytes(&proof))
+            .unwrap();
+        assert_eq!(
+            verify_hub_proof(&root.verifying_key(), &hub_id, &nonce, url, &proof),
+            Ok(())
+        );
+    }
 }

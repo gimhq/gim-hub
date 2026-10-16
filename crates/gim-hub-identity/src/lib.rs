@@ -59,7 +59,7 @@ pub use hosting::{
 pub use ids::{DeviceId, HubId, UserId};
 pub use keys::parse_public_key;
 pub use list::{DeviceList, DEVICE_LIST_CONTEXT};
-pub use proof::{sign_hub_proof, verify_hub_proof, HUB_PROOF_CONTEXT};
+pub use proof::{sign_hub_proof, verify_hub_proof, HUB_PROOF_CONTEXT, HUB_PROOF_MAX_URL_LEN};
 pub use relay::{check_recovery_backup, check_sealed_link_bundle};
 pub use runtime::{libp2p_peer_id, HubRuntimeCert, HUB_RUNTIME_CERT_CONTEXT, PEER_ID_LEN};
 

@@ -43,7 +43,9 @@ fn proof_message(nonce: &[u8; 32], hub_id: &str, public_url: &str) -> Vec<u8> {
         b"gim-hub-proof-v1".as_slice(),
         &[0],
         nonce,
+        &(hub_id.len() as u16).to_be_bytes(),
         hub_id.as_bytes(),
+        &(public_url.len() as u16).to_be_bytes(),
         public_url.as_bytes(),
     ]
     .concat()
@@ -111,29 +113,33 @@ async fn proof_verifies_over_the_exact_message() {
 }
 
 #[tokio::test]
-async fn proof_matches_the_vector() {
-    let v: Value = serde_json::from_str(
+async fn proof_matches_the_vectors() {
+    let file: Value = serde_json::from_str(
         &std::fs::read_to_string(format!(
-            "{}/../../testdata/identity/auth-v2.json",
+            "{}/../../testdata/identity/hub-proof.json",
             env!("CARGO_MANIFEST_DIR")
         ))
         .unwrap(),
     )
     .unwrap();
-    let seed: [u8; 32] = hex::decode(v["hub_root_seed"].as_str().unwrap())
-        .unwrap()
-        .try_into()
-        .unwrap();
-    let url = v["audience_url"].as_str().unwrap();
-    let hub = with_public_url(TestHub::with_hub_seed(seed), url);
-    let p = &v["hub_proof"];
-    let (status, body) = get(
-        &hub,
-        &format!("/v2/hub?nonce={}", p["nonce_base64url"].as_str().unwrap()),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["proof"], p["proof_base64url"]);
+    for v in file["cases"].as_array().unwrap() {
+        let seed: [u8; 32] = hex::decode(v["root_seed"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let url = v["public_url"].as_str().unwrap();
+        let hub = with_public_url(TestHub::with_hub_seed(seed), url);
+        let (status, body) = get(
+            &hub,
+            &format!("/v2/hub?nonce={}", v["nonce_base64url"].as_str().unwrap()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["hub_id"], v["hub_id"]);
+        assert_eq!(body["hub_root_pubkey"], v["hub_root_pubkey_base64"]);
+        assert_eq!(body["public_url"], url);
+        assert_eq!(body["proof"], v["proof_base64url"]);
+    }
 }
 
 #[tokio::test]

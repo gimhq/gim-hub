@@ -4,6 +4,7 @@
 
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, str::FromStr};
 
+use gim_hub_identity::HUB_PROOF_MAX_URL_LEN;
 use gim_hub_push::{PushConfig, WebhookConfig};
 
 /// Hub configuration.
@@ -190,7 +191,9 @@ fn push_config<'a>(
 /// Normalizes a public URL to `scheme://host[:port]`: scheme `http` or
 /// `https`, lowercase host (DNS name, IPv4 or bracketed IPv6), the port
 /// omitted when it is the scheme default, no trailing slash. Userinfo, a
-/// path other than `/`, a query or a fragment are rejected.
+/// path other than `/`, a query or a fragment are rejected, as is a result
+/// longer than 65535 bytes (the proof's `u16` length). Shared vectors:
+/// `testdata/identity/public-url.json`.
 pub fn normalize_public_url(raw: &str) -> Result<String, String> {
     let raw = raw.trim();
     let (scheme, rest) = raw
@@ -256,10 +259,14 @@ pub fn normalize_public_url(raw: &str) -> Result<String, String> {
             Some(port).filter(|port| *port != default_port)
         }
     };
-    Ok(match port {
+    let url = match port {
         Some(port) => format!("{scheme}://{host}:{port}"),
         None => format!("{scheme}://{host}"),
-    })
+    };
+    if url.len() > HUB_PROOF_MAX_URL_LEN {
+        return Err(format!("longer than {HUB_PROOF_MAX_URL_LEN} bytes"));
+    }
+    Ok(url)
 }
 
 /// Parses `name` or returns `default`; `min` is the smallest accepted value.
@@ -326,58 +333,37 @@ mod tests {
         assert_eq!(config.public_url, None);
     }
 
+    /// testdata/identity/public-url.json, shared with gim-core.
     #[test]
-    fn public_url_is_normalized() {
-        for (raw, normalized) in [
-            ("https://hub.example.eu", "https://hub.example.eu"),
-            ("https://hub.example.eu/", "https://hub.example.eu"),
-            ("https://hub.example.eu:443", "https://hub.example.eu"),
-            ("http://hub-a:80/", "http://hub-a"),
-            ("http://hub-a:8080", "http://hub-a:8080"),
-            ("https://hub.example.eu:80", "https://hub.example.eu:80"),
-            (
-                "HTTPS://Hub.Example.EU:8443/",
-                "https://hub.example.eu:8443",
-            ),
-            ("http://10.0.0.1:8080", "http://10.0.0.1:8080"),
-            ("http://[::1]:8080/", "http://[::1]:8080"),
-            ("https://[FE80::1]:443", "https://[fe80::1]"),
-            (" https://hub.example.eu ", "https://hub.example.eu"),
-        ] {
-            assert_eq!(
-                normalize_public_url(raw).as_deref(),
-                Ok(normalized),
-                "{raw}"
-            );
-            let config = Config::from_vars(vars(&[("GIM_HUB_PUBLIC_URL", raw)])).unwrap();
-            assert_eq!(config.public_url.as_deref(), Some(normalized));
+    fn public_url_vectors() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/identity/public-url.json"
+        );
+        let file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let cases = file["cases"].as_array().unwrap();
+        assert!(cases.len() >= 30);
+        for case in cases {
+            let input = case["input"].as_str().unwrap();
+            let result = Config::from_vars(vars(&[("GIM_HUB_PUBLIC_URL", input)]));
+            match case["normalized"].as_str() {
+                Some(normalized) => {
+                    assert_eq!(normalize_public_url(input).as_deref(), Ok(normalized));
+                    assert_eq!(
+                        result.unwrap().public_url.as_deref(),
+                        Some(normalized),
+                        "{input:?}"
+                    );
+                }
+                None => {
+                    assert!(case["error"].is_string(), "{input:?}");
+                    assert_eq!(result.unwrap_err().name, "GIM_HUB_PUBLIC_URL", "{input:?}");
+                }
+            }
         }
-        for bad in [
-            "hub.example.eu",
-            "ftp://hub.example.eu",
-            "https://",
-            "https://hub.example.eu/v2",
-            "https://hub.example.eu//",
-            "https://hub.example.eu?x=1",
-            "https://hub.example.eu/?x=1",
-            "https://hub.example.eu#top",
-            "https://user@hub.example.eu",
-            "https://user:pw@hub.example.eu",
-            "https://hub.example.eu:",
-            "https://hub.example.eu:0",
-            "https://hub.example.eu:65536",
-            "https://hub.example.eu:+80",
-            "https://hub..eu",
-            "https://hub.example.eu.",
-            "https://hub_a.eu",
-            "https://h\u{fc}b.eu",
-            "https://[::1",
-            "https://[nope]",
-            "https://[::1]x",
-        ] {
-            let err = Config::from_vars(vars(&[("GIM_HUB_PUBLIC_URL", bad)])).unwrap_err();
-            assert_eq!(err.name, "GIM_HUB_PUBLIC_URL", "{bad}");
-        }
+        let host = "a".repeat(HUB_PROOF_MAX_URL_LEN);
+        assert!(normalize_public_url(&format!("https://{host}")).is_err());
     }
 
     #[test]

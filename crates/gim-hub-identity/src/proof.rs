@@ -10,27 +10,41 @@ use crate::{HubId, IdentityError, VerifyingKey};
 /// Signature context of the hub proof (hub root key).
 pub const HUB_PROOF_CONTEXT: &[u8] = b"gim-hub-proof-v1";
 
-/// The signed part after the context: `nonce || UTF-8(hub_id) ||
-/// UTF-8(public_url)`, concatenated without separators or lengths.
-fn proof_tbs(nonce: &[u8; 32], hub_id: &HubId, public_url: &str) -> Vec<u8> {
-    [
-        nonce.as_slice(),
-        hub_id.as_str().as_bytes(),
-        public_url.as_bytes(),
+/// Longest `public_url` a proof can carry: its length is a `u16`.
+pub const HUB_PROOF_MAX_URL_LEN: usize = u16::MAX as usize;
+
+/// The signed part after the context: `nonce || u16be(len(hub_id)) ||
+/// hub_id || u16be(len(public_url)) || public_url` (UTF-8, lengths in
+/// bytes).
+fn proof_tbs(nonce: &[u8; 32], hub_id: &HubId, public_url: &str) -> Result<Vec<u8>, IdentityError> {
+    let prefixed = |field: &str| -> Result<Vec<u8>, IdentityError> {
+        let len = u16::try_from(field.len())
+            .map_err(|_| IdentityError::Malformed("proof field longer than 65535 bytes".into()))?;
+        Ok([&len.to_be_bytes(), field.as_bytes()].concat())
+    };
+    Ok([
+        nonce.to_vec(),
+        prefixed(hub_id.as_str())?,
+        prefixed(public_url)?,
     ]
-    .concat()
+    .concat())
 }
 
-/// The hub's proof: Ed25519 by its root key over
-/// `"gim-hub-proof-v1" || 0x00 || nonce || hub_id || public_url`, where
-/// `hub_id` is derived from `root`.
-pub fn sign_hub_proof(root: &SigningKey, nonce: &[u8; 32], public_url: &str) -> [u8; 64] {
+/// The hub's proof: Ed25519 by its root key over `"gim-hub-proof-v1" ||
+/// 0x00 || nonce || u16be(len(hub_id)) || hub_id || u16be(len(public_url))
+/// || public_url`, where `hub_id` is derived from `root`. Fails only for a
+/// `public_url` longer than [`HUB_PROOF_MAX_URL_LEN`].
+pub fn sign_hub_proof(
+    root: &SigningKey,
+    nonce: &[u8; 32],
+    public_url: &str,
+) -> Result<[u8; 64], IdentityError> {
     let hub_id = HubId::from_root_pubkey(&root.verifying_key());
-    sign(
+    Ok(sign(
         root,
         HUB_PROOF_CONTEXT,
-        &proof_tbs(nonce, &hub_id, public_url),
-    )
+        &proof_tbs(nonce, &hub_id, public_url)?,
+    ))
 }
 
 /// Client-side check of a hub proof: `root` must be the key behind `hub_id`
@@ -48,7 +62,7 @@ pub fn verify_hub_proof(
     verify(
         root,
         HUB_PROOF_CONTEXT,
-        &proof_tbs(nonce, hub_id, public_url),
+        &proof_tbs(nonce, hub_id, public_url)?,
         sig,
     )
 }
@@ -67,12 +81,14 @@ mod tests {
         let root = key(9);
         let hub_id = HubId::from_root_pubkey(&root.verifying_key());
         let nonce = [5u8; 32];
-        let sig = sign_hub_proof(&root, &nonce, URL);
+        let sig = sign_hub_proof(&root, &nonce, URL).unwrap();
         let message = [
             b"gim-hub-proof-v1".as_slice(),
             &[0],
             &nonce,
+            &(hub_id.as_str().len() as u16).to_be_bytes(),
             hub_id.as_str().as_bytes(),
+            &(URL.len() as u16).to_be_bytes(),
             URL.as_bytes(),
         ]
         .concat();
@@ -83,7 +99,13 @@ mod tests {
             verify_hub_proof(&root.verifying_key(), &hub_id, &nonce, URL, &sig),
             Ok(())
         );
-        assert_ne!(sign_hub_proof(&root, &[6u8; 32], URL), sig);
+        assert_ne!(sign_hub_proof(&root, &[6u8; 32], URL).unwrap(), sig);
+        let long = "x".repeat(HUB_PROOF_MAX_URL_LEN + 1);
+        assert!(matches!(
+            sign_hub_proof(&root, &nonce, &long),
+            Err(IdentityError::Malformed(_))
+        ));
+        assert!(sign_hub_proof(&root, &nonce, &long[1..]).is_ok());
     }
 
     #[test]
@@ -91,7 +113,7 @@ mod tests {
         let root = key(9);
         let hub_id = HubId::from_root_pubkey(&root.verifying_key());
         let nonce = [5u8; 32];
-        let sig = sign_hub_proof(&root, &nonce, URL);
+        let sig = sign_hub_proof(&root, &nonce, URL).unwrap();
         let check = |key: &VerifyingKey, id: &HubId, nonce: &[u8; 32], url: &str| {
             verify_hub_proof(key, id, nonce, url, &sig)
         };

@@ -111,8 +111,9 @@ pub struct HubInfo {
     #[schema(example = "https://hub.example.eu")]
     pub public_url: Option<String>,
     /// Only with `?nonce=`: Ed25519 signature by the hub root key
-    /// (`hub_root_pubkey`) over `"gim-hub-proof-v1" || 0x00 || nonce ||
-    /// UTF-8(hub_id) || UTF-8(public_url)`, base64url without padding.
+    /// (`hub_root_pubkey`) over `"gim-hub-proof-v1" || 0x00 || nonce(32) ||
+    /// u16be(len(hub_id)) || hub_id || u16be(len(public_url)) || public_url`
+    /// (UTF-8, lengths in bytes), base64url without padding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(content_encoding = "base64url")]
     pub proof: Option<String>,

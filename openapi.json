@@ -1140,7 +1140,7 @@
           "health"
         ],
         "summary": "This hub's identity",
-        "description": "Unauthenticated. Lets a client check that a URL belongs to the `hub_id` listed in its hosting record before signing in. With `?nonce=` (32 random bytes, base64url without padding) the response also carries `proof`, the hub root key's Ed25519 signature over `\"gim-hub-proof-v1\" || 0x00 || nonce || UTF-8(hub_id) || UTF-8(public_url)`; the client checks that `hub_id` derives from `hub_root_pubkey`, that `public_url` is the URL it called and verifies `proof` with `hub_root_pubkey`. A hub without a configured `public_url` cannot prove and answers a nonce with 400.",
+        "description": "Unauthenticated. Lets a client check that a URL belongs to the `hub_id` listed in its hosting record before signing in. With `?nonce=` (32 random bytes, base64url without padding) the response also carries `proof`, the hub root key's Ed25519 signature over `\"gim-hub-proof-v1\" || 0x00 || nonce(32) || u16be(len(hub_id)) || hub_id || u16be(len(public_url)) || public_url` (UTF-8, lengths in bytes), base64url without padding; the client checks that `hub_id` derives from `hub_root_pubkey`, that `public_url` is the URL it called and verifies `proof` with `hub_root_pubkey`. A hub without a configured `public_url` cannot prove and answers a nonce with 400.",
         "operationId": "get_hub",
         "parameters": [
           {
@@ -3194,7 +3194,7 @@
               "string",
               "null"
             ],
-            "description": "Only with `?nonce=`: Ed25519 signature by the hub root key\n(`hub_root_pubkey`) over `\"gim-hub-proof-v1\" || 0x00 || nonce ||\nUTF-8(hub_id) || UTF-8(public_url)`, base64url without padding.",
+            "description": "Only with `?nonce=`: Ed25519 signature by the hub root key\n(`hub_root_pubkey`) over `\"gim-hub-proof-v1\" || 0x00 || nonce(32) ||\nu16be(len(hub_id)) || hub_id || u16be(len(public_url)) || public_url`\n(UTF-8, lengths in bytes), base64url without padding.",
             "contentEncoding": "base64url"
           },
           "public_url": {

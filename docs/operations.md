@@ -30,8 +30,9 @@ clients and other hubs. It is signed into `GET /v2/hub?nonce=` proofs and into s
 challenges (AuthChallenge v2), so it must be exactly the URL clients use. It is normalized
 before use: the scheme must be `http` or `https` (lowercased), the host (DNS name, IPv4 or
 bracketed IPv6) is lowercased, a port equal to the scheme default (80, 443) is dropped and a
-single trailing `/` is removed. Userinfo, any other path, a query or a fragment is a startup
-error, as is an unset URL with `GIM_HUB_FEDERATION=true`. Example:
+single trailing `/` is removed. Userinfo, any other path, a query, a fragment or a result
+longer than 65535 bytes is a startup error, as is an unset URL with `GIM_HUB_FEDERATION=true`.
+gim-core applies the same rules; the shared cases are in `testdata/identity/public-url.json`. Example:
 `HTTPS://Hub.Example.EU:443/` becomes `https://hub.example.eu`. Without federation it is
 optional; a hub without it issues version 1 challenges and answers `GET /v2/hub?nonce=` with 400.
 

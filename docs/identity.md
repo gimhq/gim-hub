@@ -6,4 +6,4 @@ The normative spec and test vectors are vendored verbatim in `testdata/identity/
 `crates/gim-hub-identity` implements the hub-side verification of that spec.
 `AuthChallenge` v2 (bound to the hub's public URL) and the `GET /v2/hub` proof of possession are
 hub-proposed until gim-core publishes them: see [`api-v2.md`](api-v2.md) *Auth flow* and
-`testdata/identity/auth-v2.json`.
+`testdata/identity/auth-v2.json`, `hub-proof.json` and `public-url.json`.

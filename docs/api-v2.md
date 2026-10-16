@@ -329,11 +329,12 @@ client keeps one connection and cursor per listed hub and merges by `message_id`
 characters), adds `proof`: the Ed25519 signature by the hub root key over
 
 ```
-"gim-hub-proof-v1" || 0x00 || nonce (32 bytes) || UTF-8(hub_id) || UTF-8(public_url)
+"gim-hub-proof-v1" || 0x00 || nonce (32 bytes)
+  || u16be(len(hub_id)) || hub_id || u16be(len(public_url)) || public_url
 ```
 
-in base64url without padding. `hub_id` and `public_url` are concatenated without separators or
-lengths. A nonce that is not base64url without padding or does not decode to exactly 32 bytes is
+(`hub_id` and `public_url` in UTF-8, each length a big-endian `u16` byte count), in base64url
+without padding. A nonce that is not base64url without padding or does not decode to exactly 32 bytes is
 400 `validation_failed`; so is any nonce at a hub without a public URL (no proof available).
 
 ```
@@ -346,20 +347,21 @@ GET /v2/hub?nonce=oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8
 {"hub_id":"hciqgrcknldyy6lbu2splf5frcdqeftipgfikjxbzeq6x6y55lggapay",
  "hub_root_pubkey":"F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
  "version":"0.1.0","public_url":"https://hub-a.example.eu",
- "proof":"bfL87Kd8ClrAYPxhyaHikVVnRV-7GMASXaLQmNACMH5evyiJQtUO5lZIlKonfXTZbKgOOOD9ONLptHYwOYXZBQ"}
+ "proof":"xDC4XeBqNVag459Oc3cA_DcSOAoJcOCtoe6CXOiFVP-ShX1tVjImuvh1fp6lEcVMbWSdfAVypyQsRolceTlIBQ"}
 ```
 
-(`testdata/identity/auth-v2.json`, `hub_proof`.) Verification recipe for a client that wants to
+(`testdata/identity/hub-proof.json`, first case.) Verification recipe for a client that wants to
 use the URL `U` for the hub `H` from a hosting record:
 
 1. Normalize `U` like the hub does (lowercase scheme and host, drop the default port and a
-   trailing `/`).
+   trailing `/`; [`operations.md`](operations.md), vectors in
+   `testdata/identity/public-url.json`).
 2. Pick a fresh 32-byte nonce and call `U/v2/hub?nonce=...`.
 3. Check `hub_id == H`, that `hub_id` derives from `hub_root_pubkey` (gim-core `hub_id`
    derivation) and, if the record lists the hub root key, that it matches.
 4. Check `public_url == U`.
 5. Verify `proof` (strict Ed25519) with `hub_root_pubkey` over the message above, built from
-   the client's own nonce, `H` and `U`.
+   the client's own nonce, `H` and `U` (vectors in `testdata/identity/hub-proof.json`).
 
 Only then sign in at `U`; the v2 challenge then also binds the sign-in to `U`.
 - `POST /v2/keypackages`: a KeyPackage is uploaded to at most one hub, ever. An upload containing

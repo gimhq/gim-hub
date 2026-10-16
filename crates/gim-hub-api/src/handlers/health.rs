@@ -37,7 +37,8 @@ pub async fn healthz() -> Json<Health> {
     description = "Unauthenticated. Lets a client check that a URL belongs to the `hub_id` \
 listed in its hosting record before signing in. With `?nonce=` (32 random bytes, base64url \
 without padding) the response also carries `proof`, the hub root key's Ed25519 signature over \
-`\"gim-hub-proof-v1\" || 0x00 || nonce || UTF-8(hub_id) || UTF-8(public_url)`; the client \
+`\"gim-hub-proof-v1\" || 0x00 || nonce(32) || u16be(len(hub_id)) || hub_id || \
+u16be(len(public_url)) || public_url` (UTF-8, lengths in bytes), base64url without padding; the client \
 checks that `hub_id` derives from `hub_root_pubkey`, that `public_url` is the URL it called and \
 verifies `proof` with `hub_root_pubkey`. A hub without a configured `public_url` cannot prove \
 and answers a nonce with 400.",
@@ -70,7 +71,11 @@ pub async fn get_hub(
                     "proof unavailable: this hub has no public URL (GIM_HUB_PUBLIC_URL)".into(),
                 )
             })?;
-            Some(URL_SAFE_NO_PAD.encode(state.hub.sign_proof(&nonce, url)))
+            let proof = state
+                .hub
+                .sign_proof(&nonce, url)
+                .map_err(|err| ApiError::Internal(err.to_string()))?;
+            Some(URL_SAFE_NO_PAD.encode(proof))
         }
     };
     Ok(Json(HubInfo {
