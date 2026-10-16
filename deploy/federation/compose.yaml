@@ -5,10 +5,14 @@
 #   GIM_FED_CONFIG_DIR   directory with the generated `allowlist` (a, b, c)
 #                        and `allowlist-x` files
 #   GIM_FED_SUBNET       /24 prefix of the isolated network, e.g. 10.231.64
+#   GIM_FED_PUSH_MOCK_IMAGE
+#                        mock push server image built from Dockerfile.push-mock
+#   GIM_FED_PUSH_SECRET  webhook secret shared by the hubs and push-mock
 #
 # hub-a, hub-b and hub-c allow each other. hub-x is on nobody's allowlist;
 # its own allowlist lists hub-a, so it keeps trying to federate and is
-# refused. The libp2p host has no DNS transport, so peers are addressed by
+# refused. Every hub sends its pushes to the `push-mock` service
+# (docs/push-mock.md). The libp2p host has no DNS transport, so peers are addressed by
 # fixed IPs (/ip4) on the project network. Every container, the network and
 # the volumes carry `ai-agent=true` and `ai-agent-run=${GIM_FED_RUN_LABEL}`
 # (default `gim-fed`), so one run's resources can be removed by label.
@@ -33,6 +37,8 @@ x-env: &env
   GIM_HUB_FEDERATION_ALLOWLIST: /config/allowlist
   GIM_HUB_S2S_TIMEOUT_SECONDS: "3"
   GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS: "2"
+  GIM_HUB_PUSH_WEBHOOK_URL: http://push-mock:8090/push
+  GIM_HUB_PUSH_WEBHOOK_SECRET: ${GIM_FED_PUSH_SECRET:?}
 
 services:
   hub-a:
@@ -82,6 +88,23 @@ services:
     networks:
       fed:
         ipv4_address: ${GIM_FED_SUBNET:?}.14
+
+  push-mock:
+    image: ${GIM_FED_PUSH_MOCK_IMAGE:?}
+    labels:
+      ai-agent: "true"
+      ai-agent-run: ${GIM_FED_RUN_LABEL:-gim-fed}
+    environment:
+      RUST_LOG: info
+      GIM_PUSH_MOCK_SECRET: ${GIM_FED_PUSH_SECRET:?}
+    healthcheck:
+      test: ["CMD", "gim-push-mock", "healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    networks:
+      fed:
+        ipv4_address: ${GIM_FED_SUBNET:?}.20
 
 networks:
   fed:

@@ -2,7 +2,9 @@
 # Closed-federation acceptance test (docs/federation.md §11.2): builds the hub
 # image, starts deploy/federation/compose.yaml (hub-a, hub-b, hub-c allowing
 # each other, hub-x allowed by nobody) with root keys generated for this run,
-# and runs the compose test driver (crates/gim-hub/tests/fed_compose.rs) in a
+# and a mock push server (`push-mock`, docs/push-mock.md) receiving every
+# hub's push webhook with a secret generated for this run, and runs the
+# compose test driver (crates/gim-hub/tests/fed_compose.rs) in a
 # rust container attached to the federation network. Hub logs are printed on
 # failure; the stack is always torn down.
 #
@@ -19,11 +21,14 @@
 #
 # Environment:
 #   GIM_FED_IMAGE       hub image tag (default ai-agent/gim-hub:fedtest)
+#   GIM_FED_PUSH_MOCK_IMAGE
+#                       mock push server image tag
+#                       (default ai-agent/gim-push-mock:fedtest)
 #   GIM_FED_PROJECT     compose project name (default gim-fed)
 #   GIM_FED_SUBNET      /24 prefix of the federation network (default 10.231.64)
 #   GIM_FED_CARGO_HOME  cargo home mounted into the driver container
 #                       (default /srv/.tmp/cache/cargo)
-#   GIM_FED_SKIP_BUILD  1: reuse an existing GIM_FED_IMAGE
+#   GIM_FED_SKIP_BUILD  1: reuse existing GIM_FED_IMAGE and GIM_FED_PUSH_MOCK_IMAGE
 #   GIM_FED_TIMEOUT     driver timeout in seconds (default 420)
 #   GIM_FED_PSK         1: run the PSK variant
 #   GIM_FED_RUN_LABEL   value of the `ai-agent-run` label on every container,
@@ -49,6 +54,7 @@ all)
 esac
 
 IMAGE="${GIM_FED_IMAGE:-ai-agent/gim-hub:fedtest}"
+MOCK_IMAGE="${GIM_FED_PUSH_MOCK_IMAGE:-ai-agent/gim-push-mock:fedtest}"
 PROJECT="${GIM_FED_PROJECT:-gim-fed}"
 SUBNET="${GIM_FED_SUBNET:-10.231.64}"
 CARGO_CACHE="${GIM_FED_CARGO_HOME:-/srv/.tmp/cache/cargo}"
@@ -59,8 +65,11 @@ CONFIG_DIR="$ROOT/.tmp/fed-$$"
 DRIVER="ai-agent-$PROJECT-driver-$$"
 START=$(date +%s)
 
+# Webhook secret shared by the hubs and push-mock, fresh for every run.
+PUSH_SECRET="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
 export GIM_FED_IMAGE="$IMAGE" GIM_FED_CONFIG_DIR="$CONFIG_DIR" GIM_FED_SUBNET="$SUBNET" \
-    GIM_FED_RUN_LABEL="$RUN_LABEL"
+    GIM_FED_RUN_LABEL="$RUN_LABEL" GIM_FED_PUSH_MOCK_IMAGE="$MOCK_IMAGE" \
+    GIM_FED_PUSH_SECRET="$PUSH_SECRET"
 COMPOSE_FILES=(-f deploy/federation/compose.yaml)
 if [[ "$PSK" == "1" ]]; then
     COMPOSE_FILES+=(-f deploy/federation/compose.psk.yaml)
@@ -90,6 +99,8 @@ trap cleanup EXIT
 if [[ "${GIM_FED_SKIP_BUILD:-}" != "1" ]]; then
     log "building $IMAGE"
     bash scripts/docker-build.sh "$IMAGE"
+    log "building $MOCK_IMAGE"
+    bash scripts/docker-build.sh "$MOCK_IMAGE" push-mock
 fi
 
 # Leftovers of an interrupted run.
@@ -172,6 +183,8 @@ timeout "${GIM_FED_TIMEOUT:-420}" docker run --rm --label ai-agent=true \
     -e GIM_FED_HUB_C=http://hub-c:8080 \
     -e GIM_FED_HUB_X=http://hub-x:8080 \
     -e GIM_FED_HUB_X_ID="${HUB_ID[x]}" \
+    -e GIM_FED_HUB_B_ID="${HUB_ID[b]}" \
+    -e GIM_FED_PUSH_MOCK=http://push-mock:8090 \
     "$DRIVER_IMAGE" \
     cargo test -p gim-hub --locked --test "$TEST" -- --ignored --nocapture --test-threads 1
 

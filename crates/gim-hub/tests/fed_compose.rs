@@ -8,7 +8,8 @@
 //! with `--ignored` in a container attached to the federation network.
 //!
 //! Environment: `GIM_FED_HUB_{A,B,C,X}` (base URLs), `GIM_FED_HUB_X_ID`
-//! (hub-x's hub_id), `GIM_FED_PROJECT` (compose project name, for container
+//! (hub-x's hub_id), `GIM_FED_HUB_B_ID` (hub-b's hub_id),
+//! `GIM_FED_PUSH_MOCK` (base URL of the mock push server), `GIM_FED_PROJECT` (compose project name, for container
 //! names), `GIM_FED_DOCKER_SOCKET` (default `/var/run/docker.sock`),
 //! `GIM_FED_PSK` (`1`: hub-a, hub-b and hub-c run with a pnet key that
 //! hub-x lacks, `deploy/federation/compose.psk.yaml`).
@@ -17,7 +18,7 @@ mod compose_support;
 #[path = "../../gim-hub-api/tests/mls_support/mod.rs"]
 mod mls_support;
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hyper::{Method, StatusCode};
 use openmls::prelude::{
@@ -83,6 +84,7 @@ async fn compose_federation() {
     owner_hub_outage(&gid, &a, &alice, &bob, &dave, &mut groups).await;
     refusal(&a, &x_id, &alice, &eve, psk).await;
     leave_by_proposal(&a, &b, &c, &alice).await;
+    webhook_push(&a, &b, &alice).await;
     println!("fed: PASS ({:.1}s)", start.elapsed().as_secs_f64());
 }
 
@@ -748,6 +750,170 @@ async fn leave_by_proposal(a: &Hub, b: &Hub, c: &Hub, alice: &User) {
     assert_eq!(code(&body), "not_member");
     ok(
         "frank@B leaves by Proposal, grace@C commits it by reference",
+        start,
+    );
+}
+
+/// `registration.token` -> recorded webhook deliveries at the mock push
+/// server, oldest first.
+async fn mock_deliveries(mock: &Hub, token: &str) -> Vec<Value> {
+    let (status, body) = mock
+        .call(
+            Method::GET,
+            &format!("/deliveries?token={token}"),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["deliveries"].as_array().unwrap().clone()
+}
+
+async fn mock_counter(mock: &Hub, name: &str) -> u64 {
+    let (status, body) = mock.call(Method::GET, "/stats", None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["counters"][name].as_u64().unwrap()
+}
+
+/// H6 (docs/push.md §2): henry@B and ivan@B register webhook providers on
+/// hub-b and join a group of alice@A. A message to henry is exactly one
+/// signed delivery at the mock push server, a Proposal none; ivan's `gone-`
+/// token is answered 410 once and hub-b deletes the registration.
+async fn webhook_push(a: &Hub, b: &Hub, alice: &User) {
+    let start = Instant::now();
+    let mock = Hub::from_env("push-mock", "GIM_FED_PUSH_MOCK");
+    let hub_b_id = std::env::var("GIM_FED_HUB_B_ID").expect("GIM_FED_HUB_B_ID is not set");
+    mock.wait_healthy().await;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let (henry_token, ivan_token) = (format!("t-{nonce:x}"), format!("gone-{nonce:x}"));
+
+    let henry = User::sign_up("henry", b, 8, 81, 1).await;
+    let ivan = User::sign_up("ivan", b, 9, 91, 1).await;
+    for (user, token) in [(&henry, &henry_token), (&ivan, &ivan_token)] {
+        let (status, body) = user
+            .call(
+                Method::PUT,
+                "/v2/push/registration",
+                Some(json!({ "provider": "mock-android", "token": token })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        let path = format!("/v2/users/{}/hosting-record", user.user_id);
+        eventually(&format!("{}'s record on hub-a", user.name), || async {
+            let (status, body) = a.call(Method::GET, &path, None, None).await;
+            status == StatusCode::OK && body["seq"] == 1
+        })
+        .await;
+    }
+    let gone_before = mock_counter(&mock, "gone").await;
+
+    // seq 1: the Welcomes; henry's is delivered, ivan's answered 410.
+    let (gid, mut alice_group) = alice.create_group("group").await;
+    let kps = vec![alice.claim(&henry).await, alice.claim(&ivan).await];
+    let (commit, welcome, _) = alice_group
+        .add_members(&alice.provider, &alice.signer, &kps)
+        .unwrap();
+    let body = with_welcome(commit_body("c1", &commit), &welcome, &[&henry, &ivan]);
+    let (status, result) = alice.submit_commit(&gid, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    alice_group.merge_pending_commit(&alice.provider).unwrap();
+    eventually("henry's welcome push", || async {
+        !mock_deliveries(&mock, &henry_token).await.is_empty()
+    })
+    .await;
+    eventually("ivan's push answered 410", || async {
+        mock_counter(&mock, "gone").await > gone_before
+    })
+    .await;
+
+    // seq 2: a message; seq 3: a Proposal; seq 4: the Commit of it.
+    alice.send_text(&mut alice_group, &gid, "push", 2).await;
+    let message_seqs = |deliveries: &[Value]| -> Vec<u64> {
+        deliveries
+            .iter()
+            .filter(|d| d["body"]["payload"]["type"] == "message")
+            .map(|d| d["body"]["payload"]["seq"].as_u64().unwrap())
+            .collect()
+    };
+    let message = henry.wait_message(&gid, 2).await;
+    // Pushes for a device coalesce while queued: let seq 2 go out first.
+    eventually("henry's push of seq 2", || async {
+        message_seqs(&mock_deliveries(&mock, &henry_token).await).contains(&2)
+    })
+    .await;
+    let (proposal, _) = alice_group
+        .propose_self_update(
+            &alice.provider,
+            &alice.signer,
+            LeafNodeParameters::default(),
+        )
+        .unwrap();
+    let (status, result) = alice
+        .submit_commit(&gid, commit_body("p1", &proposal))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result["seq"], 3, "{result}");
+    let (commit, _, _) = alice_group
+        .commit_to_pending_proposals(&alice.provider, &alice.signer)
+        .unwrap();
+    let (status, result) = alice.submit_commit(&gid, commit_body("c2", &commit)).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    assert_eq!(result["seq"], 4, "{result}");
+    alice_group.merge_pending_commit(&alice.provider).unwrap();
+    assert_eq!(henry.wait_message(&gid, 3).await["kind"], "proposal");
+
+    eventually("henry's push of seq 4", || async {
+        message_seqs(&mock_deliveries(&mock, &henry_token).await).contains(&4)
+    })
+    .await;
+    // Late pushes, if any, would arrive by now.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let deliveries = mock_deliveries(&mock, &henry_token).await;
+    assert_eq!(message_seqs(&deliveries), [2, 4], "{deliveries:?}");
+
+    let welcome = &deliveries[0]["body"];
+    assert_eq!(welcome["payload"]["type"], "welcome", "{welcome}");
+    assert_eq!(welcome["priority"], "high", "{welcome}");
+    let pushed = deliveries
+        .iter()
+        .map(|d| &d["body"])
+        .find(|body| body["payload"]["seq"] == 2)
+        .unwrap();
+    let delivery_id = pushed["delivery_id"].as_str().unwrap();
+    assert!(
+        delivery_id.len() == 32
+            && delivery_id
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
+        "{pushed}"
+    );
+    assert_eq!(pushed["v"], 1, "{pushed}");
+    assert_eq!(pushed["hub_id"], json!(hub_b_id), "{pushed}");
+    assert_eq!(
+        pushed["registration"],
+        json!({ "provider": "mock-android", "token": henry_token }),
+        "{pushed}"
+    );
+    assert_eq!(pushed["priority"], "high", "{pushed}");
+    assert_eq!(pushed["ttl"], 86400, "{pushed}");
+    assert!(pushed["sent_at"].as_u64().unwrap() > 0, "{pushed}");
+    let payload = &pushed["payload"];
+    assert_eq!(payload["v"], 1, "{pushed}");
+    assert_eq!(payload["type"], "message", "{pushed}");
+    assert_eq!(payload["gid"], json!(gid), "{pushed}");
+    assert_eq!(payload["seq"], 2, "{pushed}");
+    assert_eq!(payload["message_id"], message["message_id"], "{pushed}");
+    assert_eq!(payload["collapse_id"], message["message_id"], "{pushed}");
+    assert_eq!(pushed["collapse_id"], message["message_id"], "{pushed}");
+
+    // ivan's registration is gone: seq 2 and 4 caused no further 410.
+    assert_eq!(mock_counter(&mock, "gone").await, gone_before + 1);
+    assert!(mock_deliveries(&mock, &ivan_token).await.is_empty());
+    ok(
+        "webhook push: one signed delivery per message, none for a Proposal, 410 deletes",
         start,
     );
 }

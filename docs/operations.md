@@ -76,12 +76,16 @@ PeerId; allowlists are unaffected because they name `hub_id`s. `gim-hub hub-id` 
 `scripts/fed-test.sh` is the closed-federation acceptance test (CI job `federation`). It needs
 only Docker:
 
-1. builds the hub image from the `Dockerfile` (`GIM_FED_SKIP_BUILD=1` reuses `GIM_FED_IMAGE`);
+1. builds the hub image from the `Dockerfile` and the mock push server image from
+   `Dockerfile.push-mock` (`GIM_FED_SKIP_BUILD=1` reuses `GIM_FED_IMAGE` and
+   `GIM_FED_PUSH_MOCK_IMAGE`);
 2. generates fresh hub root keys in the hubs' volumes with `gim-hub hub-id` and writes the
    allowlists into `.tmp/fed-<pid>/` (nothing key-related is committed);
 3. starts `deploy/federation/compose.yaml`: `hub-a`, `hub-b`, `hub-c` allowing each other and
    `hub-x`, which is on nobody's allowlist, on an isolated network with fixed IPs
-   (`GIM_FED_SUBNET`, default `10.231.64`; change it if that /24 is taken);
+   (`GIM_FED_SUBNET`, default `10.231.64`; change it if that /24 is taken), and `push-mock`
+   ([`push-mock.md`](push-mock.md)), the target of every hub's push webhook with a secret
+   generated for the run;
 4. runs the driver `crates/gim-hub/tests/fed_compose.rs` (`cargo test -p gim-hub --test
    fed_compose -- --ignored`) in a `rust:1.99-bookworm` container attached to that network. The
    driver speaks the client API to every hub with openmls clients and stops and starts hubs
@@ -89,8 +93,9 @@ only Docker:
    message, a Commit adding a revoked device of a remote user (400 `revoked_device`), a group
    across three hubs with add and remove from a non-owning hub, a concurrent
    Commit conflict (one 201, one 409 `stale_epoch`), a member-hub outage (50 messages, no loss,
-   no duplicates), an owner-hub outage (503 `peer_unavailable`, then delivery) and the refusal of
-   `hub-x`;
+   no duplicates), an owner-hub outage (503 `peer_unavailable`, then delivery), the refusal of
+   `hub-x`, a leave by Proposal and webhook push (one signed delivery per message at the mock,
+   none for a Proposal, a registration answered 410 deleted);
 5. prints the hub logs on failure and always removes the containers, network and volumes.
 
 All containers, the network and the volumes carry the label `ai-agent=true`. Other variables:
@@ -218,8 +223,10 @@ docker run -d --name gim-hub -p 8080:8080 -v gim-hub-data:/data \
   -e GIM_HUB_EVENT_RETENTION_DAYS=14 gim-hub
 ```
 
-`scripts/docker-smoke.sh` builds the image and checks a running container; CI
-runs it on every push.
+`scripts/docker-smoke.sh` builds the image and checks a running container, then
+does the same for the mock push server (signed webhook 200, bad signature 401);
+CI runs it on every push. `scripts/docker-build.sh IMAGE push-mock` builds
+`Dockerfile.push-mock`.
 
 Build notes:
 
