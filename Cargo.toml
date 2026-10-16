@@ -8,6 +8,7 @@ members = [
     "crates/gim-hub-s2s",
     "crates/gim-hub-push",
     "crates/gim-hub",
+    "crates/gim-push-mock",
 ]
 
 [workspace.package]
