@@ -126,7 +126,11 @@ async fn start_push(
     state: &mut AppState,
 ) -> Result<Vec<tokio::task::JoinHandle<()>>, Box<dyn std::error::Error>> {
     let log = PushLog::default();
-    let providers = gim_hub_push::build_providers(&state.config.push, log.clone())?;
+    let providers = gim_hub_push::build_providers(
+        &state.config.push,
+        log.clone(),
+        state.hub.hub_id().as_str(),
+    )?;
     let names: Vec<&str> = providers.iter().map(|p| p.name()).collect();
     let head = state.db.read(gim_hub_db::events::head_cursor).await?;
     state.push = Dispatcher::new(

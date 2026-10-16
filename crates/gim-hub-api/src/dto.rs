@@ -927,43 +927,39 @@ pub struct RawBytes(pub Vec<u8>);
 // Push
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum PushProvider {
-    Apns,
-    Fcm,
-    Unifiedpush,
-    /// Log-only provider for tests.
-    Log,
-}
-
-/// Push registration of the calling device.
+/// Push registration of the calling device. Everything but `log` is opaque
+/// to the hub and passed to the push server's webhook (`docs/push.md`).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PushRegistration {
-    pub provider: PushProvider,
-    /// Provider token: APNs device token (hex), FCM registration token,
-    /// UnifiedPush endpoint URL, or any string for `log`.
+    /// Push platform name, interpreted by the push server (e.g. `apns`,
+    /// `fcm`, `unifiedpush`). `log` is the hub's test provider and is never
+    /// sent to the webhook.
+    #[schema(pattern = "^[a-z0-9._-]{1,64}$", example = "apns")]
+    pub provider: String,
+    /// Platform token, opaque to the hub: 1-4096 bytes without control
+    /// characters.
     #[schema(min_length = 1, max_length = 4096)]
     pub token: String,
-    /// APNs topic (app bundle ID) or FCM app ID; ignored by other providers.
+    /// App identifier for the push server (e.g. bundle ID): 1-255
+    /// characters of `A-Z a-z 0-9 . - _ :`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(example = "im.g.apps")]
     pub app_id: Option<String>,
-    /// APNs only: deliver through the sandbox environment.
-    #[serde(default)]
-    #[schema(default = false)]
-    pub sandbox: bool,
-    /// UnifiedPush only (required there, ignored otherwise): the device's
-    /// RFC 8291 Web Push public key, base64url of the 65-byte uncompressed
-    /// P-256 point.
+    /// Platform sandbox flag for the push server; absent if not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<bool>,
+    /// Opaque key for the push server (e.g. a Web Push `p256dh`): base64url,
+    /// padding optional, at most 256 characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(
+        min_length = 1,
+        max_length = 256,
         example = "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
     )]
     pub p256dh: Option<String>,
-    /// UnifiedPush only (required there, ignored otherwise): the RFC 8291
-    /// authentication secret, base64url of 16 bytes.
+    /// Opaque secret for the push server (e.g. a Web Push `auth`):
+    /// base64url, padding optional, at most 256 characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(example = "BTBZMqHH6r4Tts7J_aSIgg")]
+    #[schema(min_length = 1, max_length = 256, example = "BTBZMqHH6r4Tts7J_aSIgg")]
     pub auth: Option<String>,
 }

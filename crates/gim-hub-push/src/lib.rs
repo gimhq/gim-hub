@@ -4,45 +4,45 @@
 //! turns `message` and `welcome` events (optionally membership events) into
 //! [`PushNotification`]s for every addressed device with an active push
 //! registration. A [`PushProvider`] delivers them: `log` (structured log line
-//! plus an in-memory [`PushLog`], for tests), `apns`, `fcm` and
-//! `unifiedpush` (RFC 8291 encrypted, see [`webpush`]). The payload contract is normative in `docs/push.md`.
+//! plus an in-memory [`PushLog`], for tests) or the [`webhook`] provider,
+//! which sends every other registration as one signed webhook to an external
+//! push server that owns platform delivery. The contract is normative in
+//! `docs/push.md`.
 //!
 //! A push is only a wake-up hint: clients always sync their event stream
 //! afterwards, and push failures never affect the request that produced the
 //! event.
 
-pub mod apns;
+use std::time::Duration;
+
 mod config;
 mod dispatcher;
-pub mod fcm;
 pub mod http;
-mod jwt;
 mod log;
 mod payload;
-pub mod unifiedpush;
 mod validate;
-pub mod webpush;
+pub mod webhook;
 
 use async_trait::async_trait;
 
-pub use config::{build_providers, ApnsConfig, FcmConfig, PushConfig};
+pub use config::{build_providers, PushConfig};
 pub use dispatcher::{message_id, Dispatcher, DispatcherSettings, MetricsSnapshot, PushGate};
 pub use gim_hub_db::push::Registration;
 pub use log::{LogProvider, LoggedPush, PushLog, LOG_MAX_PAYLOAD};
 pub use payload::{encode_within, PushKind, PushNotification};
-pub use validate::{validate_registration, validate_webpush_keys};
+pub use validate::{decode_key, validate_registration};
+pub use webhook::{WebhookConfig, WebhookProvider};
 
 /// Why a provider did not deliver a notification.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PushError {
-    /// The provider rejected the device token for good; the registration is
-    /// deleted.
+    /// The registration is invalid for good; it is deleted.
     #[error("invalid token: {0}")]
     InvalidToken(String),
-    /// Transient failure (network, throttling, provider outage); retried
-    /// with backoff.
+    /// Transient failure (network, throttling, push server outage); retried
+    /// with backoff, but not before the optional `Retry-After` delay.
     #[error("retryable: {0}")]
-    Retryable(String),
+    Retryable(String, Option<Duration>),
     /// Any other failure; the notification is dropped.
     #[error("permanent: {0}")]
     Permanent(String),
@@ -51,9 +51,14 @@ pub enum PushError {
 /// A push provider.
 #[async_trait]
 pub trait PushProvider: Send + Sync {
-    /// Provider name as stored in registrations (`apns`, `fcm`,
-    /// `unifiedpush`, `log`).
+    /// Name of the provider (for logs).
     fn name(&self) -> &'static str;
+
+    /// Whether this provider delivers registrations of `provider` (the
+    /// opaque string stored in the registration).
+    fn handles(&self, provider: &str) -> bool {
+        provider == self.name()
+    }
 
     /// Delivers `notification` to the device of `registration`.
     async fn send(

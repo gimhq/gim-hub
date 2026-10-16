@@ -75,9 +75,9 @@ prost-build = "=0.14.4"
 # Pure-Rust protobuf compiler: no `protoc` binary needed at build time.
 protox = "=0.10.0"
 rand = "=0.10.3"
-# Push provider HTTP client (APNs needs HTTP/2); rustls with ring, no OpenSSL.
-reqwest = { version = "=0.12.28", default-features = false, features = ["http2", "rustls-tls"] }
-# ES256 (APNs) and RS256 (FCM OAuth) JWT signing.
+# Push webhook HTTP client; rustls with ring, no OpenSSL.
+reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls"] }
+# Push webhook HMAC-SHA256 signatures and delivery ids.
 ring = "=0.17.14"
 rusqlite = { version = "=0.37.0", features = ["bundled"] }
 serde = { version = "=1.0.229", features = ["derive"] }
@@ -93,5 +93,4 @@ tower = { version = "=0.5.3", default-features = false, features = ["util"] }
 tower-http = { version = "=0.6.11", features = ["limit", "trace"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt"] }
-url = "=2.5.8"
 utoipa = { version = "=6.0.0", features = ["axum_extras"] }

@@ -4,7 +4,7 @@
 
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, str::FromStr};
 
-use gim_hub_push::{ApnsConfig, FcmConfig, PushConfig};
+use gim_hub_push::{PushConfig, WebhookConfig};
 
 /// Hub configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,46 +135,33 @@ impl Config {
     }
 }
 
-/// Push settings; APNs needs all four `GIM_HUB_PUSH_APNS_*` credentials
-/// variables, FCM a service account path.
+/// Push settings; `GIM_HUB_PUSH_WEBHOOK_URL` needs a valid
+/// `GIM_HUB_PUSH_WEBHOOK_SECRET`.
 fn push_config<'a>(
     get: impl Fn(&str) -> Option<&'a str> + Copy,
 ) -> Result<PushConfig, ConfigError> {
-    let apns = match (
-        get("GIM_HUB_PUSH_APNS_TEAM_ID"),
-        get("GIM_HUB_PUSH_APNS_KEY_ID"),
-        get("GIM_HUB_PUSH_APNS_KEY_PATH"),
-        get("GIM_HUB_PUSH_APNS_TOPIC"),
-    ) {
-        (None, None, None, None) => None,
-        (Some(team_id), Some(key_id), Some(key_path), Some(topic)) => Some(ApnsConfig {
-            team_id: team_id.to_owned(),
-            key_id: key_id.to_owned(),
-            key_path: PathBuf::from(key_path),
-            topic: topic.to_owned(),
-            sandbox: parse(get, "GIM_HUB_PUSH_APNS_SANDBOX", false, None)?,
-        }),
-        (team_id, ..) => {
-            return Err(ConfigError {
-                name: "GIM_HUB_PUSH_APNS_TEAM_ID",
-                value: team_id.unwrap_or_default().to_owned(),
-                reason: "set GIM_HUB_PUSH_APNS_TEAM_ID, _KEY_ID, _KEY_PATH and _TOPIC together"
-                    .into(),
-            })
-        }
+    let timeout: u64 = parse(get, "GIM_HUB_PUSH_WEBHOOK_TIMEOUT_SECONDS", 10, Some(1))?;
+    let webhook = match get("GIM_HUB_PUSH_WEBHOOK_URL") {
+        None => None,
+        Some(url) => Some(
+            WebhookConfig::new(
+                url,
+                get("GIM_HUB_PUSH_WEBHOOK_SECRET"),
+                std::time::Duration::from_secs(timeout),
+            )
+            .map_err(|reason| ConfigError {
+                name: "GIM_HUB_PUSH_WEBHOOK_URL",
+                value: url.to_owned(),
+                reason,
+            })?,
+        ),
     };
-    let fcm = get("GIM_HUB_PUSH_FCM_SERVICE_ACCOUNT_PATH").map(|path| FcmConfig {
-        service_account_path: PathBuf::from(path),
-        project_id: get("GIM_HUB_PUSH_FCM_PROJECT_ID").map(str::to_owned),
-    });
     Ok(PushConfig {
         member_events: parse(get, "GIM_HUB_PUSH_MEMBER_EVENTS", false, None)?,
         minimal: parse(get, "GIM_HUB_PUSH_MINIMAL", false, None)?,
         queue_capacity: parse(get, "GIM_HUB_PUSH_QUEUE_CAPACITY", 10_000, Some(1))?,
         log_endpoint: parse(get, "GIM_HUB_PUSH_LOG_ENDPOINT", false, None)?,
-        apns,
-        fcm,
-        unifiedpush: parse(get, "GIM_HUB_PUSH_UNIFIEDPUSH", false, None)?,
+        webhook,
     })
 }
 
@@ -243,34 +230,49 @@ mod tests {
 
     #[test]
     fn push_settings() {
+        let secret = "s".repeat(32);
         let config = Config::from_vars(vars(&[
             ("GIM_HUB_PUSH_MEMBER_EVENTS", "true"),
             ("GIM_HUB_PUSH_MINIMAL", "true"),
             ("GIM_HUB_PUSH_QUEUE_CAPACITY", "5"),
             ("GIM_HUB_PUSH_LOG_ENDPOINT", "true"),
-            ("GIM_HUB_PUSH_APNS_TEAM_ID", "TEAM123456"),
-            ("GIM_HUB_PUSH_APNS_KEY_ID", "KEY1234567"),
-            ("GIM_HUB_PUSH_APNS_KEY_PATH", "/run/secrets/apns.p8"),
-            ("GIM_HUB_PUSH_APNS_TOPIC", "im.g.apps"),
-            (
-                "GIM_HUB_PUSH_FCM_SERVICE_ACCOUNT_PATH",
-                "/run/secrets/fcm.json",
-            ),
-            ("GIM_HUB_PUSH_UNIFIEDPUSH", "true"),
+            ("GIM_HUB_PUSH_WEBHOOK_URL", "http://push:8080/v1/push"),
+            ("GIM_HUB_PUSH_WEBHOOK_SECRET", &secret),
+            ("GIM_HUB_PUSH_WEBHOOK_TIMEOUT_SECONDS", "3"),
         ]))
         .unwrap()
         .push;
-        assert!(config.member_events && config.minimal);
-        assert!(config.log_endpoint && config.unifiedpush);
+        assert!(config.member_events && config.minimal && config.log_endpoint);
         assert_eq!(config.queue_capacity, 5);
-        let apns = config.apns.unwrap();
-        assert_eq!(apns.key_path, PathBuf::from("/run/secrets/apns.p8"));
-        assert!(!apns.sandbox);
-        let fcm = config.fcm.unwrap();
-        assert_eq!(fcm.project_id, None);
+        let webhook = config.webhook.unwrap();
+        assert_eq!(webhook.url, "http://push:8080/v1/push");
+        assert_eq!(webhook.secret, secret);
+        assert_eq!(webhook.timeout, std::time::Duration::from_secs(3));
 
-        let err = Config::from_vars(vars(&[("GIM_HUB_PUSH_APNS_KEY_ID", "K")])).unwrap_err();
-        assert_eq!(err.name, "GIM_HUB_PUSH_APNS_TEAM_ID");
+        let default = Config::from_vars(vars(&[
+            ("GIM_HUB_PUSH_WEBHOOK_URL", "https://push.example.eu/hook"),
+            ("GIM_HUB_PUSH_WEBHOOK_SECRET", &secret),
+        ]))
+        .unwrap();
+        assert_eq!(
+            default.push.webhook.unwrap().timeout,
+            std::time::Duration::from_secs(10)
+        );
+        for bad in [
+            vec![("GIM_HUB_PUSH_WEBHOOK_URL", "http://push:8080")],
+            vec![
+                ("GIM_HUB_PUSH_WEBHOOK_URL", "http://push:8080"),
+                ("GIM_HUB_PUSH_WEBHOOK_SECRET", "short"),
+            ],
+            vec![
+                ("GIM_HUB_PUSH_WEBHOOK_URL", "ftp://push"),
+                ("GIM_HUB_PUSH_WEBHOOK_SECRET", &secret),
+            ],
+        ] {
+            let err = Config::from_vars(vars(&bad)).unwrap_err();
+            assert_eq!(err.name, "GIM_HUB_PUSH_WEBHOOK_URL");
+        }
+        assert!(Config::from_vars(vars(&[("GIM_HUB_PUSH_WEBHOOK_TIMEOUT_SECONDS", "0")])).is_err());
         assert!(Config::from_vars(vars(&[("GIM_HUB_PUSH_LOG_ENDPOINT", "yes")])).is_err());
         assert!(Config::from_vars(vars(&[("GIM_HUB_PUSH_QUEUE_CAPACITY", "0")])).is_err());
     }

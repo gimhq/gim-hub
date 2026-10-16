@@ -17,6 +17,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0008_replica_detached_at.sql"),
     include_str!("../migrations/0009_message_proposal.sql"),
     include_str!("../migrations/0010_remote_blobs.sql"),
+    include_str!("../migrations/0011_push_opaque_provider.sql"),
 ];
 
 /// Schema version after all migrations.
@@ -377,6 +378,83 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, 0);
+    }
+
+    #[tokio::test]
+    async fn opaque_provider_migration_keeps_registrations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hub.db");
+        let opaque = super::MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("push_registrations_new"))
+            .unwrap();
+        {
+            let mut conn = rusqlite::Connection::open(&path).unwrap();
+            for (version, sql) in (1..).zip(&super::MIGRATIONS[..opaque]) {
+                let tx = conn.transaction().unwrap();
+                tx.execute_batch(sql).unwrap();
+                tx.pragma_update(None, "user_version", version).unwrap();
+                tx.commit().unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO users (user_id, root_pubkey, device_list, device_list_seq, \
+                 created_at, updated_at) VALUES ('u', x'00', x'', 0, 0, 0); \
+                 INSERT INTO devices (user_id, device_id, sig_pubkey, active, updated_at) VALUES \
+                 ('u', 'd1', x'00', 1, 0), ('u', 'd2', x'00', 1, 0), \
+                 ('u', 'd3', x'00', 1, 0), ('u', 'd4', x'00', 1, 0); \
+                 INSERT INTO push_registrations (user_id, device_id, provider, token, app_id, \
+                 sandbox, updated_at, p256dh, auth) VALUES \
+                 ('u', 'd1', 'apns', 'ab', 'im.g.apps', 1, 1, NULL, NULL), \
+                 ('u', 'd2', 'fcm', 'f', NULL, 0, 2, NULL, NULL), \
+                 ('u', 'd3', 'unifiedpush', 'https://up.example.eu/x', NULL, 0, 3, x'04', x'01'), \
+                 ('u', 'd4', 'log', 'l', NULL, 0, 4, NULL, NULL);",
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let get =
+            |device: &'static str| db.read(move |conn| crate::push::get_active(conn, "u", device));
+        let apns = get("d1").await.unwrap().unwrap();
+        assert_eq!(
+            (apns.provider.as_str(), apns.token.as_str(), apns.sandbox),
+            ("apns", "ab", Some(true))
+        );
+        assert_eq!(apns.app_id.as_deref(), Some("im.g.apps"));
+        assert_eq!(get("d2").await.unwrap().unwrap().provider, "fcm");
+        let up = get("d3").await.unwrap().unwrap();
+        assert_eq!(up.provider, "unifiedpush");
+        assert_eq!((up.p256dh, up.auth), (Some(vec![4]), Some(vec![1])));
+        assert_eq!(get("d4").await.unwrap().unwrap().sandbox, Some(false));
+
+        // Opaque providers and an absent sandbox are accepted; the device
+        // foreign key and its cascade are kept.
+        let left = db
+            .write(|tx| {
+                tx.execute(
+                    "INSERT OR REPLACE INTO push_registrations (user_id, device_id, provider, \
+                     token, updated_at) VALUES ('u', 'd1', 'acme.push-2', 't', 5)",
+                    [],
+                )?;
+                assert!(tx
+                    .execute(
+                        "INSERT INTO push_registrations (user_id, device_id, provider, token, \
+                         updated_at) VALUES ('u', 'd9', 'x', 't', 5)",
+                        [],
+                    )
+                    .is_err());
+                tx.execute("DELETE FROM devices WHERE device_id = 'd2'", [])?;
+                let left: i64 =
+                    tx.query_row("SELECT count(*) FROM push_registrations", [], |r| r.get(0))?;
+                Ok::<_, DbError>(left)
+            })
+            .await
+            .unwrap();
+        assert_eq!(left, 3);
+        let custom = get("d1").await.unwrap().unwrap();
+        assert_eq!(
+            (custom.provider.as_str(), custom.sandbox),
+            ("acme.push-2", None)
+        );
     }
 
     #[test]
