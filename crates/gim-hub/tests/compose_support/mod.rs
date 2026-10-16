@@ -11,8 +11,12 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::Signer;
-use gim_hub_identity::{AUTH_RESPONSE_CONTEXT, HOSTING_RECORD_CONTEXT};
+use gim_hub_identity::{
+    parse_public_key, verify_hub_proof, AuthChallenge, HubId, AUTH_CHALLENGE_V2,
+    AUTH_RESPONSE_CONTEXT, HOSTING_RECORD_CONTEXT,
+};
 use http_body_util::{BodyExt, Full};
 use hyper::{body::Bytes, header, Method, Request, StatusCode};
 use hyper_util::rt::TokioIo;
@@ -191,6 +195,37 @@ impl Hub {
             .await
             .unwrap_or_else(|err| panic!("{method} {}{path}: {err}", self.service))
     }
+
+    /// The hub's `GIM_HUB_PUBLIC_URL`: the driver's base URL.
+    pub fn public_url(&self) -> &str {
+        self.base.trim_end_matches('/')
+    }
+
+    /// Checks GET /v2/hub?nonce= as a client would: `hub_id` is
+    /// `expected_hub_id` and derives from `hub_root_pubkey`, `public_url`
+    /// is the URL called, and `proof` verifies under the root key; a second
+    /// nonce gives another proof.
+    pub async fn check_proof(&self, expected_hub_id: &str) {
+        let mut proofs = Vec::new();
+        for nonce in [[0x5a; 32], [0xa5; 32]] {
+            let path = format!("/v2/hub?nonce={}", URL_SAFE_NO_PAD.encode(nonce));
+            let (status, body) = self.call(Method::GET, &path, None, None).await;
+            assert_eq!(status, StatusCode::OK, "{} {path}: {body}", self.service);
+            assert_eq!(body["hub_id"], expected_hub_id, "{}", self.service);
+            assert_eq!(body["public_url"], self.public_url(), "{}", self.service);
+            let root = parse_public_key(&unb64(&body["hub_root_pubkey"])).unwrap();
+            let proof: [u8; 64] = URL_SAFE_NO_PAD
+                .decode(body["proof"].as_str().unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let hub_id = HubId::parse(expected_hub_id).unwrap();
+            verify_hub_proof(&root, &hub_id, &nonce, self.public_url(), &proof)
+                .unwrap_or_else(|err| panic!("{} proof: {err}", self.service));
+            proofs.push(proof);
+        }
+        assert_ne!(proofs[0], proofs[1]);
+    }
 }
 
 /// Polls `check` every 200 ms until it holds, for at most [`CONVERGE`].
@@ -333,7 +368,17 @@ impl User {
             )
             .await;
         assert_eq!(status, StatusCode::OK, "{name} challenge: {body}");
-        let response = auth_response(&unb64(&body["challenge"]), &uid, &did, device_seed);
+        // A federating hub issues v2 challenges bound to its public URL.
+        let challenge = unb64(&body["challenge"]);
+        let decoded = AuthChallenge::decode(&challenge).unwrap();
+        assert_eq!(decoded.version(), AUTH_CHALLENGE_V2, "{name} challenge");
+        assert_eq!(decoded.audience(), body["hub_id"], "{name} challenge");
+        assert_eq!(
+            decoded.audience_url(),
+            Some(hub.public_url()),
+            "{name} challenge"
+        );
+        let response = auth_response(&challenge, &uid, &did, device_seed);
         let (status, body) = hub
             .call(
                 Method::POST,

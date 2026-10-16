@@ -4,6 +4,7 @@
 
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, str::FromStr};
 
+use gim_hub_identity::HUB_PROOF_MAX_URL_LEN;
 use gim_hub_push::{PushConfig, WebhookConfig};
 
 /// Hub configuration.
@@ -44,6 +45,10 @@ pub struct Config {
     pub trust_forwarded_for: bool,
     /// `GIM_HUB_PUSH_*`: push gateway.
     pub push: PushConfig,
+    /// `GIM_HUB_PUBLIC_URL`: the canonical client-API base URL, normalized
+    /// (see [`normalize_public_url`]). Required with federation; without it
+    /// the hub issues v1 sign-in challenges and has no proof of possession.
+    pub public_url: Option<String>,
     /// `GIM_HUB_UNHOSTED_GRACE_HOURS`: how long the data of a user who
     /// removed this hub from their hosting record is kept before the purge
     /// (docs/multihoming.md §7.3). Only used with federation.
@@ -79,6 +84,23 @@ impl Config {
         let database_path = get("GIM_HUB_DATABASE_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|| data_dir.join("hub.db"));
+        let public_url = get("GIM_HUB_PUBLIC_URL")
+            .map(|raw| {
+                normalize_public_url(raw).map_err(|reason| ConfigError {
+                    name: "GIM_HUB_PUBLIC_URL",
+                    value: raw.to_owned(),
+                    reason,
+                })
+            })
+            .transpose()?;
+        // GIM_HUB_FEDERATION itself is validated by the federation config.
+        if public_url.is_none() && get("GIM_HUB_FEDERATION").map(str::trim) == Some("true") {
+            return Err(ConfigError {
+                name: "GIM_HUB_PUBLIC_URL",
+                value: String::new(),
+                reason: "required when GIM_HUB_FEDERATION=true".into(),
+            });
+        }
         Ok(Self {
             listen: parse(
                 get,
@@ -119,6 +141,7 @@ impl Config {
             trust_forwarded_for: parse(get, "GIM_HUB_TRUST_FORWARDED_FOR", false, None)?,
             push: push_config(get)?,
             unhosted_grace_hours: parse(get, "GIM_HUB_UNHOSTED_GRACE_HOURS", 168, Some(1))?,
+            public_url,
             data_dir,
             database_path,
         })
@@ -163,6 +186,87 @@ fn push_config<'a>(
         log_endpoint: parse(get, "GIM_HUB_PUSH_LOG_ENDPOINT", false, None)?,
         webhook,
     })
+}
+
+/// Normalizes a public URL to `scheme://host[:port]`: scheme `http` or
+/// `https`, lowercase host (DNS name, IPv4 or bracketed IPv6), the port
+/// omitted when it is the scheme default, no trailing slash. Userinfo, a
+/// path other than `/`, a query or a fragment are rejected, as is a result
+/// longer than 65535 bytes (the proof's `u16` length). Shared vectors:
+/// `testdata/identity/public-url.json`.
+pub fn normalize_public_url(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    let (scheme, rest) = raw
+        .split_once("://")
+        .ok_or_else(|| "expected scheme://host[:port]".to_owned())?;
+    let scheme = scheme.to_ascii_lowercase();
+    let default_port = match scheme.as_str() {
+        "http" => 80,
+        "https" => 443,
+        _ => return Err("scheme must be http or https".into()),
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    if !tail.is_empty() && tail != "/" {
+        return Err("must not have a path, query or fragment".into());
+    }
+    if authority.contains('@') {
+        return Err("must not have userinfo".into());
+    }
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(v6) => {
+            let (addr, after) = v6
+                .split_once(']')
+                .ok_or_else(|| "unterminated IPv6 literal".to_owned())?;
+            addr.parse::<std::net::Ipv6Addr>()
+                .map_err(|_| "invalid IPv6 literal".to_owned())?;
+            let port = match after {
+                "" => None,
+                _ => Some(
+                    after
+                        .strip_prefix(':')
+                        .ok_or_else(|| "invalid authority".to_owned())?,
+                ),
+            };
+            (format!("[{}]", addr.to_ascii_lowercase()), port)
+        }
+        None => {
+            let (host, port) = match authority.split_once(':') {
+                Some((host, port)) => (host, Some(port)),
+                None => (authority, None),
+            };
+            let host = host.to_ascii_lowercase();
+            let label_ok = |label: &str| {
+                !label.is_empty()
+                    && label
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            };
+            if !host.split('.').all(label_ok) {
+                return Err("invalid host".into());
+            }
+            (host, port)
+        }
+    };
+    let port = match port {
+        None => None,
+        Some(port) => {
+            let port: u16 = Some(port)
+                .filter(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|port| port.parse().ok())
+                .filter(|port| *port != 0)
+                .ok_or_else(|| "invalid port".to_owned())?;
+            Some(port).filter(|port| *port != default_port)
+        }
+    };
+    let url = match port {
+        Some(port) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://{host}"),
+    };
+    if url.len() > HUB_PROOF_MAX_URL_LEN {
+        return Err(format!("longer than {HUB_PROOF_MAX_URL_LEN} bytes"));
+    }
+    Ok(url)
 }
 
 /// Parses `name` or returns `default`; `min` is the smallest accepted value.
@@ -226,6 +330,56 @@ mod tests {
         assert_eq!(config.hub_key_path(), PathBuf::from("./data/hub_key"));
         assert_eq!(config.blobs_dir(), PathBuf::from("./data/blobs"));
         assert_eq!(config.push, PushConfig::default());
+        assert_eq!(config.public_url, None);
+    }
+
+    /// testdata/identity/public-url.json, shared with gim-core.
+    #[test]
+    fn public_url_vectors() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/identity/public-url.json"
+        );
+        let file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let cases = file["cases"].as_array().unwrap();
+        assert!(cases.len() >= 30);
+        for case in cases {
+            let input = case["input"].as_str().unwrap();
+            let result = Config::from_vars(vars(&[("GIM_HUB_PUBLIC_URL", input)]));
+            match case["normalized"].as_str() {
+                Some(normalized) => {
+                    assert_eq!(normalize_public_url(input).as_deref(), Ok(normalized));
+                    assert_eq!(
+                        result.unwrap().public_url.as_deref(),
+                        Some(normalized),
+                        "{input:?}"
+                    );
+                }
+                None => {
+                    assert!(case["error"].is_string(), "{input:?}");
+                    assert_eq!(result.unwrap_err().name, "GIM_HUB_PUBLIC_URL", "{input:?}");
+                }
+            }
+        }
+        let host = "a".repeat(HUB_PROOF_MAX_URL_LEN);
+        assert!(normalize_public_url(&format!("https://{host}")).is_err());
+    }
+
+    #[test]
+    fn federation_requires_public_url() {
+        let err = Config::from_vars(vars(&[("GIM_HUB_FEDERATION", "true")])).unwrap_err();
+        assert_eq!(err.name, "GIM_HUB_PUBLIC_URL");
+        assert!(err
+            .to_string()
+            .contains("required when GIM_HUB_FEDERATION=true"));
+        let config = Config::from_vars(vars(&[
+            ("GIM_HUB_FEDERATION", "true"),
+            ("GIM_HUB_PUBLIC_URL", "http://hub-a:8080/"),
+        ]))
+        .unwrap();
+        assert_eq!(config.public_url.as_deref(), Some("http://hub-a:8080"));
+        assert!(Config::from_vars(vars(&[("GIM_HUB_FEDERATION", "false")])).is_ok());
     }
 
     #[test]
