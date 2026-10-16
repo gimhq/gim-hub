@@ -59,7 +59,10 @@ async fn compose_federation() {
     let start = Instant::now();
     let b_id = std::env::var("GIM_FED_HUB_B_ID").expect("GIM_FED_HUB_B_ID is not set");
     b.check_proof(&b_id).await;
-    ok("hub-b proves possession of its hub_id at its public URL", start);
+    ok(
+        "hub-b proves possession of its hub_id at its public URL",
+        start,
+    );
     let alice = User::sign_up("alice", &a, 1, 11, 2).await;
     let bob = User::sign_up("bob", &b, 2, 21, 2).await;
     let carol = User::sign_up("carol", &c, 3, 31, 2).await;

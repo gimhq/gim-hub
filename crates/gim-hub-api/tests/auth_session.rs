@@ -477,7 +477,10 @@ async fn hub_with_public_url_issues_v2_and_signs_in() {
     let response = sign_response(&bytes, &user_id, &device_id, &key);
     let (status, body) = create_session(&hub, &response).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(get_me(&hub, &text(&body["token"])).await, (user_id, device_id));
+    assert_eq!(
+        get_me(&hub, &text(&body["token"])).await,
+        (user_id, device_id)
+    );
 }
 
 #[tokio::test]
@@ -505,6 +508,8 @@ async fn v2_vector_response_creates_session() {
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
+type BuildChallenge = fn(&HubId, [u8; 32], u64, u64) -> AuthChallenge;
+
 /// A challenge that this hub stored as issued but that names another URL
 /// or has the wrong version for its configuration is `invalid_challenge`.
 #[tokio::test]
@@ -513,7 +518,7 @@ async fn challenge_url_and_version_mismatches_are_rejected() {
     let (device_id, key) = devices().swap_remove(0);
     let at = TEST_NOW as u64;
     let expires = at + CHALLENGE_TTL_MS as u64;
-    let cases: [(Option<&str>, fn(&HubId, [u8; 32], u64, u64) -> AuthChallenge); 3] = [
+    let cases: [(Option<&str>, BuildChallenge); 3] = [
         // v2 for another URL, at a hub with a public URL.
         (Some(PUBLIC_URL), |hub, nonce, at, exp| {
             AuthChallenge::new_v2(hub, "https://other.example.eu", nonce, at, exp)
@@ -536,6 +541,10 @@ async fn challenge_url_and_version_mismatches_are_rejected() {
         let response = sign_response(&challenge.to_bytes(), &user_id, &device_id, &key);
         let (status, body) = create_session(&hub, &response).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "case {i}: {body}");
-        assert_eq!(body["error"]["code"], error("invalid_challenge"), "case {i}");
+        assert_eq!(
+            body["error"]["code"],
+            error("invalid_challenge"),
+            "case {i}"
+        );
     }
 }

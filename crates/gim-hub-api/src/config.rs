@@ -335,13 +335,20 @@ mod tests {
             ("http://hub-a:80/", "http://hub-a"),
             ("http://hub-a:8080", "http://hub-a:8080"),
             ("https://hub.example.eu:80", "https://hub.example.eu:80"),
-            ("HTTPS://Hub.Example.EU:8443/", "https://hub.example.eu:8443"),
+            (
+                "HTTPS://Hub.Example.EU:8443/",
+                "https://hub.example.eu:8443",
+            ),
             ("http://10.0.0.1:8080", "http://10.0.0.1:8080"),
             ("http://[::1]:8080/", "http://[::1]:8080"),
             ("https://[FE80::1]:443", "https://[fe80::1]"),
             (" https://hub.example.eu ", "https://hub.example.eu"),
         ] {
-            assert_eq!(normalize_public_url(raw).as_deref(), Ok(normalized), "{raw}");
+            assert_eq!(
+                normalize_public_url(raw).as_deref(),
+                Ok(normalized),
+                "{raw}"
+            );
             let config = Config::from_vars(vars(&[("GIM_HUB_PUBLIC_URL", raw)])).unwrap();
             assert_eq!(config.public_url.as_deref(), Some(normalized));
         }
@@ -377,7 +384,9 @@ mod tests {
     fn federation_requires_public_url() {
         let err = Config::from_vars(vars(&[("GIM_HUB_FEDERATION", "true")])).unwrap_err();
         assert_eq!(err.name, "GIM_HUB_PUBLIC_URL");
-        assert!(err.to_string().contains("required when GIM_HUB_FEDERATION=true"));
+        assert!(err
+            .to_string()
+            .contains("required when GIM_HUB_FEDERATION=true"));
         let config = Config::from_vars(vars(&[
             ("GIM_HUB_FEDERATION", "true"),
             ("GIM_HUB_PUBLIC_URL", "http://hub-a:8080/"),

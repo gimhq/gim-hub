@@ -330,7 +330,11 @@ mod tests {
     #[test]
     fn challenge_times_and_lifetime() {
         let check = |issued_at, expires_at, now| {
-            AuthChallenge::new(&hub_id(9), NONCE, issued_at, expires_at).check(&hub_id(9), None, now)
+            AuthChallenge::new(&hub_id(9), NONCE, issued_at, expires_at).check(
+                &hub_id(9),
+                None,
+                now,
+            )
         };
         let max = AUTH_CHALLENGE_MAX_LIFETIME_MS;
         assert_eq!(check(1000, 1000 + max, 1000), Ok(()));
@@ -470,7 +474,10 @@ mod tests {
         assert_eq!(decoded, c);
         assert_eq!(decoded.to_bytes(), bytes);
         assert_eq!(AuthChallenge::new(&hub_id(9), NONCE, 1, 2).version(), 1);
-        assert_eq!(AuthChallenge::new(&hub_id(9), NONCE, 1, 2).audience_url(), None);
+        assert_eq!(
+            AuthChallenge::new(&hub_id(9), NONCE, 1, 2).audience_url(),
+            None
+        );
     }
 
     #[test]

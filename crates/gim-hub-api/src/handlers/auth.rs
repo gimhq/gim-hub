@@ -142,7 +142,7 @@ pub async fn create_session(
                 unix_ms(now),
                 &list,
             )
-                .map_err(response_error)?;
+            .map_err(response_error)?;
             let challenge = db_auth::take_challenge(tx, &challenge_id(&device.nonce), now)?
                 .filter(|issued| {
                     issued.user_id == device.user_id.as_str()
