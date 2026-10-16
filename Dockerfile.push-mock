@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1
+# Mock push server for tests (docs/push-mock.md). Built by
+# `scripts/docker-build.sh IMAGE push-mock`.
+
+FROM rust:1.99-bookworm AS builder
+WORKDIR /src
+COPY . .
+# Printed by `gim-push-mock version`; scripts/docker-build.sh verifies it.
+ARG GIM_HUB_BUILD_REV=unknown
+# No cache mount for /src/target, as in the hub Dockerfile.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo build --release --locked -p gim-push-mock \
+    && install -D target/release/gim-push-mock /out/gim-push-mock
+
+FROM debian:bookworm-slim
+RUN useradd --system --uid 10002 --no-create-home --shell /usr/sbin/nologin gimpushmock
+COPY --from=builder /out/gim-push-mock /usr/local/bin/gim-push-mock
+ENV GIM_PUSH_MOCK_LISTEN=0.0.0.0:8090
+USER gimpushmock
+EXPOSE 8090
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD ["gim-push-mock", "healthcheck"]
+CMD ["gim-push-mock"]
