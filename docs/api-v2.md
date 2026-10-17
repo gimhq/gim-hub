@@ -341,12 +341,12 @@ without padding. A nonce that is not base64url without padding or does not decod
 GET /v2/hub
 {"hub_id":"hciqgrcknldyy6lbu2splf5frcdqeftipgfikjxbzeq6x6y55lggapay",
  "hub_root_pubkey":"F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
- "version":"0.1.0","public_url":"https://hub-a.example.eu"}
+ "version":"0.2.0","public_url":"https://hub-a.example.eu"}
 
 GET /v2/hub?nonce=oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8
 {"hub_id":"hciqgrcknldyy6lbu2splf5frcdqeftipgfikjxbzeq6x6y55lggapay",
  "hub_root_pubkey":"F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
- "version":"0.1.0","public_url":"https://hub-a.example.eu",
+ "version":"0.2.0","public_url":"https://hub-a.example.eu",
  "proof":"xDC4XeBqNVag459Oc3cA_DcSOAoJcOCtoe6CXOiFVP-ShX1tVjImuvh1fp6lEcVMbWSdfAVypyQsRolceTlIBQ"}
 ```
 

@@ -29,7 +29,10 @@ docker run -d --name gim-hub -p 8080:8080 -v gim-hub-data:/data gim-hub
 curl http://127.0.0.1:8080/healthz
 ```
 
-Configuration, the data directory and backups: `docs/operations.md`.
+Configuration, the data directory and backups: `docs/operations.md`. To run
+the hub under the [lode](https://github.com/bkhq/lode) supervisor (signed
+updates with rollback; `Dockerfile.lode`, `deploy/lode/lode.toml`), see
+"Running under lode" there.
 
 ## Checks
 

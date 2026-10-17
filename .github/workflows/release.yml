@@ -1,0 +1,112 @@
+name: Release
+
+# Builds the gim-hub release assets and uploads them to the GitHub Release
+# that triggered the run (docs/operations.md, "Running under lode"):
+#
+#   gim-hub-linux-x86_64.tar.gz    (root: gim-hub)
+#   gim-hub-linux-aarch64.tar.gz
+#
+# When the LODE_SIGNING_KEY secret is set, every asset is signed for lode with
+# lode-cli from bkhq/lode v0.1.0 (pinned and checksum-verified) and uploaded
+# with its `<asset>.sig` sidecar. Without the secret the assets are uploaded
+# unsigned; lode then installs them only with require_signature = "off".
+#
+# The binaries are built in rust:1.99-bookworm, so they run on Debian
+# bookworm (glibc 2.36) and newer, including the Dockerfile.lode image.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+env:
+  # lode-cli used for signing: release tag and the sha256 of its
+  # lode-linux-x64.tar.gz asset.
+  LODE_RELEASE: v0.1.0
+  LODE_CLI_SHA256: 326f06cca5b5bb8cd9b085a6085fd490b511001faf91ee7d8f0889c9b2275f58
+
+jobs:
+  build:
+    if: startsWith(github.event.release.tag_name, 'v')
+    name: build (${{ matrix.arch }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x86_64
+            os: ubuntu-24.04
+          - arch: aarch64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Build gim-hub
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/src" -w /src \
+            -e GIM_HUB_BUILD_REV="$(git rev-parse HEAD)" \
+            rust:1.99-bookworm \
+            bash -c 'cargo build --release --locked -p gim-hub && chown -R "$(stat -c %u:%g .)" target'
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p pkg dist
+          cp target/release/gim-hub pkg/gim-hub
+          tar -C pkg -czf "dist/gim-hub-linux-${{ matrix.arch }}.tar.gz" gim-hub
+          tar -tzf "dist/gim-hub-linux-${{ matrix.arch }}.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gim-hub-linux-${{ matrix.arch }}
+          path: dist/gim-hub-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.event.release.tag_name }}
+      # Optional: signing is skipped when the secret is unset (empty).
+      LODE_SIGNING_KEY: ${{ secrets.LODE_SIGNING_KEY }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gim-hub-linux-*
+          path: dist
+          merge-multiple: true
+
+      - name: Sign (only if LODE_SIGNING_KEY is set) and upload
+        run: |
+          set -euo pipefail
+          if [ -n "${LODE_SIGNING_KEY:-}" ]; then
+            mkdir -p lode
+            base="https://github.com/bkhq/lode/releases/download/$LODE_RELEASE"
+            curl -fsSL -o lode/lode-linux-x64.tar.gz "$base/lode-linux-x64.tar.gz"
+            curl -fsSL -o lode/SHA256SUMS "$base/SHA256SUMS"
+            # Both the pinned checksum and the release's SHA256SUMS must match.
+            (
+              cd lode
+              echo "$LODE_CLI_SHA256  lode-linux-x64.tar.gz" | sha256sum -c -
+              grep ' lode-linux-x64.tar.gz$' SHA256SUMS | sha256sum -c -
+              tar -xzf lode-linux-x64.tar.gz
+            )
+            LODE_CLI="$PWD/lode/lode-cli"   # symlink to lode; it dispatches on argv[0]
+          fi
+          for f in dist/gim-hub-linux-*.tar.gz; do
+            if [ -n "${LODE_SIGNING_KEY:-}" ]; then
+              "$LODE_CLI" sign "$f" --app gim-hub --version "${TAG#v}" --key-env LODE_SIGNING_KEY \
+                | awk '/^sig:/ {print $2}' > "$f.sig"
+              [ -s "$f.sig" ] || { echo "::error::signing $f produced no signature"; exit 1; }
+              gh release upload "$TAG" "$f" "$f.sig" --clobber
+            else
+              gh release upload "$TAG" "$f" --clobber
+              echo "::warning::LODE_SIGNING_KEY not set: $(basename "$f") uploaded UNSIGNED"
+            fi
+          done

@@ -2938,8 +2938,8 @@
           },
           "version": {
             "type": "string",
-            "description": "Hub version.",
-            "example": "0.1.0"
+            "description": "Hub release version: the version the lode supervisor launched\n(`LODE_ACTIVE_VERSION`), else the package version.",
+            "example": "0.2.0"
           }
         }
       },
@@ -3207,8 +3207,8 @@
           },
           "version": {
             "type": "string",
-            "description": "Hub version.",
-            "example": "0.1.0"
+            "description": "Hub release version: the version the lode supervisor launched\n(`LODE_ACTIVE_VERSION`), else the package version.",
+            "example": "0.2.0"
           }
         }
       },

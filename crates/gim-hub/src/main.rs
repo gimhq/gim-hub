@@ -1,5 +1,7 @@
 //! gim hub server binary.
 
+mod lode;
+
 use std::{
     io::{self, BufRead, BufReader, Write},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
@@ -8,7 +10,7 @@ use std::{
 };
 
 use gim_hub_api::{AppState, Clock, Config, HubIdentity};
-use gim_hub_db::Db;
+use gim_hub_db::{Backups, Db};
 use gim_hub_push::{Dispatcher, DispatcherSettings, PushLog};
 use gim_hub_s2s::{
     ops::hosting_record::HostingRecordService, FederationConfig, FederationService, GroupService,
@@ -38,9 +40,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("version" | "--version") => {
             println!(
-                "gim-hub {} ({})",
-                env!("CARGO_PKG_VERSION"),
-                option_env!("GIM_HUB_BUILD_REV").unwrap_or("unknown")
+                "{}",
+                version_line(std::env::var("LODE_ACTIVE_VERSION").ok().as_deref())
             );
             return Ok(());
         }
@@ -59,6 +60,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = Config::from_env()?;
+    let supervisor = supervisor(|name| std::env::var(name).ok());
+    if supervisor.is_some() {
+        tracing::info!(version = %config.release_version, "supervised by lode");
+    }
     let federation_config = FederationConfig::from_env(&config.data_dir)?;
     let mut state = open_state(config)?;
     tracing::info!(hub_id = %state.hub.hub_id(), "hub identity loaded");
@@ -82,6 +87,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = tokio::net::TcpListener::bind(state.config.listen).await?;
     tracing::info!(listen = %state.config.listen, "gim-hub listening");
+    // Migrations ran, the client API is bound and federation (if enabled)
+    // started: the hub can serve.
+    if let Some(supervisor) = &supervisor {
+        report_ready(supervisor);
+    }
 
     let pruning = tokio::spawn(prune_periodically(state.clone()));
     axum::serve(
@@ -110,12 +120,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Creates the data directory, opens the database (applying migrations) and
-/// loads or creates the hub key.
+/// `gim-hub version`: the release version (`LODE_ACTIVE_VERSION` under
+/// lode, else the package version) and the build revision.
+fn version_line(lode_active_version: Option<&str>) -> String {
+    format!(
+        "gim-hub {} ({})",
+        gim_hub_api::config::release_version(lode_active_version),
+        option_env!("GIM_HUB_BUILD_REV").unwrap_or("unknown")
+    )
+}
+
+/// The lode supervisor's `state.json` handle, when `LODE_DIR` is set
+/// (docs/operations.md, "Running under lode").
+fn supervisor(var: impl Fn(&str) -> Option<String>) -> Option<lode::Lode> {
+    let dir = var("LODE_DIR").filter(|dir| !dir.is_empty())?;
+    Some(lode::Lode::new(
+        dir,
+        var("LODE_INSTANCE").unwrap_or_default(),
+    ))
+}
+
+/// Tells lode the hub can serve (`state.ready = LODE_INSTANCE`). A failure
+/// is only logged: the hub keeps serving and lode rolls back once its
+/// `ready_timeout` passes.
+fn report_ready(supervisor: &lode::Lode) {
+    match supervisor.mark_ready() {
+        Ok(()) => tracing::info!(
+            instance = supervisor.instance(),
+            "readiness reported to lode"
+        ),
+        Err(err) => tracing::error!(%err, "cannot report readiness to lode"),
+    }
+}
+
+/// Creates the data directory, opens the database (applying migrations,
+/// after a backup to `backups/` if the database exists) and loads or creates
+/// the hub key.
 fn open_state(config: Config) -> Result<AppState, Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&config.data_dir)?;
     std::fs::create_dir_all(config.blobs_dir())?;
-    let db = Db::open(&config.database_path)?;
+    let backups = Backups {
+        dir: config.data_dir.join("backups"),
+        release: config.release_version.clone(),
+    };
+    let db = Db::open_with_backups(&config.database_path, &backups)?;
     let hub = HubIdentity::load_or_create(&config.hub_key_path())?;
     Ok(AppState::new(db, config, hub, Clock::system()))
 }
@@ -551,6 +599,105 @@ mod tests {
         republish.unwrap().abort();
         outbox.shutdown();
         federation.shutdown();
+    }
+
+    #[test]
+    fn version_line_reports_the_release_version() {
+        let rev = option_env!("GIM_HUB_BUILD_REV").unwrap_or("unknown");
+        assert_eq!(
+            version_line(None),
+            format!("gim-hub {} ({rev})", env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(version_line(Some("")), version_line(None));
+        assert_eq!(
+            version_line(Some("0.2.1")),
+            format!("gim-hub 0.2.1 ({rev})")
+        );
+    }
+
+    fn vars(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        }
+    }
+
+    #[test]
+    fn unsupervised_without_lode_dir() {
+        // No handle, so `main` never touches a state.json.
+        assert!(supervisor(vars(&[("LODE_INSTANCE", "1-a")])).is_none());
+        assert!(supervisor(vars(&[("LODE_DIR", ""), ("LODE_INSTANCE", "1-a")])).is_none());
+    }
+
+    #[test]
+    fn readiness_is_written_and_lode_fields_are_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_path = tmp.path().join("state.json");
+        let lode_fields = json!({
+            "current": "0.2.0",
+            "last_good": "0.1.9",
+            "status": "starting",
+            "pid": 4242,
+            "config_generation": 3,
+            "history": [{ "version": "0.1.9", "at": "2026-10-01T00:00:00Z", "result": "good" }],
+            "future_field": { "kept": true },
+        });
+        std::fs::write(&state_path, lode_fields.to_string()).unwrap();
+        let dir = tmp.path().display().to_string();
+        let supervisor = supervisor(|name| match name {
+            "LODE_DIR" => Some(dir.clone()),
+            "LODE_INSTANCE" => Some("4242-abc".into()),
+            _ => None,
+        })
+        .unwrap();
+        report_ready(&supervisor);
+
+        let mut state: Value =
+            serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+        assert_eq!(state["ready"], "4242-abc");
+        state.as_object_mut().unwrap().remove("ready");
+        assert_eq!(state, lode_fields);
+        assert!(tmp.path().join("state.json.lock").is_file());
+    }
+
+    #[test]
+    fn readiness_failure_is_not_fatal() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No LODE_INSTANCE: nothing is written.
+        report_ready(&lode::Lode::new(tmp.path(), ""));
+        assert!(!tmp.path().join("state.json").exists());
+        // An unwritable LODE_DIR: logged only.
+        report_ready(&lode::Lode::new(tmp.path().join("missing"), "1-a"));
+    }
+
+    #[tokio::test]
+    async fn open_state_backs_up_into_the_data_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = Config::from_vars([
+            (
+                "GIM_HUB_DATA_DIR".to_owned(),
+                tmp.path().display().to_string(),
+            ),
+            ("LODE_ACTIVE_VERSION".to_owned(), "0.2.1".to_owned()),
+        ])
+        .unwrap();
+        drop(open_state(config.clone()).unwrap());
+        // Fresh database: no backup.
+        assert!(!tmp.path().join("backups").exists());
+        // An existing database one schema step behind gets one.
+        let conn = gim_hub_db::Connection::open(tmp.path().join("hub.db")).unwrap();
+        let from = gim_hub_db::SCHEMA_VERSION - 1;
+        conn.pragma_update(None, "user_version", from).unwrap();
+        drop(conn);
+        // The last migration may not re-apply on top of itself; only the
+        // backup matters here.
+        let _ = open_state(config);
+        assert!(tmp
+            .path()
+            .join(format!("backups/hub-{from}-0.2.1.db"))
+            .is_file());
     }
 
     #[tokio::test]

@@ -182,14 +182,26 @@ secret stops startup. Keep the secret out of the image (e.g. inject it from `/ru
 $GIM_HUB_DATA_DIR/
 ├── hub.db        SQLite database (WAL mode, with hub.db-wal and hub.db-shm)
 ├── hub_key       32-byte Ed25519 seed of the hub root key, mode 0600
+├── backups/      Pre-migration database copies, `hub-<from_schema>-<version>.db`
 └── blobs/        Encrypted blob contents, one file per blob: uploads and cached
                   copies of other hubs' blobs; `<hub_id>_b_<random>` (legacy
                   uploads: `b_<random>`); `.*.tmp` files are unfinished writes
 ```
 
 - `hub.db` is created on first start; schema migrations are embedded in the
-  binary and applied automatically (tracked in `PRAGMA user_version`). A hub
-  refuses to open a database written by a newer schema version.
+  binary and applied automatically (tracked in `PRAGMA user_version`).
+- Before applying pending migrations to an existing database (schema above 0)
+  the hub copies it with SQLite's online backup to
+  `backups/hub-<from_schema>-<version>.db`: the schema it is migrating from
+  and the release version doing it (see "Running under lode" for the
+  version). Only the newest three `hub-*.db` files are kept; older ones are
+  deleted after each new backup. A fresh database is not backed up. The
+  directory is always under `GIM_HUB_DATA_DIR`, even with a custom
+  `GIM_HUB_DATABASE_PATH`.
+- A database with a newer schema than the binary knows is refused before
+  anything is written to it: the hub exits non-zero with `database schema
+  version N is newer than this binary supports (up to M); restore a backup or
+  run a newer release`.
 - `hub_key` is generated on first start. It is the hub ROOT key and
   determines the hub's `hub_id` (gim-core identity spec): the audience of
   sign-in challenges, the owner prefix of group IDs and the hub named in
@@ -250,11 +262,89 @@ Build notes:
   same daemon, and cargo judges freshness by mtime, so a shared `target/` can
   yield a binary built from another checkout's sources. Docker's layer cache
   is keyed on the build context content and stays safe.
-- `gim-hub version` prints the package version and the `GIM_HUB_BUILD_REV`
-  build argument (`unknown` if unset). `scripts/docker-build.sh IMAGE`, used by
+- `gim-hub version` prints `gim-hub <version> (<rev>)`: the release version
+  (see "Running under lode") and the `GIM_HUB_BUILD_REV` build argument
+  (`unknown` if unset). `scripts/docker-build.sh IMAGE`, used by
   `docker-smoke.sh` and `fed-test.sh`, passes the checkout's revision (with a
   `-dirty-<hash>` suffix for uncommitted changes to tracked files) and fails
   unless the built image reports exactly that revision.
+
+## Running under lode
+
+[lode](https://github.com/bkhq/lode) (v0.1.0) can supervise the hub: it
+downloads and verifies signed release assets, runs the hub, commits a version
+once the hub reports ready and rolls back to the last good version when a new
+one fails. The hub implements the lode app contract only when `LODE_DIR` is
+set; without it nothing changes.
+
+- **Image and config.** `Dockerfile.lode` is a `debian:bookworm-slim` image
+  with the lode binary (and `lode-cli`, the same binary) as `ENTRYPOINT`,
+  running as the non-root `gimhub` user, with two volumes: `/srv/lode`
+  (`LODE_DIR`: `lode.toml`, `versions/`, `state.json`) and `/data` (the hub
+  data). Start from `deploy/lode/lode.toml`: put it at
+  `/srv/lode/lode.toml`, replace the placeholder `[trust].trusted_keys` entry
+  with the release public key and pick the `[update].asset` of the host
+  architecture. `[update].policy = "check"` only records a newer release
+  (`lode-cli status`); install it with `lode-cli update`, or set `"auto"`.
+
+  ```bash
+  docker build -t gim-hub-lode - < Dockerfile.lode
+  docker run -d --name gim-hub --stop-timeout 40 -p 8080:8080 \
+    -v gim-hub-lode:/srv/lode -v gim-hub-data:/data gim-hub-lode
+  docker exec gim-hub lode-cli status
+  ```
+
+- **Environment.** lode injects `LODE_DIR`, `LODE_INSTANCE`,
+  `LODE_ACTIVE_VERSION`, `LODE_READINESS`, `LODE_WORKDIR` and `LODE_CONFIG`.
+  The `GIM_HUB_*` variables come from the container env or the `lode.toml`
+  `[env]` table (defaults; the container env wins). Keep `GIM_HUB_DATA_DIR`
+  outside `LODE_DIR`: lode replaces and prunes the version directories, and
+  the hub's cwd is the version directory.
+- **Readiness** (`[supervise].readiness = "state"`). After the migrations ran,
+  the client API listener is bound and federation (if enabled) started, the
+  hub sets `state.ready = $LODE_INSTANCE` in `$LODE_DIR/state.json` under
+  `state.json.lock`, keeping lode's fields. A failure to write it is logged
+  and the hub keeps serving; lode then rolls back after `ready_timeout`
+  (60 s in the example). A version that exits within `health_grace` (15 s) is
+  rolled back too.
+- **Stop.** On SIGTERM the hub stops accepting connections, finishes
+  in-flight requests and exits 0, well within `stop_timeout = 30`. Give the
+  container a longer stop grace than that (`--stop-timeout 40`,
+  `stop_grace_period: 40s`).
+- **Version reporting.** `GET /healthz`, `GET /v2/hub` (`version`) and
+  `gim-hub version` report `LODE_ACTIVE_VERSION` when supervised (the
+  version lode installed, e.g. `0.2.1`), else the package version (`0.2.0`).
+  `gim-hub version` adds the build revision: `gim-hub 0.2.1 (<rev>)`. The
+  same version names the pre-migration backups.
+- **Rollback and the database.** lode rolls back the binary, not the data.
+  Only an older release whose schema is not behind the database can run on
+  it: an older binary refuses a newer schema and exits non-zero, so lode
+  reports the failure instead of serving on a migrated database. To go back
+  to a release with an older schema, restore its backup:
+  1. Stop the hub (`docker stop gim-hub`), or set `hold = true` in
+     `state.json` so lode does not restart it.
+  2. Pick the backup made when the newer release migrated the database:
+     `backups/hub-<from_schema>-<version>.db` holds schema `<from_schema>`,
+     the schema of the release before `<version>`.
+  3. Move `hub.db`, `hub.db-wal` and `hub.db-shm` aside, then copy the backup
+     to `hub.db` (owned by the hub user).
+  4. Pin lode to the older release (`[update].pin`, or
+     `lode-cli rollback --version <old>`) and start the hub again.
+
+  Writes made after the backup are lost by a restore; prefer rolling forward
+  with a fixed release when possible.
+- **Releases.** `.github/workflows/release.yml` runs when a GitHub Release is
+  published (tag `v*`) and uploads `gim-hub-linux-x86_64.tar.gz` and
+  `gim-hub-linux-aarch64.tar.gz` (the archive root holds `gim-hub`; built on
+  Debian bookworm, glibc 2.36). With the `LODE_SIGNING_KEY` secret set, each
+  asset is signed with `lode-cli sign --app gim-hub --version <tag without v>`
+  (lode-cli from the pinned, checksum-verified bkhq/lode v0.1.0 release) and
+  uploaded with its `<asset>.sig`; without it the assets are uploaded
+  unsigned, which `require_signature = "enforce"` rejects.
+- **Smoke test.** `scripts/lode-smoke.sh` builds the hub and the image, serves
+  a signed native manifest from a sibling container and checks a real install
+  (with a pre-migration backup), an update, a rollback from a release that
+  fails at startup and a graceful `docker stop`.
 
 ## Shutdown
 
