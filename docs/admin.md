@@ -68,28 +68,11 @@ GIM_HUB_ADMIN_COOKIE_SECURE=true
 ```
 
 traefik dynamic configuration (file provider):
-
-```yaml
-http:
-  routers:
-    gim-hub-admin:
-      rule: Host(`hub-admin.example.eu`) && PathPrefix(`/admin`)
-      entryPoints: [websecure]
-      tls: {}
-      middlewares: [strip-identity, oidc]
-      service: gim-hub-admin
-  middlewares:
-    # Drop any identity header sent by the client; only `oidc` sets it.
-    strip-identity:
-      headers:
-        customRequestHeaders:
-          X-Forwarded-User: ""
-  services:
-    gim-hub-admin:
-      loadBalancer:
-        servers:
-          - url: http://gim-hub:8081
-```
+[`deploy/lode/traefik-admin.yml`](../deploy/lode/traefik-admin.yml). It
+routes the admin host to port 8081 through a `strip-identity` middleware
+(drops any client-supplied `X-Forwarded-User`) and `oidc`. The commented
+admin variables in [`deploy/lode/lode.toml`](../deploy/lode/lode.toml) show
+the same setup under lode.
 
 The admin port is not published; only traefik reaches it. The proxy must
 overwrite or remove a client-supplied identity header, since the hub cannot
@@ -213,6 +196,34 @@ UI loses its connection briefly; sessions do not survive it.
 
 ## Embedding the UI
 
-`gim_hub_admin::router` serves `/admin/api/*` and `GET /`; the binary adds
-the admin UI for the other `/admin/` paths (the SPA, base path `/admin/`,
-assets under `/admin/assets/`, `index.html` as the fallback).
+The SPA (`admin-ui/`, see its README) is built to `admin-ui/dist` by
+`scripts/admin-ui.sh build` and embedded at compile time:
+`crates/gim-hub-admin/build.rs` generates one `include_bytes!` per file, and
+compilation fails with "run scripts/admin-ui.sh build first" when
+`admin-ui/dist/index.html` is missing, so a binary never ships an empty UI.
+Every build path builds the UI first: `scripts/check.sh`, CI, the Dockerfile
+(an `oven/bun:1.4.3` stage), `release.yml`, `scripts/lode-smoke.sh` and
+`scripts/fed-test.sh`.
+
+`gim_hub_admin::router` serves, besides `/admin/api/*` and `GET /`:
+
+- `GET /admin/` and every other `/admin/` path: the file under `dist` if it
+  exists, else `index.html` (client-side routes such as
+  `/admin/users/<user_id>`). `GET /admin` redirects to `/admin/`.
+- `/admin/assets/*` (hashed names): `Cache-Control: public,
+  max-age=31536000, immutable`; everything else, `index.html` included:
+  `no-cache`.
+- `/admin/api` paths are never the UI: unknown ones answer 401 without a
+  session and 404 with one.
+
+## Browser E2E
+
+`bash scripts/admin-e2e.sh` (not part of `scripts/check.sh`; it needs a
+browser image) builds the binary with the embedded UI, starts it with the
+admin listener, federation (one allowlisted fake hub) and a fake lode
+`state.json`, seeds a user with a device and a session, and drives the UI
+with Playwright (`admin-ui/e2e/`, in the pinned
+`mcr.microsoft.com/playwright` image): login, user search and detail,
+session revoke, allowlist edit, lode "check now", the audit log, and no
+`/admin/` on the client listener. Every container and network carries
+`ai-agent=true` and a per-run `ai-agent-run` label and is removed on exit.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run the project checks: admin UI gates (scripts/admin-ui.sh check), then
-# fmt, clippy, test.
+# fmt, clippy, test. The UI gates come first: their build writes
+# admin-ui/dist, which gim-hub-admin embeds and needs to compile.
 #
 # By default the checks run in containers (override the rust image with
 # CHECK_IMAGE). Pass --in-container or set GIM_HUB_CHECK_NATIVE=1 to run only the

@@ -3,9 +3,9 @@
 //!
 //! [`AdminDoc`] is the contract (committed as `admin-openapi.json` at the
 //! repository root). [`api_router`] serves `/admin/api/*` behind the session
-//! and CSRF checks; [`router`] adds `GET /` → `/admin/`. Both are plain
-//! [`Router`]s, so the admin UI can be added for the other `/admin/` paths,
-//! e.g. `router(state).merge(spa)` or `.fallback_service(..)`.
+//! and CSRF checks; [`router`] adds `GET /` → `/admin/` and the admin UI
+//! (`admin-ui/dist`, embedded at compile time by `build.rs`) on the other
+//! `/admin/` paths.
 
 pub mod auth;
 pub mod config;
@@ -15,6 +15,7 @@ pub mod handlers;
 #[path = "../../gim-hub/src/lode.rs"]
 mod lode;
 pub mod state;
+mod ui;
 
 pub use config::AdminConfig;
 pub use error::AdminError;
@@ -157,11 +158,14 @@ async fn not_found() -> AdminError {
     AdminError::NotFound
 }
 
-/// [`api_router`] plus `GET /` redirecting to `/admin/`. The admin UI
-/// (other `/admin/` paths) is added by the embedding binary.
+/// [`api_router`] plus `GET /` redirecting to `/admin/` and the embedded
+/// admin UI on every other `/admin/` path (`index.html` for client-side
+/// routes; never for `/admin/api/*`).
 pub fn router(state: AdminState) -> Router {
-    api_router(state).route(
-        "/",
-        get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/admin/")]) }),
-    )
+    api_router(state)
+        .route(
+            "/",
+            get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/admin/")]) }),
+        )
+        .merge(ui::router())
 }
