@@ -150,7 +150,8 @@ grep -q "^manifest = " "$WORK/lode/lode.toml" && grep -q '^require_signature = "
 # An existing install one schema step behind, with a row of data.
 schema="$(grep -c 'include_str!("../migrations/' crates/gim-hub-db/src/migrate.rs)"
 from=$((schema - 1))
-for sql in $(ls crates/gim-hub-db/migrations/*.sql | head -n "$from"); do
+migrations=(crates/gim-hub-db/migrations/*.sql)
+for sql in "${migrations[@]:0:$from}"; do
     sqlite3 "$WORK/data/hub.db" <"$sql"
 done
 sqlite3 "$WORK/data/hub.db" "PRAGMA user_version = $from; INSERT INTO meta (key, value) VALUES ('smoke-seed', '$RUN');"
@@ -198,7 +199,9 @@ start=$(date +%s%N)
 docker stop -t 30 "$LODE" >/dev/null
 elapsed_ms=$((($(date +%s%N) - start) / 1000000))
 code="$(docker inspect -f '{{.State.ExitCode}}' "$LODE")"
-docker logs "$LODE" 2>&1 | grep -q "gim-hub stopped" || fail "d: hub did not log a graceful stop"
+# Captured first: `docker logs | grep -q` fails under pipefail once grep exits early.
+logs="$(docker logs "$LODE" 2>&1)"
+grep -q "gim-hub stopped" <<<"$logs" || fail "d: hub did not log a graceful stop"
 [[ "$code" == 0 ]] || fail "d: lode exited $code"
 ((elapsed_ms < 30000)) || fail "d: stop took ${elapsed_ms}ms"
 pass "d: docker stop -t 30 -> exit $code in ${elapsed_ms}ms (hub logged 'gim-hub stopped')"
