@@ -1,0 +1,37 @@
+# syntax=docker/dockerfile:1
+
+# gim-hub under the lode supervisor (docs/operations.md, "Running under lode").
+#
+# The image carries only lode v0.1.0 (github.com/bkhq/lode); lode downloads,
+# verifies and runs the gim-hub release asset named in its lode.toml, keeping
+# versions/ and state.json in LODE_DIR. Hub data lives in the separate /data
+# volume. Needs no build context: docker build -f Dockerfile.lode - < Dockerfile.lode
+#
+# The lode binary is musl-static; the image is the multi-arch v0.1.0 index,
+# pinned by digest.
+FROM docker.io/bkhq/lode:v0.1.0@sha256:5669985ae14b88e39808e32c16206de733d370261449f5615cd271b422e4816d AS lode
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --home-dir /data --shell /usr/sbin/nologin gimhub \
+    && mkdir -p /srv/lode /data \
+    && chown gimhub:gimhub /srv/lode /data
+# `lode` is the supervisor; `lode-cli` (the same binary) is the operator
+# toolkit: docker exec <container> lode-cli status
+COPY --from=lode /usr/bin/lode /usr/local/bin/lode
+RUN ln -s lode /usr/local/bin/lode-cli
+# lode.toml is read from $LODE_DIR/lode.toml. The GIM_HUB_* values pass
+# through to the hub and win over lode.toml [env] defaults.
+ENV LODE_DIR=/srv/lode \
+    GIM_HUB_LISTEN=0.0.0.0:8080 \
+    GIM_HUB_DATA_DIR=/data
+USER gimhub
+# 8080: client API; 4001 tcp/udp: federation (libp2p TCP and QUIC).
+EXPOSE 8080 4001/tcp 4001/udp
+VOLUME ["/srv/lode", "/data"]
+# The active release is LODE_DIR/current.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD ["/srv/lode/current/gim-hub", "healthcheck"]
+ENTRYPOINT ["lode"]

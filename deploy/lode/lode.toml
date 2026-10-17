@@ -1,0 +1,48 @@
+# lode.toml for gim-hub under lode v0.1.0 (docs/operations.md, "Running under
+# lode"). Copy it to $LODE_DIR/lode.toml (/srv/lode/lode.toml in the
+# Dockerfile.lode image) and pick the [update].asset of the host. Key reference:
+# docs/lode.example.toml in github.com/bkhq/lode at v0.1.0.
+
+[global]
+app = "gim-hub"     # binds every release signature (`lode-cli sign --app gim-hub`)
+dir = "/srv/lode"   # lode.toml, versions/, state.json; NOT the hub data dir
+
+[update]
+github  = "gimhq/gim-hub"
+asset   = "gim-hub-linux-x86_64.tar.gz"   # gim-hub-linux-aarch64.tar.gz on arm64 hosts
+channel = "stable"                        # the latest published (non-prerelease) release
+# check: lode only records a newer release in state.json ("available"); the
+# operator upgrades with `lode-cli update`. Flip to "auto" to install new
+# releases unattended.
+policy  = "check"
+# keep_versions = 3   # installed versions kept for rollback (default 3)
+
+[trust]
+# Every release asset must carry a valid signature by a trusted key
+# (`<asset>.sig`, made by the release workflow when LODE_SIGNING_KEY is set).
+# Unsigned releases only install with require_signature = "off", which is for
+# local testing only.
+require_signature = "enforce"
+# The release key of the official gimhq/gim-hub releases.
+trusted_keys = ["f22e33416e94c5ba:jeWP-q9Mz89Vxm5Zq5Ss0kiPtBcthFKSlb0jfKCh1rs"]
+
+[command]
+run  = "./gim-hub"   # cwd = the installed version dir
+exec = "./gim-hub"   # `lode <args>` -> gim-hub <args>, e.g. `lode version`
+
+[supervise]
+readiness     = "state"        # the hub writes state.ready once it serves
+ready_timeout = 60             # seconds to wait for readiness before a rollback
+health_grace  = 15             # a new version exiting within this window is rolled back
+stop_timeout  = 30             # SIGTERM grace before SIGKILL; keep the container's stop grace above it
+restart       = "on-failure"
+
+[env]
+# Defaults for the hub; the container env (e.g. `-e GIM_HUB_PUBLIC_URL=...`)
+# wins over them. Keep the data dir outside LODE_DIR: lode replaces version
+# dirs on every update.
+GIM_HUB_DATA_DIR = "/data"
+GIM_HUB_LISTEN   = "0.0.0.0:8080"
+# Required with federation (docs/operations.md):
+# GIM_HUB_PUBLIC_URL = "https://hub.example.eu"
+# GIM_HUB_FEDERATION = "true"
