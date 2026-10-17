@@ -44,6 +44,14 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name }}
 
+      # gim-hub-admin embeds admin-ui/dist and fails to compile without it.
+      - name: Build the admin UI
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/src" -w /src/admin-ui oven/bun:1.4.3 \
+            sh -c 'bun install --frozen-lockfile && bun run build'
+          test -f admin-ui/dist/index.html
+
       - name: Build gim-hub
         run: |
           set -euo pipefail

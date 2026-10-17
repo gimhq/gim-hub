@@ -275,6 +275,12 @@ CI runs it on every push. `scripts/docker-build.sh IMAGE push-mock` builds
 
 Build notes:
 
+- The admin UI (`admin-ui/`) is embedded in the binary: `gim-hub-admin` fails
+  to compile unless `admin-ui/dist/index.html` exists ("run
+  scripts/admin-ui.sh build first"). The Dockerfile builds it from source in
+  an `oven/bun:1.4.3` stage (`.dockerignore` excludes `admin-ui/dist` and
+  `node_modules`); for a local `cargo build`, run `scripts/admin-ui.sh build`
+  first (`scripts/check.sh` does).
 - The builder caches only the cargo registry and git checkouts. `target/` is
   not cached: a BuildKit cache mount is shared by every checkout built on the
   same daemon, and cargo judges freshness by mtime, so a shared `target/` can
@@ -325,6 +331,17 @@ set; without it nothing changes.
   `[env]` table (defaults; the container env wins). Keep `GIM_HUB_DATA_DIR`
   outside `LODE_DIR`: lode replaces and prunes the version directories, and
   the hub's cwd is the version directory.
+- **Admin listener.** The admin UI and API ([`admin.md`](admin.md)) are
+  embedded in every release asset and served on their own port, never on
+  8080. Enable them in `lode.toml` `[env]` (commented example) or the
+  container env: `GIM_HUB_ADMIN_LISTEN=0.0.0.0:8081` inside the container
+  (`127.0.0.1:8081` when the hub runs directly on a host), a token file
+  (`GIM_HUB_ADMIN_TOKEN_FILE=/data/admin.token`) and/or the trusted proxy
+  header, and `GIM_HUB_ADMIN_COOKIE_SECURE=true` behind TLS. Do not publish
+  8081 (no `-p 8081:8081`): only the reverse proxy on the container's
+  network reaches it; `deploy/lode/traefik-admin.yml` routes an admin host
+  through traefik's `oidc` middleware. The UI's lode panel reads and writes
+  `$LODE_DIR/state.json` like `lode-cli` (check, update, restart, rollback).
 - **Readiness** (`[supervise].readiness = "state"`). After the migrations ran,
   the client API listener is bound and federation (if enabled) started, the
   hub sets `state.ready = $LODE_INSTANCE` in `$LODE_DIR/state.json` under
@@ -338,8 +355,8 @@ set; without it nothing changes.
   `stop_grace_period: 40s`).
 - **Version reporting.** `GET /healthz`, `GET /v2/hub` (`version`) and
   `gim-hub version` report `LODE_ACTIVE_VERSION` when supervised (the
-  version lode installed, e.g. `0.2.1`), else the package version (`0.2.0`).
-  `gim-hub version` adds the build revision: `gim-hub 0.2.1 (<rev>)`. The
+  version lode installed, e.g. `0.3.1`), else the package version (`0.3.0`).
+  `gim-hub version` adds the build revision: `gim-hub 0.3.1 (<rev>)`. The
   same version names the pre-migration backups.
 - **Rollback and the database.** lode rolls back the binary, not the data.
   Only an older release whose schema is not behind the database can run on
@@ -366,10 +383,11 @@ set; without it nothing changes.
   (lode-cli from the pinned, checksum-verified bkhq/lode v0.1.0 release) and
   uploaded with its `<asset>.sig`; without it the assets are uploaded
   unsigned, which `require_signature = "enforce"` rejects.
-- **Smoke test.** `scripts/lode-smoke.sh` builds the hub and the image, serves
-  a signed native manifest from a sibling container and checks a real install
-  (with a pre-migration backup), an update, a rollback from a release that
-  fails at startup and a graceful `docker stop`.
+- **Smoke test.** `scripts/lode-smoke.sh` builds the admin UI, the hub and
+  the image, serves a signed native manifest from a sibling container and
+  checks a real install (with a pre-migration backup) serving the embedded
+  admin UI on its own port, an update, a rollback from a release that fails
+  at startup and a graceful `docker stop`.
 
 ## Shutdown
 

@@ -14,12 +14,22 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Same version as the oven/bun image of scripts/admin-ui.sh and the Dockerfile.
+  BUN_VERSION: "1.4.3"
 
 jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      # Same gates as scripts/admin-ui.sh check. The build (admin-ui/dist) must
+      # exist before cargo: gim-hub-admin embeds it and fails to compile without it.
+      - name: Admin UI
+        working-directory: admin-ui
+        run: bun install --frozen-lockfile && bun run lint && bun run typecheck && bun run test && bun run build
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.99"
@@ -44,6 +54,14 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      # The compose driver compiles gim-hub, which embeds admin-ui/dist; the
+      # hub images build their own UI in the Dockerfile.
+      - name: Build the admin UI
+        working-directory: admin-ui
+        run: bun install --frozen-lockfile && bun run build
       - name: 3-hub compose acceptance
         env:
           GIM_FED_CARGO_HOME: ${{ runner.temp }}/cargo

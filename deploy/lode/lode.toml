@@ -46,3 +46,14 @@ GIM_HUB_LISTEN   = "0.0.0.0:8080"
 # Required with federation (docs/operations.md):
 # GIM_HUB_PUBLIC_URL = "https://hub.example.eu"
 # GIM_HUB_FEDERATION = "true"
+# Admin UI and API (docs/admin.md) on their own port, separate from 8080. Do
+# not publish it: only the TLS proxy reaches it (0.0.0.0 inside the container;
+# use 127.0.0.1:8081 when the hub runs directly on a host behind a local proxy).
+# GIM_HUB_ADMIN_LISTEN        = "0.0.0.0:8081"
+# GIM_HUB_ADMIN_COOKIE_SECURE = "true"                # TLS terminates at traefik
+# Log in with a token (`openssl rand -hex 32`, readable by the hub user only):
+# GIM_HUB_ADMIN_TOKEN_FILE    = "/data/admin.token"
+# and/or trust the identity set by traefik's oidc middleware
+# (deploy/lode/traefik-admin.yml):
+# GIM_HUB_ADMIN_TRUSTED_HEADER  = "X-Forwarded-User"
+# GIM_HUB_ADMIN_TRUSTED_PROXIES = "172.18.0.0/16"     # the traefik network

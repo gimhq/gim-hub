@@ -7,6 +7,9 @@
 # versions/ and state.json in LODE_DIR. Hub data lives in the separate /data
 # volume. Needs no build context: docker build -f Dockerfile.lode - < Dockerfile.lode
 #
+# No admin UI build here: the release assets lode downloads already embed it
+# (release.yml builds admin-ui before cargo).
+#
 # The lode binary is musl-static; the image is the multi-arch v0.1.0 index,
 # pinned by digest.
 FROM docker.io/bkhq/lode:v0.1.0@sha256:5669985ae14b88e39808e32c16206de733d370261449f5615cd271b422e4816d AS lode
