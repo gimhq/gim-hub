@@ -55,7 +55,7 @@ async fn login_session_and_logout() {
     );
 
     let logout = admin
-        .call(Method::POST, "/admin/api/logout", &login, None)
+        .call(Method::POST, "/admin/api/logout", &login, Some(&json!({})))
         .await;
     assert_eq!(logout.status, StatusCode::NO_CONTENT);
     let cleared = logout.headers[header::SET_COOKIE].to_str().unwrap();

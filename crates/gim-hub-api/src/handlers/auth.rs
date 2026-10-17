@@ -43,7 +43,7 @@ POST /v2/auth/session before `expires_at`.",
     responses(
         (status = 200, description = "Challenge issued", body = AuthChallenge),
         (status = 400, description = "Malformed body, user ID or device ID (`validation_failed`)", body = Error),
-        (status = 403, description = "An admin suspended the user (`user_suspended`)", body = Error),
+        (status = 403, description = "An admin suspended the user: `{\"error\":{\"code\":\"user_suspended\",\"message\":\"user is suspended\"}}`. Only the two sign-in endpoints return `user_suspended`; the suspension deleted the user's sessions, so endpoints called with an earlier token answer 401 `unauthorized`", body = Error),
         (status = 404, description = "No DeviceList stored for the user, or the device is not active in it (`not_found`)", body = Error),
     ),
 )]
@@ -114,7 +114,7 @@ revokes the device or an admin suspends the user.",
         (status = 200, description = "Session created", body = Session),
         (status = 400, description = "Malformed body or AuthResponse (`validation_failed`)", body = Error),
         (status = 401, description = "Unknown, used or expired challenge, one issued by another hub, for another URL or another device, or of the wrong version (`invalid_challenge`); bad signature (`invalid_signature`); device revoked or not in the DeviceList (`device_not_active`)", body = Error),
-        (status = 403, description = "An admin suspended the user (`user_suspended`)", body = Error),
+        (status = 403, description = "An admin suspended the user: `{\"error\":{\"code\":\"user_suspended\",\"message\":\"user is suspended\"}}`. Only the two sign-in endpoints return `user_suspended`; the suspension deleted the user's sessions, so endpoints called with an earlier token answer 401 `unauthorized`", body = Error),
     ),
 )]
 pub async fn create_session(

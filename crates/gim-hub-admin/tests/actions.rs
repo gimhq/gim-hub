@@ -198,7 +198,10 @@ async fn suspended_user_cannot_sign_in_until_unsuspended() {
 
     let (challenge, _) = sign_in(hub).await;
     assert_eq!(challenge.0, StatusCode::FORBIDDEN);
-    assert_eq!(challenge.1["error"]["code"], "user_suspended");
+    assert_eq!(
+        challenge.1,
+        json!({ "error": { "code": "user_suspended", "message": "user is suspended" } })
+    );
     let bytes = STANDARD.decode(text(&pending.1["challenge"])).unwrap();
     let key = SigningKey::from_bytes(&hex_bytes(&v["device_seed"]).try_into().unwrap());
     let response = sign_response(&bytes, &user_id, &text(&v["device_id"]), &key);
@@ -209,7 +212,10 @@ async fn suspended_user_cannot_sign_in_until_unsuspended() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(body["error"]["code"], "user_suspended");
+    assert_eq!(
+        body,
+        json!({ "error": { "code": "user_suspended", "message": "user is suspended" } })
+    );
 
     let detail = admin
         .call(
@@ -237,7 +243,7 @@ async fn suspended_user_cannot_sign_in_until_unsuspended() {
             Method::POST,
             &format!("/admin/api/users/{user_id}/unsuspend"),
             &login,
-            None,
+            Some(&json!({})),
         )
         .await;
     assert_eq!(unsuspend.status, StatusCode::NO_CONTENT);
@@ -715,7 +721,7 @@ async fn lode_requests_keep_lodes_fields() {
         async move { admin.call(Method::POST, uri, login, body.as_ref()).await }
     };
     assert_eq!(
-        post("/admin/api/lode/check", None).await.status,
+        post("/admin/api/lode/check", Some(json!({}))).await.status,
         StatusCode::ACCEPTED
     );
     assert_eq!(
@@ -728,7 +734,9 @@ async fn lode_requests_keep_lodes_fields() {
         StatusCode::ACCEPTED
     );
     assert_eq!(
-        post("/admin/api/lode/restart", None).await.status,
+        post("/admin/api/lode/restart", Some(json!({})))
+            .await
+            .status,
         StatusCode::ACCEPTED
     );
     assert_eq!(
@@ -745,7 +753,9 @@ async fn lode_requests_keep_lodes_fields() {
     assert!(lode_dir.path().join("state.json.lock").is_file());
 
     assert_eq!(
-        post("/admin/api/lode/rollback", None).await.status,
+        post("/admin/api/lode/rollback", Some(json!({})))
+            .await
+            .status,
         StatusCode::ACCEPTED
     );
     written = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
