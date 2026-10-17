@@ -5,6 +5,7 @@
 //! the schema each and take a `&Connection` (reads) or a `&Transaction`
 //! (writes).
 
+pub mod admin;
 pub mod auth;
 pub mod blobs;
 pub mod events;

@@ -161,6 +161,11 @@ impl AllowlistPolicy {
         Ok(())
     }
 
+    /// The allowlist file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// The allowed hubs.
     pub fn hub_ids(&self) -> Vec<HubId> {
         let mut ids: Vec<_> = self

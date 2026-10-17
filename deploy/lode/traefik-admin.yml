@@ -1,0 +1,34 @@
+# traefik dynamic configuration (file provider) for the gim-hub admin UI
+# (docs/admin.md, "Behind traefik with OIDC").
+#
+# The hub runs in a container named gim-hub on the traefik network, with
+# (lode.toml [env] or the container env):
+#
+#   GIM_HUB_ADMIN_LISTEN          = "0.0.0.0:8081"      # not published
+#   GIM_HUB_ADMIN_TRUSTED_HEADER  = "X-Forwarded-User"  # set by `oidc`
+#   GIM_HUB_ADMIN_TRUSTED_PROXIES = "172.18.0.0/16"     # the traefik network:
+#                                   # docker network inspect traefik -f '{{(index .IPAM.Config 0).Subnet}}'
+#   GIM_HUB_ADMIN_COOKIE_SECURE   = "true"              # TLS terminates here
+#
+# `oidc` is the OIDC / forward-auth middleware of this traefik (defined
+# elsewhere, e.g. `oidc@file`); it must set X-Forwarded-User to the signed-in
+# identity. `strip-identity` runs first and removes any X-Forwarded-User sent
+# by the client, so only `oidc` can set it.
+http:
+  routers:
+    gim-hub-admin:
+      rule: Host(`hub-admin.example.eu`)
+      entryPoints: [websecure]
+      tls: {}
+      middlewares: [strip-identity, oidc]
+      service: gim-hub-admin
+  middlewares:
+    strip-identity:
+      headers:
+        customRequestHeaders:
+          X-Forwarded-User: ""
+  services:
+    gim-hub-admin:
+      loadBalancer:
+        servers:
+          - url: http://gim-hub:8081

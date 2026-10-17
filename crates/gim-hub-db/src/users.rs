@@ -85,8 +85,8 @@ pub fn put_device_list(tx: &Transaction<'_>, list: &StoredDeviceList) -> Result<
 /// Inserts or updates one device of an existing user.
 pub fn put_device(tx: &Transaction<'_>, device: &Device, now: i64) -> Result<(), DbError> {
     tx.execute(
-        "INSERT INTO devices (user_id, device_id, sig_pubkey, active, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5) \
+        "INSERT INTO devices (user_id, device_id, sig_pubkey, active, updated_at, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?5) \
          ON CONFLICT (user_id, device_id) DO UPDATE SET \
          sig_pubkey = excluded.sig_pubkey, active = excluded.active, updated_at = excluded.updated_at",
         params![
