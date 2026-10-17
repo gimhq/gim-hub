@@ -4,3 +4,6 @@
 *.db-wal
 *.db-shm
 .env
+/admin-ui/node_modules
+/admin-ui/dist
+/admin-ui/coverage
