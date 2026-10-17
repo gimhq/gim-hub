@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Regenerate openapi.json (client API v2 contract) from the utoipa annotations
-# in crates/gim-hub-api.
+# Regenerate openapi.json (client API v2 contract) and admin-openapi.json
+# (admin API contract) from the utoipa annotations in crates/gim-hub-api and
+# crates/gim-hub-admin.
 #
 # Runs in a rust container like scripts/check.sh (override the image with
 # CHECK_IMAGE). Pass --in-container or set GIM_HUB_CHECK_NATIVE=1 to run cargo
@@ -9,7 +10,7 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-CMD='cargo run --locked -q -p gim-hub-api --example gen-openapi'
+CMD='cargo run --locked -q -p gim-hub-api --example gen-openapi && cargo run --locked -q -p gim-hub-admin --example gen-admin-openapi'
 
 if [[ "${1:-}" == "--in-container" || "${GIM_HUB_CHECK_NATIVE:-}" == "1" ]]; then
     exec bash -c "$CMD"

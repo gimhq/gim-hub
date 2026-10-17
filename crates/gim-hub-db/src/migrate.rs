@@ -20,6 +20,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0009_message_proposal.sql"),
     include_str!("../migrations/0010_remote_blobs.sql"),
     include_str!("../migrations/0011_push_opaque_provider.sql"),
+    include_str!("../migrations/0012_admin.sql"),
 ];
 
 /// Schema version after all migrations.
@@ -141,6 +142,7 @@ mod tests {
         assert_eq!(
             tables,
             [
+                "admin_audit",
                 "auth_challenges",
                 "blobs",
                 "commit_membership",
@@ -528,6 +530,45 @@ mod tests {
             (custom.provider.as_str(), custom.sandbox),
             ("acme.push-2", None)
         );
+    }
+
+    #[tokio::test]
+    async fn admin_migration_backfills_device_creation_times() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hub.db");
+        let admin = super::MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("admin_audit"))
+            .unwrap();
+        {
+            let mut conn = rusqlite::Connection::open(&path).unwrap();
+            for (version, sql) in (1..).zip(&super::MIGRATIONS[..admin]) {
+                let tx = conn.transaction().unwrap();
+                tx.execute_batch(sql).unwrap();
+                tx.pragma_update(None, "user_version", version).unwrap();
+                tx.commit().unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO users (user_id, root_pubkey, device_list, device_list_seq, \
+                 created_at, updated_at) VALUES ('u', x'00', x'', 0, 0, 0); \
+                 INSERT INTO devices (user_id, device_id, sig_pubkey, active, updated_at) VALUES \
+                 ('u', 'd1', x'00', 1, 42);",
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let (created_at, suspended_at) = db
+            .read(|conn| {
+                Ok::<_, DbError>(conn.query_row(
+                    "SELECT d.created_at, u.suspended_at FROM devices d \
+                     JOIN users u ON u.user_id = d.user_id",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!((created_at, suspended_at), (42, None));
     }
 
     /// Creates a file database at schema `version` holding one `meta` row.

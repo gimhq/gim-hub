@@ -92,6 +92,11 @@ struct Inner {
     transport: Transport,
     handlers: Arc<Handlers>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+    /// The libp2p PeerId of the runtime key, base58.
+    peer_id: String,
+    /// The closed-federation policy, when started with
+    /// [`FederationService::start_with_allowlist`].
+    allowlist: Option<Arc<AllowlistPolicy>>,
 }
 
 impl Drop for Inner {
@@ -123,22 +128,19 @@ impl FederationService {
             AllowlistPolicy::load(&config.allowlist_path, &hub_id, config.psk)?
                 .with_fetch_blob_limit(config.fetch_blob_per_minute),
         );
-        let service = Self::start(config, hub_root, allowlist.clone()).await?;
+        let service =
+            Self::start_with_policy(config, hub_root, allowlist.clone(), Some(allowlist)).await?;
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
             let mut hangup = signal(SignalKind::hangup())?;
-            let transport = service.inner.transport.clone();
+            let weak = Arc::downgrade(&service.inner);
             let reload = tokio::spawn(async move {
                 while hangup.recv().await.is_some() {
-                    match allowlist.reload() {
-                        Ok(()) => {
-                            tracing::info!(hubs = allowlist.hub_ids().len(), "allowlist reloaded");
-                            transport.policy_changed();
-                        }
-                        Err(err) => {
-                            tracing::error!(%err, "allowlist reload failed; keeping the previous one")
-                        }
+                    let Some(inner) = weak.upgrade() else { return };
+                    let service = Self { inner };
+                    if let Err(err) = service.reload_allowlist() {
+                        tracing::error!(%err, "allowlist reload failed; keeping the previous one")
                     }
                 }
             });
@@ -154,6 +156,15 @@ impl FederationService {
         config: &FederationConfig,
         hub_root: &SigningKey,
         policy: Arc<dyn FederationPolicy>,
+    ) -> Result<Self, StartError> {
+        Self::start_with_policy(config, hub_root, policy, None).await
+    }
+
+    async fn start_with_policy(
+        config: &FederationConfig,
+        hub_root: &SigningKey,
+        policy: Arc<dyn FederationPolicy>,
+        allowlist: Option<Arc<AllowlistPolicy>>,
     ) -> Result<Self, StartError> {
         let hub_id = HubId::from_root_pubkey(&hub_root.verifying_key());
         let runtime = RuntimeIdentity::load_or_create(
@@ -171,6 +182,10 @@ impl FederationService {
             psk: config.psk,
             failover: Duration::from_secs(config.push_failover_seconds.into()),
         };
+        let peer_id = libp2p::PeerId::from_bytes(&gim_hub_identity::libp2p_peer_id(
+            &runtime.runtime_pubkey(),
+        ))
+        .map_or_else(|_| String::new(), |peer| peer.to_base58());
         let (transport, mut inbound) =
             Transport::start(transport_config, hub_id, &runtime, policy.clone()).await?;
         let handlers = Arc::new(Handlers::default());
@@ -213,6 +228,8 @@ impl FederationService {
                 transport,
                 handlers,
                 tasks: Mutex::new(vec![dispatcher, renewal]),
+                peer_id,
+                allowlist,
             }),
         })
     }
@@ -234,6 +251,30 @@ impl FederationService {
 
     pub fn hub_id(&self) -> &HubId {
         self.inner.transport.hub_id()
+    }
+
+    /// The libp2p PeerId of the runtime key (base58).
+    pub fn peer_id(&self) -> &str {
+        &self.inner.peer_id
+    }
+
+    /// The allowlist policy, when started with
+    /// [`Self::start_with_allowlist`].
+    pub fn allowlist(&self) -> Option<&Arc<AllowlistPolicy>> {
+        self.inner.allowlist.as_ref()
+    }
+
+    /// Re-reads the allowlist file and re-applies the policy to bound peers,
+    /// as on SIGHUP. On error the previous allowlist stays in force. A
+    /// service without an allowlist has nothing to reload.
+    pub fn reload_allowlist(&self) -> Result<(), PolicyError> {
+        let Some(allowlist) = &self.inner.allowlist else {
+            return Ok(());
+        };
+        allowlist.reload()?;
+        tracing::info!(hubs = allowlist.hub_ids().len(), "allowlist reloaded");
+        self.inner.transport.policy_changed();
+        Ok(())
     }
 
     /// Stops the transport and background tasks.
