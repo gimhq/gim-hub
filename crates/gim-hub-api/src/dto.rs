@@ -89,7 +89,7 @@ pub struct Health {
     pub status: HealthStatus,
     /// Hub release version: the version the lode supervisor launched
     /// (`LODE_ACTIVE_VERSION`), else the package version.
-    #[schema(example = "0.2.0")]
+    #[schema(example = "0.3.0")]
     pub version: String,
 }
 
@@ -105,7 +105,7 @@ pub struct HubInfo {
     pub hub_root_pubkey: String,
     /// Hub release version: the version the lode supervisor launched
     /// (`LODE_ACTIVE_VERSION`), else the package version.
-    #[schema(example = "0.2.0")]
+    #[schema(example = "0.3.0")]
     pub version: String,
     /// The hub's canonical client-API base URL (`GIM_HUB_PUBLIC_URL`,
     /// normalized), if configured.

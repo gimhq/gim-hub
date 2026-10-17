@@ -18,8 +18,13 @@ Design basis: cluster-architecture.md (hub model).
 ## Run
 
 ```bash
+bash scripts/admin-ui.sh build          # writes admin-ui/dist, embedded by gim-hub-admin
 cargo run -p gim-hub                    # listens on 0.0.0.0:8080, data in ./data
 ```
+
+The admin UI must be built once before anything compiles `gim-hub-admin`: `cargo run -p
+gim-hub`, `cargo build`, and `scripts/gen-openapi.sh`. Rebuild it after changing `admin-ui/`.
+`scripts/check.sh`, `scripts/fed-test.sh` and the Docker builds build it themselves.
 
 With Docker:
 

@@ -8,9 +8,12 @@
 //! - `Hello` binds a connection's PeerId to a `hub_id` (§3.2); every other
 //!   inbound op from an unbound PeerId gets `HELLO_REQUIRED`.
 //! - Outbound requests resolve `hub_id` → address (§3.5), dial, `Hello`, and
-//!   retry once on `HELLO_REQUIRED`.
+//!   retry once on `HELLO_REQUIRED`. A request that times out or loses its
+//!   connection closes the connections it could have used, redials and is
+//!   retried once if its op is idempotent (§3.8).
 //! - libp2p ping on every connection; pings and S2S exchanges with bound
-//!   hubs feed [`Liveness`] (docs/multihoming.md §8).
+//!   hubs feed [`Liveness`] (docs/multihoming.md §8). An unanswered ping
+//!   closes its connection.
 
 mod binding;
 mod codec;
@@ -77,6 +80,9 @@ pub enum SendError {
     Unreachable(String),
     #[error("request timed out")]
     Timeout,
+    /// The connection closed or failed while the request was in flight.
+    #[error("connection lost: {0}")]
+    ConnectionLost(String),
     #[error("transport error: {0}")]
     Transport(String),
     #[error("transport stopped")]
@@ -351,6 +357,12 @@ impl Transport {
     /// Sends `request` to `hub_id` and waits for its response: resolves and
     /// binds the hub if needed (§3.5), and on `HELLO_REQUIRED` sends `Hello`
     /// and retries once. Error responses are returned as responses.
+    ///
+    /// When the request times out or loses its connection, the connections
+    /// it could have used are closed (a restarted peer leaves a dead QUIC
+    /// connection behind for up to its idle timeout) and, for idempotent ops
+    /// ([`retryable`]), the hub is redialed and the request sent once more.
+    /// The retry, redial included, gets one more timeout (§3.8).
     pub async fn request(
         &self,
         hub_id: &HubId,
@@ -363,12 +375,48 @@ impl Transport {
             return Err(SendError::PeerRefused("hub not allowlisted".into()));
         }
         let peer = self.ensure_bound(hub_id).await?;
+        let used = self.connection_ids(&peer);
+        let err = match self.request_bound(hub_id, peer, request.clone()).await {
+            Err(err @ (SendError::Timeout | SendError::ConnectionLost(_))) => err,
+            other => return other,
+        };
+        let retry = retryable(&request);
+        tracing::info!(%hub_id, %err, retry, "S2S request failed on its connection; reconnecting");
+        let again = async {
+            self.call(|reply| Command::Close { ids: used, reply })
+                .await?;
+            if !retry {
+                return Err(err);
+            }
+            let peer = self.ensure_bound(hub_id).await?;
+            self.request_bound(hub_id, peer, request).await
+        };
+        match tokio::time::timeout(self.inner.config.timeout, again).await {
+            Ok(result) => result,
+            Err(_) => Err(SendError::Timeout),
+        }
+    }
+
+    /// [`Self::request`] to the bound `peer`, without the reconnect.
+    async fn request_bound(
+        &self,
+        hub_id: &HubId,
+        peer: PeerId,
+        request: S2sRequest,
+    ) -> Result<S2sResponse, SendError> {
         let response = self.raw_request(peer, request.clone()).await?;
         if response.error.as_ref().map(|e| e.code()) == Some(ErrorCode::HelloRequired) {
             self.hello(peer, Some(hub_id.clone())).await?;
             return self.raw_request(peer, request).await;
         }
         Ok(response)
+    }
+
+    /// The open connections to `peer`.
+    fn connection_ids(&self, peer: &PeerId) -> Vec<libp2p::swarm::ConnectionId> {
+        let state = self.shared().state();
+        let connections = state.connections.get(peer).into_iter().flatten();
+        connections.map(|c| c.id).collect()
     }
 
     /// Stores `value` under `key` locally and on the closest bound peers
@@ -638,6 +686,31 @@ impl Transport {
             .iter()
             .filter_map(|value| records::decode_locator(&key, value, now).ok())
             .max_by_key(|locator| locator.cert.not_before())
+    }
+}
+
+/// Whether `request` may be sent again after a timeout or a lost
+/// connection, when the peer may already have executed it (docs/s2s.md
+/// "Idempotency"): every op but `ClaimKeyPackage`, which consumes one-time
+/// KeyPackages. `Hello` never goes through [`Transport::request`].
+fn retryable(request: &S2sRequest) -> bool {
+    use gim_hub_proto::s2s::s2s_request::Op;
+    match &request.op {
+        Some(Op::ClaimKeyPackage(_) | Op::Hello(_)) | None => false,
+        Some(
+            Op::SubmitCommit(_)
+            | Op::SubmitMessage(_)
+            | Op::Deliver(_)
+            | Op::DeliverWelcome(_)
+            | Op::FetchLog(_)
+            | Op::GetDeviceList(_)
+            | Op::GetHostingRecord(_)
+            | Op::NotifyDeviceList(_)
+            | Op::NotifyHostingRecord(_)
+            | Op::SeedReplica(_)
+            | Op::CopyPendingWelcomes(_)
+            | Op::FetchBlob(_),
+        ) => true,
     }
 }
 

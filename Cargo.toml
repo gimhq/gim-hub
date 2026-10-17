@@ -5,6 +5,7 @@ members = [
     "crates/gim-hub-proto",
     "crates/gim-hub-db",
     "crates/gim-hub-api",
+    "crates/gim-hub-admin",
     "crates/gim-hub-s2s",
     "crates/gim-hub-push",
     "crates/gim-hub",
@@ -12,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "UNLICENSED"
 publish = false
@@ -29,6 +30,7 @@ gim-hub-identity = { path = "crates/gim-hub-identity" }
 gim-hub-proto = { path = "crates/gim-hub-proto" }
 gim-hub-db = { path = "crates/gim-hub-db" }
 gim-hub-api = { path = "crates/gim-hub-api" }
+gim-hub-admin = { path = "crates/gim-hub-admin" }
 gim-hub-s2s = { path = "crates/gim-hub-s2s" }
 gim-hub-push = { path = "crates/gim-hub-push" }
 

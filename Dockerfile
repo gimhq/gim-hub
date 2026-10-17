@@ -1,8 +1,20 @@
 # syntax=docker/dockerfile:1
 
+# The admin UI (admin-ui/, docs/admin.md), embedded into the binary by
+# crates/gim-hub-admin/build.rs. .dockerignore excludes admin-ui/dist and
+# node_modules, so the image always builds the UI from source.
+FROM oven/bun:1.4.3 AS ui
+WORKDIR /src/admin-ui
+COPY admin-ui/package.json admin-ui/bun.lock ./
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile
+COPY admin-ui/ ./
+RUN bun run build
+
 FROM rust:1.99-bookworm AS builder
 WORKDIR /src
 COPY . .
+COPY --from=ui /src/admin-ui/dist admin-ui/dist
 # Embedded in the binary and printed by `gim-hub version`; scripts/docker-build.sh
 # passes the checkout's revision and verifies it after the build.
 ARG GIM_HUB_BUILD_REV=unknown

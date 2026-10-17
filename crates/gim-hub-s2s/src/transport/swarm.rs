@@ -99,7 +99,12 @@ impl Behaviour {
             block: allow_block_list::Behaviour::default(),
             rr,
             kad,
-            ping: ping::Behaviour::new(ping::Config::new().with_interval(ping_interval)),
+            // A ping unanswered within the S2S timeout closes its connection.
+            ping: ping::Behaviour::new(
+                ping::Config::new()
+                    .with_interval(ping_interval)
+                    .with_timeout(timeout),
+            ),
         }
     }
 }
@@ -173,6 +178,11 @@ pub(crate) enum Command {
         addr: Multiaddr,
         reply: oneshot::Sender<Result<PeerId, SendError>>,
     },
+    /// Closes the connections `ids`; replies once all of them are closed.
+    Close {
+        ids: Vec<ConnectionId>,
+        reply: oneshot::Sender<()>,
+    },
     Respond {
         id: InboundRequestId,
         response: S2sResponse,
@@ -234,6 +244,7 @@ pub(crate) struct Driver {
     channels: HashMap<InboundRequestId, (PeerId, ResponseChannel<S2sResponse>)>,
     close_after: HashMap<InboundRequestId, (PeerId, Close)>,
     dials: HashMap<ConnectionId, oneshot::Sender<Result<PeerId, SendError>>>,
+    closing: Vec<(Vec<ConnectionId>, oneshot::Sender<()>)>,
     puts: HashMap<QueryId, oneshot::Sender<Result<(), SendError>>>,
     gets: HashMap<QueryId, Get>,
 }
@@ -257,6 +268,7 @@ impl Driver {
             channels: HashMap::new(),
             close_after: HashMap::new(),
             dials: HashMap::new(),
+            closing: Vec::new(),
             puts: HashMap::new(),
             gets: HashMap::new(),
         }
@@ -372,6 +384,14 @@ impl Driver {
                     }
                 }
             }
+            Command::Close { mut ids, reply } => {
+                ids.retain(|id| self.swarm.close_connection(*id));
+                if ids.is_empty() {
+                    let _ = reply.send(());
+                } else {
+                    self.closing.push((ids, reply));
+                }
+            }
             Command::Respond { id, response } => self.respond(id, response),
             Command::DhtPut { record, reply } => {
                 match self
@@ -442,6 +462,14 @@ impl Driver {
                 result: Ok(_),
                 ..
             })) => self.shared.alive(&peer),
+            SwarmEvent::Behaviour(BehaviourEvent::Ping(ping::Event {
+                peer,
+                connection,
+                result: Err(err),
+            })) => {
+                tracing::debug!(%peer, %err, "ping failed; closing the connection");
+                self.swarm.close_connection(connection);
+            }
             SwarmEvent::ConnectionEstablished {
                 peer_id,
                 connection_id,
@@ -477,6 +505,12 @@ impl Driver {
                 num_established,
                 ..
             } => {
+                for (ids, _) in &mut self.closing {
+                    ids.retain(|id| *id != connection_id);
+                }
+                for (_, reply) in self.closing.extract_if(.., |(ids, _)| ids.is_empty()) {
+                    let _ = reply.send(());
+                }
                 let mut state = self.shared.state();
                 if let Some(connections) = state.connections.get_mut(&peer_id) {
                     connections.retain(|c| c.id != connection_id);
@@ -554,6 +588,18 @@ impl Driver {
                 let error = match error {
                     OutboundFailure::Timeout => SendError::Timeout,
                     OutboundFailure::DialFailure => SendError::Unreachable(error.to_string()),
+                    // A malformed frame is the peer's fault, not the connection's.
+                    OutboundFailure::Io(ref err)
+                        if matches!(
+                            err.kind(),
+                            std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput
+                        ) =>
+                    {
+                        SendError::Transport(error.to_string())
+                    }
+                    OutboundFailure::ConnectionClosed | OutboundFailure::Io(_) => {
+                        SendError::ConnectionLost(error.to_string())
+                    }
                     other => SendError::Transport(other.to_string()),
                 };
                 match self.pending.remove(&request_id) {

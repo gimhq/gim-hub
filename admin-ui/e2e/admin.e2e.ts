@@ -1,0 +1,100 @@
+import process from 'node:process'
+import { expect, test } from '@playwright/test'
+
+function env(name: string): string {
+  const value = process.env[name]
+  if (!value)
+    throw new Error(`${name} is not set (run scripts/admin-e2e.sh)`)
+  return value
+}
+
+const token = env('E2E_TOKEN')
+const userId = env('E2E_USER_ID')
+const handle = env('E2E_HANDLE')
+const deviceId = env('E2E_DEVICE_ID')
+const sessionRef = env('E2E_SESSION_REF')
+const newHub = env('E2E_NEW_HUB')
+const clientUrl = env('E2E_CLIENT_URL')
+
+function log(message: string) {
+  process.stdout.write(`admin-e2e: ${message}\n`)
+}
+
+test('admin UI end to end', async ({ page, request }) => {
+  const nav = page.getByRole('navigation')
+
+  await test.step('1. login with the token', async () => {
+    await page.goto('/admin/')
+    await expect(page).toHaveURL(/\/admin\/login/)
+    await page.getByLabel('Admin token').fill(token)
+    await page.getByRole('button', { name: 'Sign in' }).click()
+    await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible()
+    log('ok   1. logged in with the token, overview shown')
+  })
+
+  await test.step('2. search the user and open the detail', async () => {
+    await nav.getByRole('link', { name: 'Users' }).click()
+    await page.getByLabel('Search users').fill(handle)
+    await page.getByRole('button', { name: 'Search' }).click()
+    await expect(page).toHaveURL(new RegExp(`q=${handle}`))
+    await page.getByRole('link', { name: userId }).click()
+    await expect(page.getByRole('heading', { name: `User ${userId}` })).toBeVisible()
+    await expect(page.getByRole('cell', { name: deviceId })).toBeVisible()
+    await expect(page.getByText(sessionRef)).toBeVisible()
+    log(`ok   2. found ${handle}, detail of ${userId} shows device ${deviceId} with session ${sessionRef}`)
+  })
+
+  await test.step('3. revoke the device sessions', async () => {
+    const row = page.getByRole('row').filter({ hasText: deviceId })
+    await row.getByRole('button', { name: 'Revoke sessions' }).click()
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Revoke sessions' }).click()
+    await expect(page.getByRole('status')).toHaveText('Revoked 1 session.')
+    await expect(page.getByText(sessionRef)).toBeHidden()
+    const detail = await page.request.get(`/admin/api/users/${userId}`)
+    expect(detail.status()).toBe(200)
+    const body = await detail.json()
+    expect(body.devices[0].sessions).toEqual([])
+    log('ok   3. revoked 1 session; the UI and GET /admin/api/users/{id} show none left')
+  })
+
+  await test.step('4. edit the allowlist', async () => {
+    await nav.getByRole('link', { name: 'Federation' }).click()
+    const editor = page.getByLabel('Allowlist file')
+    await expect(editor).toBeVisible()
+    const before = await editor.inputValue()
+    await editor.fill(`${before.trimEnd()}\n${newHub} /dns4/hub-new.example.eu/tcp/4001\n`)
+    await page.getByRole('button', { name: 'Save and apply' }).click()
+    await expect(page.getByText('Allowlist saved and applied.')).toBeVisible()
+    const allowlist = await page.request.get('/admin/api/federation/allowlist')
+    expect(allowlist.status()).toBe(200)
+    const body = await allowlist.json()
+    expect(body.text).toContain(newHub)
+    expect(body.entries.map((entry: { hub_id: string }) => entry.hub_id)).toContain(newHub)
+    log(`ok   4. allowlist saved with ${newHub}; GET returns ${body.entries.length} entries`)
+  })
+
+  await test.step('5. lode: check now', async () => {
+    await nav.getByRole('link', { name: 'lode' }).click()
+    await expect(page.getByText('0.3.1')).toBeVisible()
+    await page.getByRole('button', { name: 'Check now' }).click()
+    await expect(page.getByRole('status')).toHaveText('Update check requested.')
+    log('ok   5. lode panel (current 0.3.0, available 0.3.1): check requested')
+  })
+
+  await test.step('6. audit log', async () => {
+    await nav.getByRole('link', { name: 'Audit log' }).click()
+    for (const action of ['device_sessions_revoke', 'allowlist_update', 'lode_check']) {
+      const row = page.getByRole('row').filter({ has: page.getByRole('cell', { name: action, exact: true }) })
+      await expect(row.first()).toBeVisible()
+      await expect(row.first()).toContainText('token')
+    }
+    await expect(page.getByRole('cell', { name: `${userId}/${deviceId}` })).toBeVisible()
+    log('ok   6. audit log lists device_sessions_revoke, allowlist_update and lode_check by token')
+  })
+
+  await test.step('7. no /admin/ on the client listener', async () => {
+    const response = await request.get(`${clientUrl}/admin/`)
+    expect(response.status()).toBe(404)
+    log(`ok   7. GET ${clientUrl}/admin/ -> 404`)
+  })
+})

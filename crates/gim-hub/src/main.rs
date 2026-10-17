@@ -3,12 +3,14 @@
 mod lode;
 
 use std::{
+    future::IntoFuture,
     io::{self, BufRead, BufReader, Write},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
     sync::Arc,
     time::Duration,
 };
 
+use gim_hub_admin::{AdminConfig, AdminState};
 use gim_hub_api::{AppState, Clock, Config, HubIdentity};
 use gim_hub_db::{Backups, Db};
 use gim_hub_push::{Dispatcher, DispatcherSettings, PushLog};
@@ -60,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = Config::from_env()?;
+    let admin_config = AdminConfig::from_env()?;
     let supervisor = supervisor(|name| std::env::var(name).ok());
     if supervisor.is_some() {
         tracing::info!(version = %config.release_version, "supervised by lode");
@@ -87,6 +90,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = tokio::net::TcpListener::bind(state.config.listen).await?;
     tracing::info!(listen = %state.config.listen, "gim-hub listening");
+    let admin = match admin_config.listen {
+        Some(listen) => {
+            let listener = tokio::net::TcpListener::bind(listen).await?;
+            tracing::info!(%listen, "admin API listening");
+            let admin = AdminState::new(
+                state.clone(),
+                admin_config,
+                federation_config.clone(),
+                federation.clone(),
+                std::env::var_os("LODE_DIR")
+                    .filter(|dir| !dir.is_empty())
+                    .map(Into::into),
+            );
+            Some((listener, admin))
+        }
+        None => None,
+    };
     // Migrations ran, the client API is bound and federation (if enabled)
     // started: the hub can serve.
     if let Some(supervisor) = &supervisor {
@@ -94,12 +114,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let pruning = tokio::spawn(prune_periodically(state.clone()));
-    axum::serve(
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = stop.send(true);
+    });
+    let client = axum::serve(
         listener,
         gim_hub_api::router(state).into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
-    .await?;
+    .with_graceful_shutdown(stop_requested(stopped.clone()));
+    match admin {
+        Some((listener, admin)) => {
+            let admin = axum::serve(
+                listener,
+                gim_hub_admin::router(admin).into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(stop_requested(stopped));
+            tokio::try_join!(client.into_future(), admin.into_future())?;
+        }
+        None => client.await?,
+    }
     pruning.abort();
     for task in push {
         task.abort();
@@ -384,6 +419,11 @@ fn healthcheck(addr: SocketAddr) -> io::Result<()> {
             status_line.trim_end()
         )))
     }
+}
+
+/// Resolves once `stop` turns true (or its sender is gone).
+async fn stop_requested(mut stop: tokio::sync::watch::Receiver<bool>) {
+    let _ = stop.wait_for(|stop| *stop).await;
 }
 
 async fn shutdown_signal() {

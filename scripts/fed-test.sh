@@ -103,6 +103,13 @@ if [[ "${GIM_FED_SKIP_BUILD:-}" != "1" ]]; then
     bash scripts/docker-build.sh "$MOCK_IMAGE" push-mock
 fi
 
+# The driver compiles gim-hub, which embeds admin-ui/dist (the hub images
+# build their own UI); any build will do, so an existing one is reused.
+if [[ ! -f admin-ui/dist/index.html ]]; then
+    log "building the admin UI"
+    bash scripts/admin-ui.sh build
+fi
+
 # Leftovers of an interrupted run.
 compose down -v --remove-orphans >/dev/null 2>&1 || true
 

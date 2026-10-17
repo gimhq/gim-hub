@@ -416,7 +416,7 @@ mod tests {
                 put(tx, &record(user, 1, 100, true))?;
             }
             tx.execute_batch(
-                "INSERT INTO devices VALUES ('u1', 'd1', x'00', 1, 0); \
+                "INSERT INTO devices VALUES ('u1', 'd1', x'00', 1, 0, 0); \
                  INSERT INTO sessions VALUES (x'01', 'u1', 'd1', 0, 999); \
                  INSERT INTO key_packages (user_id, device_id, key_package, kp_ref, last_resort, \
                      created_at, claimed_at) VALUES \

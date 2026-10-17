@@ -51,7 +51,27 @@ async fn start_hub_with_failover(
     psk: Option<Psk>,
     failover: u32,
 ) -> Hub {
-    let dir = tempfile::tempdir().unwrap();
+    start_hub_in(
+        tempfile::tempdir().unwrap(),
+        seed,
+        allowed,
+        listen,
+        psk,
+        failover,
+    )
+    .await
+}
+
+/// [`start_hub_with_failover`] keeping its runtime key in `dir`: the same
+/// `dir` restarts the hub with the same PeerId.
+async fn start_hub_in(
+    dir: TempDir,
+    seed: u8,
+    allowed: &[u8],
+    listen: &str,
+    psk: Option<Psk>,
+    failover: u32,
+) -> Hub {
     let path = dir.path().join("allowlist");
     let text: String = allowed
         .iter()
@@ -104,6 +124,14 @@ impl Hub {
         for seed in extra {
             text.push_str(&format!("{}\n", hub_id(*seed)));
         }
+        std::fs::write(self.dir.path().join("allowlist"), text).unwrap();
+        self.policy.reload().unwrap();
+        self.transport().policy_changed();
+    }
+
+    /// Allows `hub` with the single static address `addr`.
+    fn allow_at(&self, hub: &Hub, addr: &Multiaddr) {
+        let text = format!("{} {addr}\n", hub.id());
         std::fs::write(self.dir.path().join("allowlist"), text).unwrap();
         self.policy.reload().unwrap();
         self.transport().policy_changed();
@@ -451,4 +479,179 @@ async fn co_host_is_down_after_the_failover_delay_once_stopped() {
 
     b.service.shutdown();
     eventually("B to be down at A", || liveness.is_down(&b.id())).await;
+}
+
+/// A hub on its own tokio runtime, so that it can die like a killed
+/// process: [`Process::kill`] drops every task and socket.
+struct Process {
+    runtime: tokio::runtime::Runtime,
+    hub: Hub,
+}
+
+impl Process {
+    /// Starts hub `seed` (listening on `listen`, keys in `dir`) and lets it
+    /// serve `GetDeviceList`.
+    fn start(dir: TempDir, seed: u8, allowed: &[u8], listen: &str) -> Self {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        // `block_on` must not run on a thread that is inside a runtime.
+        let hub = std::thread::scope(|scope| {
+            scope
+                .spawn(|| runtime.block_on(start_hub_in(dir, seed, allowed, listen, None, 30)))
+                .join()
+                .unwrap()
+        });
+        hub.serve_device_lists();
+        Self { runtime, hub }
+    }
+
+    /// Kills the hub; returns its key directory.
+    fn kill(self) -> TempDir {
+        let Self { runtime, hub } = self;
+        runtime.shutdown_background();
+        let Hub { dir, service, .. } = hub;
+        drop(service);
+        dir
+    }
+}
+
+/// A UDP forwarder to one target that can be cut, so that the hub behind
+/// it vanishes without any of its packets (a QUIC close included) reaching
+/// the other side, as when a container is killed.
+struct Relay {
+    addr: Multiaddr,
+    cut: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Relay {
+    /// Forwards datagrams between its own address and the QUIC address
+    /// `target`, until cut.
+    fn start(target: &Multiaddr) -> Self {
+        use std::{
+            net::UdpSocket,
+            sync::{atomic::AtomicBool, atomic::Ordering},
+        };
+        let port = target
+            .iter()
+            .find_map(|p| match p {
+                libp2p::multiaddr::Protocol::Udp(port) => Some(port),
+                _ => None,
+            })
+            .unwrap();
+        let front = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let back = UdpSocket::bind("127.0.0.1:0").unwrap();
+        back.connect(("127.0.0.1", port)).unwrap();
+        let addr = format!(
+            "/ip4/127.0.0.1/udp/{}/quic-v1",
+            front.local_addr().unwrap().port()
+        )
+        .parse()
+        .unwrap();
+        let cut = Arc::new(AtomicBool::new(false));
+        let client = Arc::new(Mutex::new(None));
+        let (front2, back2) = (front.try_clone().unwrap(), back.try_clone().unwrap());
+        let (cut2, client2) = (cut.clone(), client.clone());
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 65536];
+            while let Ok((n, from)) = front.recv_from(&mut buf) {
+                *client2.lock().unwrap() = Some(from);
+                if !cut2.load(Ordering::SeqCst) {
+                    let _ = back2.send(&buf[..n]);
+                }
+            }
+        });
+        let cut3 = cut.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 65536];
+            loop {
+                let Ok(n) = back.recv(&mut buf) else {
+                    // The target's port is closed while it is down.
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let to = *client.lock().unwrap();
+                if let (Some(to), false) = (to, cut3.load(Ordering::SeqCst)) {
+                    let _ = front2.send_to(&buf[..n], to);
+                }
+            }
+        });
+        Self { addr, cut }
+    }
+
+    fn cut(&self) {
+        self.cut.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// B is killed and restarted on the same runtime key and address while A
+/// still holds the connection to the old B, which never learns of the
+/// death: A reached B through a relay that is cut first. The new B dials A
+/// on start (bootstrap of its static peers). A's next requests must reach
+/// the new B.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_requests_after_a_peer_restart_succeed() {
+    let a = start_hub(1, &[2], QUIC, None).await;
+    let b = Process::start(tempfile::tempdir().unwrap(), 2, &[1], QUIC);
+    let b_addr = b.hub.transport().advertised_addrs()[0].clone();
+    let relay = Relay::start(&b_addr);
+    a.allow_at(&b.hub, &relay.addr);
+    let response = a.service.send(&b.hub.id(), get_device_list("u0")).await;
+    assert!(response.unwrap().result.is_some());
+    assert_eq!(a.connection_count(), 1);
+
+    relay.cut();
+    let dir = b.kill();
+    let b = Process::start(dir, 2, &[1], &b_addr.to_string());
+    b.hub.allow(&[(&a, true)], &[]);
+    let (transport, a_id) = (b.hub.transport().clone(), a.id());
+    b.runtime
+        .spawn(async move { transport.keep_connected(&a_id).await })
+        .await
+        .unwrap()
+        .unwrap();
+
+    for n in 1..=4 {
+        let started = Instant::now();
+        let response = a
+            .service
+            .send(&b.hub.id(), get_device_list(&format!("u{n}")))
+            .await;
+        assert!(
+            matches!(&response, Ok(r) if r.result.is_some()),
+            "request {n} after the restart: {response:?} after {:?}",
+            started.elapsed()
+        );
+    }
+    drop(b.kill());
+}
+
+/// A killed peer that does not come back still fails within the bound: at
+/// most two S2S timeouts, one on the dead connection and one for the
+/// redial and the retry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn killed_peer_is_unavailable_within_the_bound() {
+    let a = start_hub(1, &[2], QUIC, None).await;
+    let b = Process::start(tempfile::tempdir().unwrap(), 2, &[1], QUIC);
+    let relay = Relay::start(&b.hub.transport().advertised_addrs()[0]);
+    a.allow_at(&b.hub, &relay.addr);
+    let id = b.hub.id();
+    assert!(a.service.send(&id, get_device_list("u0")).await.is_ok());
+    relay.cut();
+    drop(b.kill());
+
+    let started = Instant::now();
+    let err = a
+        .service
+        .send(&id, get_device_list("u1"))
+        .await
+        .unwrap_err();
+    let elapsed = started.elapsed();
+    assert!(
+        matches!(err, SendError::Timeout | SendError::Unreachable(_)),
+        "{err:?}"
+    );
+    assert!(elapsed < Duration::from_secs(2 * 3 + 1), "{elapsed:?}");
 }
