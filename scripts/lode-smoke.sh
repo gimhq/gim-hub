@@ -143,7 +143,8 @@ sed -e "s|^github .*|manifest = \"http://$FILES:8000/manifest.json\"|" \
     -e "s|^trusted_keys .*|trusted_keys = [\"$trusted\"]|" \
     deploy/lode/lode.toml >"$WORK/lode/lode.toml"
 printf '\n[http]\nallow_insecure = true   # the local http manifest server\n' >>"$WORK/lode/lode.toml"
-grep -q "^manifest = " "$WORK/lode/lode.toml" && grep -q '^require_signature = "enforce"' "$WORK/lode/lode.toml" ||
+grep -q "^manifest = " "$WORK/lode/lode.toml" && grep -q '^require_signature = "enforce"' "$WORK/lode/lode.toml" &&
+    [[ "$(grep '^trusted_keys' "$WORK/lode/lode.toml")" == "trusted_keys = [\"$trusted\"]" ]] ||
     fail "lode.toml rewrite"
 
 # An existing install one schema step behind, with a row of data.

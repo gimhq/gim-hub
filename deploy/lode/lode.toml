@@ -1,6 +1,6 @@
 # lode.toml for gim-hub under lode v0.1.0 (docs/operations.md, "Running under
 # lode"). Copy it to $LODE_DIR/lode.toml (/srv/lode/lode.toml in the
-# Dockerfile.lode image) and fill in [trust].trusted_keys. Key reference:
+# Dockerfile.lode image) and pick the [update].asset of the host. Key reference:
 # docs/lode.example.toml in github.com/bkhq/lode at v0.1.0.
 
 [global]
@@ -23,8 +23,8 @@ policy  = "check"
 # Unsigned releases only install with require_signature = "off", which is for
 # local testing only.
 require_signature = "enforce"
-# PLACEHOLDER: replace with the publisher's `<key_id>:<base64-pubkey>` entry.
-trusted_keys = ["0000000000000000:REPLACE_WITH_GIM_HUB_RELEASE_PUBLIC_KEY"]
+# The release key of the official gimhq/gim-hub releases.
+trusted_keys = ["f22e33416e94c5ba:jeWP-q9Mz89Vxm5Zq5Ss0kiPtBcthFKSlb0jfKCh1rs"]
 
 [command]
 run  = "./gim-hub"   # cwd = the installed version dir

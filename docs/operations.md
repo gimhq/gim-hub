@@ -282,9 +282,16 @@ set; without it nothing changes.
   running as the non-root `gimhub` user, with two volumes: `/srv/lode`
   (`LODE_DIR`: `lode.toml`, `versions/`, `state.json`) and `/data` (the hub
   data). Start from `deploy/lode/lode.toml`: put it at
-  `/srv/lode/lode.toml`, replace the placeholder `[trust].trusted_keys` entry
-  with the release public key and pick the `[update].asset` of the host
-  architecture. `[update].policy = "check"` only records a newer release
+  `/srv/lode/lode.toml` and pick the `[update].asset` of the host
+  architecture. Its `[trust]` enforces signatures and trusts the release key
+  of the official gimhq/gim-hub releases:
+
+  ```toml
+  trusted_keys = ["f22e33416e94c5ba:jeWP-q9Mz89Vxm5Zq5Ss0kiPtBcthFKSlb0jfKCh1rs"]
+  ```
+
+  Unsigned releases install only with `require_signature = "off"`, for local
+  testing. `[update].policy = "check"` only records a newer release
   (`lode-cli status`); install it with `lode-cli update`, or set `"auto"`.
 
   ```bash
