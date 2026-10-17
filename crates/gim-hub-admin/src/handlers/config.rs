@@ -221,7 +221,11 @@ mod tests {
         ] {
             assert!(is_secret(key), "{key}");
         }
-        for key in ["GIM_HUB_ADMIN_TOKEN_FILE", "GIM_HUB_LISTEN", "GIM_HUB_DATA_DIR"] {
+        for key in [
+            "GIM_HUB_ADMIN_TOKEN_FILE",
+            "GIM_HUB_LISTEN",
+            "GIM_HUB_DATA_DIR",
+        ] {
             assert!(!is_secret(key), "{key}");
         }
         let set = item("GIM_HUB_PUSH_WEBHOOK_SECRET", Some("s3cret".into()));

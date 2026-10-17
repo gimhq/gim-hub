@@ -267,7 +267,12 @@ async fn suspended_user_cannot_sign_in_until_unsuspended() {
     );
     assert_eq!(audit[3]["detail"], "spam");
     let unknown = admin
-        .call(Method::POST, "/admin/api/users/nobody/suspend", &login, None)
+        .call(
+            Method::POST,
+            "/admin/api/users/nobody/suspend",
+            &login,
+            None,
+        )
         .await;
     assert_eq!(unknown.status, StatusCode::NOT_FOUND);
 }
@@ -337,7 +342,12 @@ async fn users_devices_sessions_and_handles() {
     assert_eq!(next.body["next_cursor"], Value::Null);
     for bad in ["limit=0", "limit=101", "cursor=%%%", "limit=x"] {
         let response = admin
-            .call(Method::GET, &format!("/admin/api/users?{bad}"), &login, None)
+            .call(
+                Method::GET,
+                &format!("/admin/api/users?{bad}"),
+                &login,
+                None,
+            )
             .await;
         assert_eq!(response.status, StatusCode::BAD_REQUEST, "{bad}");
     }
@@ -396,11 +406,21 @@ async fn users_devices_sessions_and_handles() {
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
 
     let release = admin
-        .call(Method::POST, "/admin/api/handles/alice/release", &login, None)
+        .call(
+            Method::POST,
+            "/admin/api/handles/alice/release",
+            &login,
+            None,
+        )
         .await;
     assert_eq!(release.status, StatusCode::NO_CONTENT);
     let again = admin
-        .call(Method::POST, "/admin/api/handles/alice/release", &login, None)
+        .call(
+            Method::POST,
+            "/admin/api/handles/alice/release",
+            &login,
+            None,
+        )
         .await;
     assert_eq!(again.status, StatusCode::NOT_FOUND);
     let user = admin
@@ -433,8 +453,20 @@ async fn users_devices_sessions_and_handles() {
         [
             json!(["token", "handle_release", "alice", "127.0.0.1", "error"]),
             json!(["token", "handle_release", "alice", "127.0.0.1", "ok"]),
-            json!(["token", "device_sessions_revoke", "u-alice/d9", "127.0.0.1", "error"]),
-            json!(["token", "device_sessions_revoke", "u-alice/d1", "127.0.0.1", "ok"]),
+            json!([
+                "token",
+                "device_sessions_revoke",
+                "u-alice/d9",
+                "127.0.0.1",
+                "error"
+            ]),
+            json!([
+                "token",
+                "device_sessions_revoke",
+                "u-alice/d1",
+                "127.0.0.1",
+                "ok"
+            ]),
         ]
     );
 }
@@ -478,7 +510,11 @@ async fn federated_admin() -> (Admin, Arc<std::path::PathBuf>) {
     let data_dir = hub.state.config.data_dir.clone();
     let allowlist = data_dir.join("allowlist");
     let peer = HubIdentity::from_seed(&[9; 32]);
-    std::fs::write(&allowlist, format!("{} /ip4/127.0.0.1/tcp/4999\n", peer.hub_id())).unwrap();
+    std::fs::write(
+        &allowlist,
+        format!("{} /ip4/127.0.0.1/tcp/4999\n", peer.hub_id()),
+    )
+    .unwrap();
     let config = FederationConfig::from_vars(
         [
             ("GIM_HUB_FEDERATION", "true"),
@@ -560,7 +596,11 @@ async fn allowlist_edit_takes_effect_immediately() {
                 Some(&json!({ "text": invalid })),
             )
             .await;
-        assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY, "{invalid}");
+        assert_eq!(
+            response.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{invalid}"
+        );
         assert_eq!(response.code(), "validation_failed");
         assert_eq!(std::fs::read_to_string(&*path).unwrap(), text);
     }
@@ -653,7 +693,9 @@ async fn lode_requests_keep_lodes_fields() {
     );
     let login = admin.login().await;
 
-    let status = admin.call(Method::GET, "/admin/api/lode", &login, None).await;
+    let status = admin
+        .call(Method::GET, "/admin/api/lode", &login, None)
+        .await;
     assert_eq!(
         status.body,
         json!({
@@ -672,14 +714,23 @@ async fn lode_requests_keep_lodes_fields() {
         let (admin, login) = (&admin, &login);
         async move { admin.call(Method::POST, uri, login, body.as_ref()).await }
     };
-    assert_eq!(post("/admin/api/lode/check", None).await.status, StatusCode::ACCEPTED);
     assert_eq!(
-        post("/admin/api/lode/update", Some(json!({ "version": "latest" })))
-            .await
-            .status,
+        post("/admin/api/lode/check", None).await.status,
         StatusCode::ACCEPTED
     );
-    assert_eq!(post("/admin/api/lode/restart", None).await.status, StatusCode::ACCEPTED);
+    assert_eq!(
+        post(
+            "/admin/api/lode/update",
+            Some(json!({ "version": "latest" }))
+        )
+        .await
+        .status,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        post("/admin/api/lode/restart", None).await.status,
+        StatusCode::ACCEPTED
+    );
     assert_eq!(
         post("/admin/api/lode/update", Some(json!({ "version": " " })))
             .await
@@ -687,20 +738,25 @@ async fn lode_requests_keep_lodes_fields() {
         StatusCode::BAD_REQUEST
     );
 
-    let mut written: Value =
-        serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+    let mut written: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
     assert_eq!(written["check_nonce"], 1);
     assert_eq!(written["target"], "latest");
     assert_eq!(written["restart_nonce"], 1);
     assert!(lode_dir.path().join("state.json.lock").is_file());
 
-    assert_eq!(post("/admin/api/lode/rollback", None).await.status, StatusCode::ACCEPTED);
+    assert_eq!(
+        post("/admin/api/lode/rollback", None).await.status,
+        StatusCode::ACCEPTED
+    );
     written = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
     assert_eq!(written["target"], "0.1.9");
     assert_eq!(
-        post("/admin/api/lode/rollback", Some(json!({ "version": "0.1.5" })))
-            .await
-            .status,
+        post(
+            "/admin/api/lode/rollback",
+            Some(json!({ "version": "0.1.5" }))
+        )
+        .await
+        .status,
         StatusCode::ACCEPTED
     );
     written = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
@@ -742,7 +798,9 @@ async fn lode_rollback_without_last_good_conflicts() {
         },
     );
     let login = admin.login().await;
-    let status = admin.call(Method::GET, "/admin/api/lode", &login, None).await;
+    let status = admin
+        .call(Method::GET, "/admin/api/lode", &login, None)
+        .await;
     assert_eq!(status.body["supervised"], true);
     assert_eq!(status.body["current"], Value::Null);
     let rollback = admin
@@ -755,11 +813,16 @@ async fn lode_rollback_without_last_good_conflicts() {
 async fn lode_unsupervised() {
     let admin = Admin::new();
     let login = admin.login().await;
-    let status = admin.call(Method::GET, "/admin/api/lode", &login, None).await;
+    let status = admin
+        .call(Method::GET, "/admin/api/lode", &login, None)
+        .await;
     assert_eq!(status.body, json!({ "supervised": false }));
     for (uri, body) in [
         ("/admin/api/lode/check", None),
-        ("/admin/api/lode/update", Some(json!({ "version": "latest" }))),
+        (
+            "/admin/api/lode/update",
+            Some(json!({ "version": "latest" })),
+        ),
         ("/admin/api/lode/restart", None),
         ("/admin/api/lode/rollback", None),
     ] {
@@ -805,16 +868,21 @@ async fn config_redacts_secrets() {
         get("GIM_HUB_PUSH_WEBHOOK_SECRET"),
         json!({ "key": "GIM_HUB_PUSH_WEBHOOK_SECRET", "value": null, "redacted": true })
     );
-    assert_eq!(get("GIM_HUB_PUSH_WEBHOOK_URL")["value"], "https://push.example.eu/hook");
+    assert_eq!(
+        get("GIM_HUB_PUSH_WEBHOOK_URL")["value"],
+        "https://push.example.eu/hook"
+    );
     assert_eq!(get("GIM_HUB_LISTEN")["value"], "0.0.0.0:8080");
     assert_eq!(get("GIM_HUB_FEDERATION")["value"], "false");
     let token_file = get("GIM_HUB_ADMIN_TOKEN_FILE");
     assert_eq!(token_file["redacted"], false);
-    assert!(token_file["value"].as_str().unwrap().ends_with("admin.token"));
-    assert!(items.iter().all(|item| item["key"]
+    assert!(token_file["value"]
         .as_str()
         .unwrap()
-        .starts_with("GIM_HUB_")));
+        .ends_with("admin.token"));
+    assert!(items
+        .iter()
+        .all(|item| item["key"].as_str().unwrap().starts_with("GIM_HUB_")));
 }
 
 #[tokio::test]

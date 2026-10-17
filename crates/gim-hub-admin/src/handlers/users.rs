@@ -222,7 +222,9 @@ pub async fn suspend_user(
                 .await?
             {
                 Suspension::Changed => Ok(StatusCode::NO_CONTENT),
-                Suspension::Unchanged => Err(AdminError::Conflict("user is already suspended".into())),
+                Suspension::Unchanged => {
+                    Err(AdminError::Conflict("user is already suspended".into()))
+                }
                 Suspension::NotFound => Err(AdminError::NotFound),
             }
         }
@@ -309,7 +311,13 @@ pub async fn revoke_device_sessions(
         .ok()
         .map(|Json(r)| format!("{} sessions revoked", r.revoked));
     caller
-        .audit(&state, "device_sessions_revoke", Some(target), &result, detail)
+        .audit(
+            &state,
+            "device_sessions_revoke",
+            Some(target),
+            &result,
+            detail,
+        )
         .await;
     result
 }
@@ -385,10 +393,7 @@ mod tests {
         assert_eq!(page_limit(None, 50, 100).unwrap(), 50);
         assert!(page_limit(Some(0), 50, 100).is_err());
         assert!(page_limit(Some(101), 50, 100).is_err());
-        assert_eq!(
-            optional_json::<SuspendRequest>(b"").unwrap().reason,
-            None
-        );
+        assert_eq!(optional_json::<SuspendRequest>(b"").unwrap().reason, None);
         assert_eq!(
             optional_json::<SuspendRequest>(br#"{"reason":"spam"}"#)
                 .unwrap()

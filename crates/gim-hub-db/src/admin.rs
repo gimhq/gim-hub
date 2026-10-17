@@ -444,7 +444,11 @@ mod tests {
         let beta = db.read(|conn| user(conn, "u-beta")).await.unwrap().unwrap();
         assert_eq!(beta.handle.as_deref(), Some("Bob"));
         assert_eq!(beta.last_seen, None);
-        assert!(db.read(|conn| user(conn, "nobody")).await.unwrap().is_none());
+        assert!(db
+            .read(|conn| user(conn, "nobody"))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -517,10 +521,7 @@ mod tests {
         assert_eq!(lift("u-alpha").await.unwrap(), Suspension::Changed);
         assert_eq!(lift("u-alpha").await.unwrap(), Suspension::Unchanged);
         assert_eq!(lift("nobody").await.unwrap(), Suspension::NotFound);
-        assert!(!db
-            .read(|conn| is_suspended(conn, "u-alpha"))
-            .await
-            .unwrap());
+        assert!(!db.read(|conn| is_suspended(conn, "u-alpha")).await.unwrap());
     }
 
     #[tokio::test]

@@ -75,12 +75,13 @@ impl AdminConfig {
         let Some(listen_raw) = get("GIM_HUB_ADMIN_LISTEN") else {
             return Ok(Self::default());
         };
-        let listen: SocketAddr = listen_raw
-            .trim()
-            .parse()
-            .map_err(|err: std::net::AddrParseError| {
-                invalid("GIM_HUB_ADMIN_LISTEN", listen_raw, &err.to_string())
-            })?;
+        let listen: SocketAddr =
+            listen_raw
+                .trim()
+                .parse()
+                .map_err(|err: std::net::AddrParseError| {
+                    invalid("GIM_HUB_ADMIN_LISTEN", listen_raw, &err.to_string())
+                })?;
 
         let token_file = get("GIM_HUB_ADMIN_TOKEN_FILE").map(PathBuf::from);
         let token_hash = match &token_file {
@@ -119,8 +120,9 @@ impl AdminConfig {
                 .map(str::trim)
                 .filter(|cidr| !cidr.is_empty())
                 .map(|cidr| {
-                    cidr.parse()
-                        .map_err(|reason: String| invalid("GIM_HUB_ADMIN_TRUSTED_PROXIES", raw, &reason))
+                    cidr.parse().map_err(|reason: String| {
+                        invalid("GIM_HUB_ADMIN_TRUSTED_PROXIES", raw, &reason)
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         };
@@ -207,7 +209,9 @@ impl Cidr {
     pub fn contains(&self, ip: IpAddr) -> bool {
         match (self.addr, ip.to_canonical()) {
             (IpAddr::V4(net), IpAddr::V4(ip)) => {
-                let mask = u32::MAX.checked_shl(32 - u32::from(self.prefix)).unwrap_or(0);
+                let mask = u32::MAX
+                    .checked_shl(32 - u32::from(self.prefix))
+                    .unwrap_or(0);
                 net.to_bits() & mask == ip.to_bits() & mask
             }
             (IpAddr::V6(net), IpAddr::V6(ip)) => {
@@ -278,9 +282,11 @@ mod tests {
         let config = config(&[("GIM_HUB_ADMIN_TRUSTED_HEADER", "X-User")]);
         assert!(!config.enabled());
         assert!(!config.token_login());
-        assert!(!AdminConfig::from_vars(vars(&[("GIM_HUB_ADMIN_LISTEN", "")]))
-            .unwrap()
-            .enabled());
+        assert!(
+            !AdminConfig::from_vars(vars(&[("GIM_HUB_ADMIN_LISTEN", "")]))
+                .unwrap()
+                .enabled()
+        );
     }
 
     #[test]
@@ -329,12 +335,18 @@ mod tests {
             ("GIM_HUB_ADMIN_TRUSTED_PROXIES", "10.0.0.0/8"),
         ]);
         assert_eq!(e.name, "GIM_HUB_ADMIN_TRUSTED_HEADER");
-        assert_eq!(err(&[("GIM_HUB_ADMIN_LISTEN", "nowhere")]).name, "GIM_HUB_ADMIN_LISTEN");
+        assert_eq!(
+            err(&[("GIM_HUB_ADMIN_LISTEN", "nowhere")]).name,
+            "GIM_HUB_ADMIN_LISTEN"
+        );
 
         let config = config(&[
             listen,
             ("GIM_HUB_ADMIN_TRUSTED_HEADER", "X-Forwarded-User"),
-            ("GIM_HUB_ADMIN_TRUSTED_PROXIES", "10.0.0.0/8, 2001:db8::/32,192.0.2.7"),
+            (
+                "GIM_HUB_ADMIN_TRUSTED_PROXIES",
+                "10.0.0.0/8, 2001:db8::/32,192.0.2.7",
+            ),
             ("GIM_HUB_ADMIN_COOKIE_SECURE", "true"),
         ]);
         assert!(!config.token_login());

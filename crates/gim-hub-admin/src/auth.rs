@@ -138,7 +138,8 @@ pub(crate) async fn require_session(
     });
     let mut response = next.run(request).await;
     if let Some(cookie) = created {
-        if let Ok(value) = HeaderValue::from_str(&set_cookie(&state, &cookie, SESSION_TTL_MS / 1000))
+        if let Ok(value) =
+            HeaderValue::from_str(&set_cookie(&state, &cookie, SESSION_TTL_MS / 1000))
         {
             response.headers_mut().append(header::SET_COOKIE, value);
         }
@@ -164,7 +165,9 @@ fn set_cookie(state: &AdminState, value: &str, max_age: i64) -> String {
     } else {
         ""
     };
-    format!("{COOKIE_NAME}={value}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age={max_age}{secure}")
+    format!(
+        "{COOKIE_NAME}={value}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age={max_age}{secure}"
+    )
 }
 
 /// Milliseconds as the admin API's Unix seconds.
@@ -260,7 +263,10 @@ pub async fn login(
         (status = 403, description = "Missing or wrong X-CSRF-Token (`csrf_failed`)", body = Error),
     ),
 )]
-pub async fn logout(State(state): State<AdminState>, Extension(caller): Extension<Caller>) -> Response {
+pub async fn logout(
+    State(state): State<AdminState>,
+    Extension(caller): Extension<Caller>,
+) -> Response {
     if let Some((cookie, _)) = &caller.session {
         state.remove_session(cookie);
     }
@@ -288,7 +294,9 @@ pub async fn logout(State(state): State<AdminState>, Extension(caller): Extensio
         (status = 401, description = "No session (`unauthorized`)", body = Error),
     ),
 )]
-pub async fn get_session(Extension(caller): Extension<Caller>) -> Result<Json<SessionResponse>, AdminError> {
+pub async fn get_session(
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<SessionResponse>, AdminError> {
     let (_, session) = caller.session.ok_or(AdminError::Unauthorized)?;
     Ok(Json(SessionResponse {
         actor: session.actor,
@@ -306,11 +314,17 @@ mod tests {
     fn finds_the_session_cookie() {
         let mut headers = HeaderMap::new();
         assert_eq!(session_cookie(&headers), None);
-        headers.append(header::COOKIE, HeaderValue::from_static("a=1; gim_admin_session=abc"));
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_static("a=1; gim_admin_session=abc"),
+        );
         assert_eq!(session_cookie(&headers).as_deref(), Some("abc"));
         let mut headers = HeaderMap::new();
         headers.append(header::COOKIE, HeaderValue::from_static("x=1"));
-        headers.append(header::COOKIE, HeaderValue::from_static("gim_admin_session=def"));
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_static("gim_admin_session=def"),
+        );
         assert_eq!(session_cookie(&headers).as_deref(), Some("def"));
     }
 

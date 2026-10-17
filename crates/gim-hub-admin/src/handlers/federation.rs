@@ -114,8 +114,8 @@ pub async fn get_allowlist(State(state): State<AdminState>) -> Result<Json<Allow
     let text = tokio::fs::read_to_string(&path)
         .await
         .map_err(|err| AdminError::Internal(format!("{}: {err}", path.display())))?;
-    let entries = entries(&state, federation, &text)
-        .map_err(|err| AdminError::Internal(err.to_string()))?;
+    let entries =
+        entries(&state, federation, &text).map_err(|err| AdminError::Internal(err.to_string()))?;
     Ok(Json(Allowlist {
         path: path.display().to_string(),
         text,
@@ -131,7 +131,11 @@ fn entries(
     federation: &FederationService,
     text: &str,
 ) -> Result<Vec<AllowlistEntry>, PolicyError> {
-    let hubs = parse_allowlist(text, federation.hub_id(), state.federation_config.psk.is_some())?;
+    let hubs = parse_allowlist(
+        text,
+        federation.hub_id(),
+        state.federation_config.psk.is_some(),
+    )?;
     if hubs.is_empty() {
         return Err(PolicyError::Empty(
             state.federation_config.allowlist_path.clone(),

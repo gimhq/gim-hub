@@ -24,7 +24,12 @@ async fn login_session_and_logout() {
     let now_s = admin.hub.state.clock.now_ms() / 1000;
     assert_eq!(response.body["expires_at"], now_s + SESSION_TTL_MS / 1000);
     let set_cookie = response.headers[header::SET_COOKIE].to_str().unwrap();
-    for attribute in ["HttpOnly", "SameSite=Strict", "Path=/admin", "Max-Age=28800"] {
+    for attribute in [
+        "HttpOnly",
+        "SameSite=Strict",
+        "Path=/admin",
+        "Max-Age=28800",
+    ] {
         assert!(set_cookie.contains(attribute), "{set_cookie}");
     }
     assert!(!set_cookie.contains("Secure"));
@@ -114,7 +119,10 @@ async fn failed_login_is_audited_without_the_token() {
 
     let login = admin.login().await;
     let audit = admin.audit(&login).await;
-    let failed = audit.iter().find(|e| e["action"] == "login_failed").unwrap();
+    let failed = audit
+        .iter()
+        .find(|e| e["action"] == "login_failed")
+        .unwrap();
     assert_eq!(failed["actor"], "anonymous");
     assert_eq!(failed["result"], "error");
     assert_eq!(failed["source_ip"], "127.0.0.1");

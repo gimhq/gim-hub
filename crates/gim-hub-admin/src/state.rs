@@ -207,7 +207,11 @@ impl AdminState {
 
     /// The `header:<value>` actor of a request carrying the trusted
     /// identity header from a trusted proxy `peer`.
-    pub(crate) fn header_identity(&self, peer: Option<IpAddr>, headers: &HeaderMap) -> Option<String> {
+    pub(crate) fn header_identity(
+        &self,
+        peer: Option<IpAddr>,
+        headers: &HeaderMap,
+    ) -> Option<String> {
         let name = self.config.trusted_header.as_ref()?;
         if !self.config.is_trusted_proxy(peer?) {
             return None;

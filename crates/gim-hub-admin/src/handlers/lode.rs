@@ -109,7 +109,10 @@ pub async fn lode_check(
         Ok(lode) => run(lode, |lode| lode.request_check()).await,
         Err(err) => Err(err),
     };
-    let detail = result.as_ref().ok().map(|nonce| format!("check_nonce {nonce}"));
+    let detail = result
+        .as_ref()
+        .ok()
+        .map(|nonce| format!("check_nonce {nonce}"));
     caller
         .audit(&state, "lode_check", None, &result, detail)
         .await;
@@ -230,9 +233,7 @@ pub async fn lode_rollback(
                 None => Err(AdminError::Conflict(
                     "no version given and no last_good recorded".into(),
                 )),
-                Some(version) => {
-                    run(lode, move |lode| lode.rollback(Some(&version))).await
-                }
+                Some(version) => run(lode, move |lode| lode.rollback(Some(&version))).await,
             }
         }
     };
