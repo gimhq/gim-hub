@@ -35,7 +35,8 @@ DeviceCert in the user's stored DeviceList. There is no handle-only registration
    sharing at least one group with them, so peers re-verify the user's MLS credentials against
    the new list.
 2. `POST /v2/auth/challenge {user_id, device_id}` returns `{challenge, expires_at, hub_id}`
-   (404 `not_found` unless the device is active in the stored DeviceList). `challenge` is a
+   (404 `not_found` unless the device is active in the stored DeviceList; 403 `user_suspended`
+   while an admin has suspended the user, see [`admin.md`](admin.md)). `challenge` is a
    gim-core AuthChallenge (CBOR, base64) with `audience` = this hub's `hub_id`, a 32-byte random
    nonce and a 5-minute lifetime. A hub with `GIM_HUB_PUBLIC_URL` issues version 2, which also
    binds the URL the device talked to:
@@ -61,7 +62,9 @@ DeviceCert in the user's stored DeviceList. There is no handle-only registration
    default 30 days). Errors: 400 `validation_failed` (malformed body or AuthResponse); 401
    `invalid_challenge` (unknown, used, expired or foreign challenge, another `audience_url`, or
    the wrong challenge version for this hub), `invalid_signature`, or
-   `device_not_active` (device revoked or not in the DeviceList).
+   `device_not_active` (device revoked or not in the DeviceList); 403 `user_suspended` (an admin
+   suspended the user). Suspending a user also deletes all of their sessions, so their tokens
+   answer 401 `unauthorized`; after the suspension is lifted the devices sign in again.
 4. Use `Authorization: Bearer <token>` (or `?token=` on `GET /v2/stream`). Sign in again after
    `expires_at` or on 401.
 

@@ -1,0 +1,2060 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "gim-hub admin API",
+    "description": "Admin API of the gim hub, served only on `GIM_HUB_ADMIN_LISTEN`. Metadata only: messages are end-to-end encrypted and the API never shows who talks to whom.\n\nEvery route except POST /admin/api/login needs the `gim_admin_session` cookie; every non-GET request also needs `X-CSRF-Token` equal to the session's `csrf_token` (403 `csrf_failed`). Timestamps are integer seconds since the Unix epoch, except lode's, which are passed through from `state.json`. Every non-2xx JSON response has the shape `{\"error\":{\"code\",\"message\"}}`.",
+    "license": {
+      "name": "UNLICENSED",
+      "identifier": "UNLICENSED"
+    },
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/admin/api/audit": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "The admin audit log",
+        "description": "Every admin action, newest first.",
+        "operationId": "list_audit",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1 to 200, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit or cursor (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/config": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Effective configuration",
+        "description": "Every `GIM_HUB_*` setting with its effective value (defaults applied). Secrets (the webhook secret, the PSK, any `*_SECRET`, `*_TOKEN` or `*_KEY` value) are redacted: `value` is `null` and `redacted` is true when one is set. File paths are shown, never file contents.",
+        "operationId": "get_config",
+        "responses": {
+          "200": {
+            "description": "Configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/federation": {
+      "get": {
+        "tags": [
+          "federation"
+        ],
+        "summary": "Federation status",
+        "description": "This hub's PeerID and addresses, and per peer hub (allowlisted, or known to the outbox) whether it is bound now, the queued outbox entries, delivery failures and the last connection.",
+        "operationId": "get_federation",
+        "responses": {
+          "200": {
+            "description": "Status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FederationStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/federation/allowlist": {
+      "get": {
+        "tags": [
+          "federation"
+        ],
+        "summary": "The federation allowlist",
+        "operationId": "get_allowlist",
+        "responses": {
+          "200": {
+            "description": "The allowlist file and its entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Allowlist"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Federation is off (`not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "federation"
+        ],
+        "summary": "Replace the federation allowlist",
+        "description": "Validates the text with the allowlist rules, writes it atomically to `GIM_HUB_FEDERATION_ALLOWLIST` and applies it at once, as SIGHUP does. On a validation error the file is unchanged. Audited as `allowlist_update`.",
+        "operationId": "put_allowlist",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AllowlistUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Allowlist"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Federation is off (`not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid allowlist; the message is the parser's (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/handles/{handle}/release": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Release a handle",
+        "description": "The handle becomes free; its user keeps existing without a handle. Audited as `handle_release`.",
+        "operationId": "release_handle",
+        "parameters": [
+          {
+            "name": "handle",
+            "in": "path",
+            "description": "Handle",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Released"
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown handle (`not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/lode": {
+      "get": {
+        "tags": [
+          "lode"
+        ],
+        "summary": "lode status",
+        "description": "`{\"supervised\":false}` unless `LODE_DIR` is set; otherwise lode's fields from `state.json` (all `null` before lode wrote it).",
+        "operationId": "get_lode",
+        "responses": {
+          "200": {
+            "description": "Status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LodeStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/lode/check": {
+      "post": {
+        "tags": [
+          "lode"
+        ],
+        "summary": "Check for a newer version now",
+        "description": "Bumps `check_nonce`; lode reports the result in `available` or `check_error`. Audited as `lode_check`.",
+        "operationId": "lode_check",
+        "responses": {
+          "202": {
+            "description": "Requested"
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not supervised by lode (`unavailable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/lode/restart": {
+      "post": {
+        "tags": [
+          "lode"
+        ],
+        "summary": "Restart the hub",
+        "description": "Bumps `restart_nonce`; lode stops the hub gracefully and starts the current version again. Audited as `lode_restart`.",
+        "operationId": "lode_restart",
+        "responses": {
+          "202": {
+            "description": "Requested"
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not supervised by lode (`unavailable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/lode/rollback": {
+      "post": {
+        "tags": [
+          "lode"
+        ],
+        "summary": "Roll back",
+        "description": "Sets `target` to the given version, else to lode's `last_good`. Audited as `lode_rollback` (target the chosen version).",
+        "operationId": "lode_rollback",
+        "requestBody": {
+          "description": "Optional",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LodeRollback"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Requested"
+          },
+          "400": {
+            "description": "Malformed body (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No version given and no `last_good` recorded (`conflict`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not supervised by lode (`unavailable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/lode/update": {
+      "post": {
+        "tags": [
+          "lode"
+        ],
+        "summary": "Update to a version",
+        "description": "Sets `target` to the version or `latest`. Audited as `lode_update` (target the version).",
+        "operationId": "lode_update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LodeUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Requested"
+          },
+          "400": {
+            "description": "Malformed body or empty version (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not supervised by lode (`unavailable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Log in with the admin token",
+        "description": "Compares the token with `GIM_HUB_ADMIN_TOKEN_FILE` in constant time and sets the `gim_admin_session` cookie (HttpOnly, SameSite=Strict, Path=/admin, 8 h absolute). At most 5 failed logins per source IP and minute. Audited as `login_ok` or `login_failed` (never the token).",
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Logged in; `Set-Cookie: gim_admin_session=...`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong token (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Token login is disabled (`forbidden`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed logins from this IP (`rate_limited`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/api/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "End the session",
+        "description": "Deletes the session and clears the cookie. Audited as `logout`.",
+        "operationId": "logout",
+        "responses": {
+          "204": {
+            "description": "Logged out"
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/overview": {
+      "get": {
+        "tags": [
+          "overview"
+        ],
+        "summary": "Hub overview",
+        "description": "Version, uptime, storage sizes, aggregate counts and push counters. Group data is a count only.",
+        "operationId": "get_overview",
+        "responses": {
+          "200": {
+            "description": "Overview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Overview"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/session": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "The current session",
+        "description": "Returns the session of the cookie. Without one, a request from a `GIM_HUB_ADMIN_TRUSTED_PROXIES` peer carrying `GIM_HUB_ADMIN_TRUSTED_HEADER` gets a new session (actor `header:<value>`, cookie set, audited as `login_ok`).",
+        "operationId": "get_session",
+        "responses": {
+          "200": {
+            "description": "The session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/users": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Search users",
+        "description": "Users by user ID, optionally filtered by a substring of the user ID or handle.",
+        "operationId": "list_users",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Case-insensitive substring of the user ID or handle.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1 to 100, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit or cursor (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/users/{user_id}": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "A user with devices and sessions",
+        "description": "The user's devices with their unexpired sessions (by non-secret `session_ref`) and the hubs listed in the user's hosting record. Never group membership, peers or message metadata.",
+        "operationId": "get_user",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown user (`not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/users/{user_id}/devices/{device_id}/sessions": {
+      "delete": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Revoke a device's sessions",
+        "description": "Deletes every session of the device; it must sign in again. Audited as `device_sessions_revoke` (target `<user_id>/<device_id>`).",
+        "operationId": "revoke_device_sessions",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Device ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sessions revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Revoked"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown user or device (`not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/users/{user_id}/suspend": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Suspend a user",
+        "description": "Sets the suspension, revokes every session of the user's devices and refuses new sign-ins (POST /v2/auth/challenge and /v2/auth/session answer 403 `user_suspended`). Audited as `user_suspend` with the optional reason.",
+        "operationId": "suspend_user",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Optional",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SuspendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Suspended"
+          },
+          "400": {
+            "description": "Malformed body (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown user (`not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already suspended (`conflict`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/users/{user_id}/unsuspend": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Lift a suspension",
+        "description": "The user can sign in again. Audited as `user_unsuspend`.",
+        "operationId": "unsuspend_user",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Unsuspended"
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown user (`not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Not suspended (`conflict`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Allowlist": {
+        "type": "object",
+        "required": [
+          "path",
+          "text",
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AllowlistEntry"
+            },
+            "description": "Parsed entries by hub ID (the own hub is skipped)."
+          },
+          "path": {
+            "type": "string",
+            "description": "`GIM_HUB_FEDERATION_ALLOWLIST`."
+          },
+          "text": {
+            "type": "string",
+            "description": "The file contents."
+          }
+        }
+      },
+      "AllowlistEntry": {
+        "type": "object",
+        "required": [
+          "hub_id",
+          "addrs"
+        ],
+        "properties": {
+          "addrs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Static multiaddrs."
+          },
+          "hub_id": {
+            "type": "string"
+          }
+        }
+      },
+      "AllowlistUpdate": {
+        "type": "object",
+        "description": "PUT /admin/api/federation/allowlist body.",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "New file contents: one `hub_id [multiaddr ...]` per line, `#`\ncomments."
+          }
+        }
+      },
+      "AuditItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "at",
+          "actor",
+          "action",
+          "source_ip",
+          "result"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string",
+            "description": "`token`, `header:<identity>`, or `anonymous` for failed logins."
+          },
+          "at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "result": {
+            "type": "string",
+            "description": "`ok` or `error`."
+          },
+          "source_ip": {
+            "type": "string"
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AuditList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditItem"
+            },
+            "description": "Newest first."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ConfigItem": {
+        "type": "object",
+        "description": "One effective configuration value.",
+        "required": [
+          "key",
+          "redacted"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "redacted": {
+            "type": "boolean",
+            "description": "A secret is configured but not shown."
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` when unset or redacted."
+          }
+        }
+      },
+      "ConfigView": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConfigItem"
+            }
+          }
+        }
+      },
+      "Counts": {
+        "type": "object",
+        "required": [
+          "users",
+          "devices",
+          "groups",
+          "blobs"
+        ],
+        "properties": {
+          "blobs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "devices": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Active devices."
+          },
+          "groups": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "users": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "DeviceItem": {
+        "type": "object",
+        "required": [
+          "device_id",
+          "created_at",
+          "active",
+          "sessions"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "description": "Active in the user's current DeviceList."
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "last_seen": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Latest sign-in among the device's current sessions."
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionItem"
+            }
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "description": "Body of every non-2xx JSON response.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "description": "Error details.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Machine-readable snake_case error code.",
+            "example": "not_found"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable description."
+          }
+        }
+      },
+      "FederationStatus": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "listen_addrs",
+          "external_addrs",
+          "peers"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "external_addrs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Advertised addresses."
+          },
+          "listen_addrs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "peer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "libp2p PeerId of the runtime key."
+          },
+          "peers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PeerItem"
+            }
+          }
+        }
+      },
+      "LodeHistoryEntry": {
+        "type": "object",
+        "required": [
+          "version",
+          "at",
+          "result"
+        ],
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string",
+            "description": "`good` or `bad`."
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "LodeRollback": {
+        "type": "object",
+        "description": "POST /admin/api/lode/rollback body (optional).",
+        "properties": {
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Defaults to lode's `last_good`."
+          }
+        }
+      },
+      "LodeState": {
+        "type": "object",
+        "required": [
+          "history"
+        ],
+        "properties": {
+          "available": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LodeHistoryEntry"
+            }
+          },
+          "last_check": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_good": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`starting`, `running`, `held`, `updating`, `rolling-back`,\n`stopping`, `stopped` or `error`."
+          }
+        }
+      },
+      "LodeStatus": {
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LodeState",
+                "description": "lode's fields from `state.json`; absent when not supervised."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "required": [
+              "supervised"
+            ],
+            "properties": {
+              "supervised": {
+                "type": "boolean"
+              }
+            }
+          }
+        ],
+        "description": "lode status. Only `supervised` when the hub does not run under lode."
+      },
+      "LodeUpdate": {
+        "type": "object",
+        "description": "POST /admin/api/lode/update body.",
+        "required": [
+          "version"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "A version, or `latest`."
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "description": "POST /admin/api/login body.",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The admin token from `GIM_HUB_ADMIN_TOKEN_FILE`."
+          }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "description": "A new token session.",
+        "required": [
+          "actor",
+          "csrf_token",
+          "expires_at"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string",
+            "description": "Always `token`."
+          },
+          "csrf_token": {
+            "type": "string",
+            "description": "Send as `X-CSRF-Token` on every non-GET request."
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Absolute session expiry."
+          }
+        }
+      },
+      "Overview": {
+        "type": "object",
+        "required": [
+          "version",
+          "revision",
+          "hub_id",
+          "started_at",
+          "uptime_seconds",
+          "storage",
+          "counts",
+          "push",
+          "event_retention_days"
+        ],
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/Counts"
+          },
+          "event_retention_days": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "hub_id": {
+            "type": "string"
+          },
+          "public_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "push": {
+            "$ref": "#/components/schemas/PushCounters"
+          },
+          "revision": {
+            "type": "string",
+            "description": "Build revision, `unknown` when not built from a checkout."
+          },
+          "started_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/Storage"
+          },
+          "uptime_seconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "version": {
+            "type": "string",
+            "description": "The release version (`LODE_ACTIVE_VERSION` under lode)."
+          }
+        }
+      },
+      "PeerItem": {
+        "type": "object",
+        "required": [
+          "hub_id",
+          "connected",
+          "outbox_backlog"
+        ],
+        "properties": {
+          "connected": {
+            "type": "boolean",
+            "description": "Bound now (a verified, admitted connection)."
+          },
+          "hub_id": {
+            "type": "string"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set while deliveries to the peer are failing."
+          },
+          "last_seen": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Last connection."
+          },
+          "outbox_backlog": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Queued S2S outbox entries."
+          }
+        }
+      },
+      "PushCounters": {
+        "type": "object",
+        "description": "Push dispatcher counters since the hub started.",
+        "required": [
+          "enqueued",
+          "coalesced",
+          "upgraded",
+          "dropped",
+          "sent",
+          "skipped",
+          "invalid_token",
+          "retried",
+          "failed"
+        ],
+        "properties": {
+          "coalesced": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "dropped": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "enqueued": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "invalid_token": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "retried": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sent": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "upgraded": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Revoked": {
+        "type": "object",
+        "required": [
+          "revoked"
+        ],
+        "properties": {
+          "revoked": {
+            "type": "integer",
+            "description": "Sessions deleted.",
+            "minimum": 0
+          }
+        }
+      },
+      "SessionItem": {
+        "type": "object",
+        "description": "An unexpired device session.",
+        "required": [
+          "session_ref",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "session_ref": {
+            "type": "string",
+            "description": "The first 16 hex characters of the SHA-256 of the session token;\nnever the token."
+          }
+        }
+      },
+      "SessionResponse": {
+        "type": "object",
+        "description": "The current admin session.",
+        "required": [
+          "actor",
+          "auth",
+          "csrf_token",
+          "expires_at"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string",
+            "description": "`token`, or `header:<identity>` for a trusted-proxy session."
+          },
+          "auth": {
+            "type": "string",
+            "description": "`token` or `header`."
+          },
+          "csrf_token": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "Storage": {
+        "type": "object",
+        "required": [
+          "db_bytes",
+          "blob_bytes"
+        ],
+        "properties": {
+          "blob_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total size of the blob directory.",
+            "minimum": 0
+          },
+          "db_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The database file plus its WAL.",
+            "minimum": 0
+          }
+        }
+      },
+      "SuspendRequest": {
+        "type": "object",
+        "description": "POST /admin/api/users/{user_id}/suspend body (optional).",
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Recorded in the audit log."
+          }
+        }
+      },
+      "UserDetail": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "suspended",
+          "created_at",
+          "hosting_hubs",
+          "devices"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceItem"
+            }
+          },
+          "handle": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hosting_hubs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hub IDs listed in the user's stored hosting record (empty without\none)."
+          },
+          "suspended": {
+            "type": "boolean"
+          },
+          "suspended_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        }
+      },
+      "UserItem": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "suspended",
+          "created_at",
+          "device_count"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "device_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Active devices."
+          },
+          "handle": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_seen": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Latest sign-in among the user's current sessions."
+          },
+          "suspended": {
+            "type": "boolean"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        }
+      },
+      "UserList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserItem"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` for the next page; `null` on the last page."
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "adminSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "gim_admin_session",
+        "description": "Session cookie from POST /admin/api/login (or GET /admin/api/session behind a trusted proxy). Non-GET requests also send X-CSRF-Token."
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "auth",
+      "description": "Admin sessions"
+    },
+    {
+      "name": "overview",
+      "description": "Hub overview"
+    },
+    {
+      "name": "users",
+      "description": "Users, devices, sessions and handles"
+    },
+    {
+      "name": "federation",
+      "description": "Federation status and allowlist"
+    },
+    {
+      "name": "lode",
+      "description": "The lode supervisor"
+    },
+    {
+      "name": "config",
+      "description": "Effective configuration"
+    },
+    {
+      "name": "audit",
+      "description": "Admin audit log"
+    }
+  ]
+}

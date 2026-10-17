@@ -1182,6 +1182,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "ed25519-dalek",
+ "gim-hub-admin",
  "gim-hub-api",
  "gim-hub-db",
  "gim-hub-identity",
@@ -1200,6 +1201,30 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "gim-hub-admin"
+version = "0.2.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "gim-hub-api",
+ "gim-hub-db",
+ "gim-hub-identity",
+ "gim-hub-s2s",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tower",
+ "tracing",
+ "utoipa",
 ]
 
 [[package]]

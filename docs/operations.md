@@ -176,6 +176,24 @@ secret stops startup. Keep the secret out of the image (e.g. inject it from `/ru
 | `GIM_HUB_PUSH_WEBHOOK_SECRET` | unset | HMAC-SHA256 key of `X-Gim-Signature`; required with the URL, at least 32 bytes |
 | `GIM_HUB_PUSH_WEBHOOK_TIMEOUT_SECONDS` | `10` | Timeout of one webhook request; a timeout is retried (minimum 1) |
 
+### Admin API
+
+The admin API and UI listen on a separate socket, off unless
+`GIM_HUB_ADMIN_LISTEN` is set; nothing admin-related is served on
+`GIM_HUB_LISTEN`. Setup, the security model and every endpoint:
+[`admin.md`](admin.md).
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GIM_HUB_ADMIN_LISTEN` | unset | Socket address of the admin listener (recommended `127.0.0.1:8081` behind a TLS proxy); unset disables it and the other `GIM_HUB_ADMIN_*` variables are ignored |
+| `GIM_HUB_ADMIN_TOKEN_FILE` | unset | File holding the admin token (trimmed, at least 32 characters); unset disables token login |
+| `GIM_HUB_ADMIN_TRUSTED_HEADER` | unset | Identity header set by a reverse proxy (e.g. `X-Forwarded-User`); requires `GIM_HUB_ADMIN_TRUSTED_PROXIES` |
+| `GIM_HUB_ADMIN_TRUSTED_PROXIES` | unset | Comma-separated CIDRs whose `X-Forwarded-For` and identity header are trusted |
+| `GIM_HUB_ADMIN_COOKIE_SECURE` | `false` | `true` sets `Secure` on the session cookie |
+
+With `GIM_HUB_ADMIN_LISTEN` set, at least one of the token file and the trusted
+header is required; otherwise the hub does not start.
+
 ## Data directory
 
 ```

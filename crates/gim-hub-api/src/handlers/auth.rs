@@ -9,6 +9,7 @@ use base64::{
     Engine as _,
 };
 use gim_hub_db::{
+    admin,
     auth::{self as db_auth, Challenge},
     users,
 };
@@ -42,6 +43,7 @@ POST /v2/auth/session before `expires_at`.",
     responses(
         (status = 200, description = "Challenge issued", body = AuthChallenge),
         (status = 400, description = "Malformed body, user ID or device ID (`validation_failed`)", body = Error),
+        (status = 403, description = "An admin suspended the user (`user_suspended`)", body = Error),
         (status = 404, description = "No DeviceList stored for the user, or the device is not active in it (`not_found`)", body = Error),
     ),
 )]
@@ -78,6 +80,9 @@ pub async fn create_auth_challenge(
     state
         .db
         .write(move |tx| {
+            if admin::is_suspended(tx, &row.user_id)? {
+                return Err(ApiError::UserSuspended);
+            }
             if !db_auth::device_is_active(tx, &row.user_id, &row.device_id)? {
                 return Err(ApiError::NotFound);
             }
@@ -102,12 +107,14 @@ pub async fn create_auth_challenge(
 this hub's `hub_id` (and, with a public URL, a version 2 challenge whose `audience_url` is this \
 hub's `public_url`; without one, only version 1), then consumes the challenge: its nonce must have been issued by this hub \
 for the same user and device, be unexpired and unused. The device must still be active (not \
-revoked). The token is revoked when a later DeviceList revokes the device.",
+revoked) and the user not suspended by an admin. The token is revoked when a later DeviceList \
+revokes the device or an admin suspends the user.",
     request_body = CreateSessionRequest,
     responses(
         (status = 200, description = "Session created", body = Session),
         (status = 400, description = "Malformed body or AuthResponse (`validation_failed`)", body = Error),
         (status = 401, description = "Unknown, used or expired challenge, one issued by another hub, for another URL or another device, or of the wrong version (`invalid_challenge`); bad signature (`invalid_signature`); device revoked or not in the DeviceList (`device_not_active`)", body = Error),
+        (status = 403, description = "An admin suspended the user (`user_suspended`)", body = Error),
     ),
 )]
 pub async fn create_session(
@@ -132,6 +139,9 @@ pub async fn create_session(
             // Without a stored DeviceList no challenge can have been issued.
             let stored =
                 users::get_device_list(tx, user_id.as_str())?.ok_or(ApiError::InvalidChallenge)?;
+            if admin::is_suspended(tx, user_id.as_str())? {
+                return Err(ApiError::UserSuspended);
+            }
             let list = DeviceList::verify(&stored.device_list, &user_id).map_err(|err| {
                 ApiError::Internal(format!("stored DeviceList of {user_id}: {err}"))
             })?;
