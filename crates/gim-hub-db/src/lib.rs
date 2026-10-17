@@ -24,7 +24,7 @@ pub mod users;
 pub mod welcomes;
 
 pub use migrate::SCHEMA_VERSION;
-pub use pool::Db;
+pub use pool::{Backups, Db};
 pub use rusqlite::{Connection, Transaction};
 
 /// Storage error.
@@ -32,8 +32,13 @@ pub use rusqlite::{Connection, Transaction};
 pub enum DbError {
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    #[error("database schema version {found} is newer than supported version {supported}")]
+    #[error(
+        "database schema version {found} is newer than this binary supports (up to \
+         {supported}); restore a backup or run a newer release"
+    )]
     SchemaTooNew { found: i64, supported: i64 },
+    #[error("pre-migration backup failed: {0}")]
+    Backup(String),
     #[error("cannot create database directory: {0}")]
     Io(#[from] std::io::Error),
     #[error("database task failed: {0}")]

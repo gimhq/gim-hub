@@ -1,7 +1,7 @@
 //! Connection handle.
 
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
@@ -11,6 +11,15 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 use crate::{migrate, DbError};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Where [`Db::open_with_backups`] keeps pre-migration backups.
+#[derive(Debug, Clone)]
+pub struct Backups {
+    /// Directory of the backup files, created on demand.
+    pub dir: PathBuf,
+    /// Release version of the running binary, part of each file name.
+    pub release: String,
+}
 
 /// Shared database handle (cheap to clone).
 ///
@@ -26,23 +35,40 @@ impl Db {
     /// Opens (creating if needed) the database at `path`, enables WAL and
     /// foreign keys, and applies pending migrations.
     pub fn open(path: &Path) -> Result<Self, DbError> {
+        Self::open_file(path, None)
+    }
+
+    /// Like [`Db::open`], but before pending migrations are applied to an
+    /// existing database it is copied to
+    /// `<backups.dir>/hub-<from_schema>-<release>.db`; only the newest three
+    /// backups are kept. A fresh database is not backed up.
+    pub fn open_with_backups(path: &Path, backups: &Backups) -> Result<Self, DbError> {
+        Self::open_file(path, Some(backups))
+    }
+
+    fn open_file(path: &Path, backups: Option<&Backups>) -> Result<Self, DbError> {
+        // A database of a newer release is refused before anything, the WAL
+        // switch included, can write to it.
+        if path.exists() {
+            migrate::check_supported(path)?;
+        }
         if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir)?;
         }
         let conn = Connection::open(path)?;
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))?;
-        Self::init(conn)
+        Self::init(conn, backups)
     }
 
     /// Opens a fresh in-memory database with the full schema.
     pub fn open_in_memory() -> Result<Self, DbError> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, None)
     }
 
-    fn init(mut conn: Connection) -> Result<Self, DbError> {
+    fn init(mut conn: Connection, backups: Option<&Backups>) -> Result<Self, DbError> {
         conn.busy_timeout(BUSY_TIMEOUT)?;
         conn.pragma_update(None, "foreign_keys", true)?;
-        migrate::run(&mut conn)?;
+        migrate::run(&mut conn, backups)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })

@@ -96,6 +96,19 @@ async fn without_nonce_no_proof() {
 }
 
 #[tokio::test]
+async fn version_is_the_release_version() {
+    let mut hub = TestHub::new();
+    let mut config = (*hub.state.config).clone();
+    config.release_version = "0.2.1".into();
+    hub.state.config = Arc::new(config);
+    for uri in ["/v2/hub", "/healthz"] {
+        let (status, body) = get(&hub, uri).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["version"], "0.2.1", "{uri}");
+    }
+}
+
+#[tokio::test]
 async fn proof_verifies_over_the_exact_message() {
     let hub = with_public_url(TestHub::new(), PUBLIC_URL);
     let nonce = [0x42; 32];

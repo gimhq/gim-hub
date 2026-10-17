@@ -22,10 +22,10 @@ use crate::{
     summary = "Liveness probe",
     responses((status = 200, description = "Hub is up", body = Health)),
 )]
-pub async fn healthz() -> Json<Health> {
+pub async fn healthz(State(state): State<AppState>) -> Json<Health> {
     Json(Health {
         status: HealthStatus::Ok,
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: state.config.release_version.clone(),
     })
 }
 
@@ -81,7 +81,7 @@ pub async fn get_hub(
     Ok(Json(HubInfo {
         hub_id: state.hub.hub_id().to_string(),
         hub_root_pubkey: STANDARD.encode(state.hub.signing_key().verifying_key().as_bytes()),
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: state.config.release_version.clone(),
         public_url,
         proof,
     }))

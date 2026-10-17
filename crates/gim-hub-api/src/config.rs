@@ -53,6 +53,10 @@ pub struct Config {
     /// removed this hub from their hosting record is kept before the purge
     /// (docs/multihoming.md §7.3). Only used with federation.
     pub unhosted_grace_hours: u32,
+    /// The release version reported by `GET /healthz` and `GET /v2/hub`:
+    /// `LODE_ACTIVE_VERSION` when supervised by lode, else the package
+    /// version (see [`release_version`]).
+    pub release_version: String,
 }
 
 /// Invalid configuration value.
@@ -76,7 +80,9 @@ impl Config {
     ) -> Result<Self, ConfigError> {
         let vars: HashMap<String, String> = vars
             .into_iter()
-            .filter(|(name, value)| name.starts_with("GIM_HUB_") && !value.is_empty())
+            .filter(|(name, value)| {
+                (name.starts_with("GIM_HUB_") || name == "LODE_ACTIVE_VERSION") && !value.is_empty()
+            })
             .collect();
         let get = |name: &str| vars.get(name).map(String::as_str);
 
@@ -141,6 +147,7 @@ impl Config {
             trust_forwarded_for: parse(get, "GIM_HUB_TRUST_FORWARDED_FOR", false, None)?,
             push: push_config(get)?,
             unhosted_grace_hours: parse(get, "GIM_HUB_UNHOSTED_GRACE_HOURS", 168, Some(1))?,
+            release_version: release_version(get("LODE_ACTIVE_VERSION")),
             public_url,
             data_dir,
             database_path,
@@ -156,6 +163,15 @@ impl Config {
     pub fn blobs_dir(&self) -> PathBuf {
         self.data_dir.join("blobs")
     }
+}
+
+/// The release version: `lode_active_version` (`LODE_ACTIVE_VERSION`, the
+/// version lode launched) when set and non-empty, else the package version.
+pub fn release_version(lode_active_version: Option<&str>) -> String {
+    lode_active_version
+        .filter(|v| !v.is_empty())
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+        .to_owned()
 }
 
 /// Push settings; `GIM_HUB_PUSH_WEBHOOK_URL` needs a valid
@@ -310,6 +326,20 @@ mod tests {
     }
 
     #[test]
+    fn release_version_follows_lode() {
+        let version =
+            |pairs: &[(&str, &str)]| Config::from_vars(vars(pairs)).unwrap().release_version;
+        assert_eq!(version(&[]), env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            version(&[("LODE_ACTIVE_VERSION", "")]),
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(version(&[("LODE_ACTIVE_VERSION", "0.2.1")]), "0.2.1");
+        assert_eq!(release_version(None), env!("CARGO_PKG_VERSION"));
+        assert_eq!(release_version(Some("1.0.0-rc.1")), "1.0.0-rc.1");
+    }
+
+    #[test]
     fn defaults() {
         let config = Config::from_vars(vars(&[("GIM_HUB_LISTEN", "")])).unwrap();
         assert_eq!(config.listen, "0.0.0.0:8080".parse().unwrap());
@@ -330,6 +360,7 @@ mod tests {
         assert_eq!(config.hub_key_path(), PathBuf::from("./data/hub_key"));
         assert_eq!(config.blobs_dir(), PathBuf::from("./data/blobs"));
         assert_eq!(config.push, PushConfig::default());
+        assert_eq!(config.release_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(config.public_url, None);
     }
 

@@ -1,8 +1,10 @@
 //! Embedded, ordered schema migrations tracked in `PRAGMA user_version`.
 
-use rusqlite::Connection;
+use std::{io, path::Path, time::SystemTime};
 
-use crate::DbError;
+use rusqlite::{Connection, OpenFlags, MAIN_DB};
+
+use crate::{Backups, DbError};
 
 /// Migration `i` upgrades `user_version` from `i` to `i + 1`. Never edit a
 /// released migration; append a new one.
@@ -23,13 +25,40 @@ const MIGRATIONS: &[&str] = &[
 /// Schema version after all migrations.
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
-pub(crate) fn run(conn: &mut Connection) -> Result<(), DbError> {
-    let current: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+/// Pre-migration backups kept by [`Db::open_with_backups`](crate::Db::open_with_backups).
+const KEEP_BACKUPS: usize = 3;
+
+/// Fails if the database file at `path` has a newer schema than this
+/// binary knows. Opens it read-only, so nothing is written.
+pub(crate) fn check_supported(path: &Path) -> Result<(), DbError> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    ensure_supported(user_version(&conn)?)
+}
+
+fn user_version(conn: &Connection) -> Result<i64, DbError> {
+    Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?)
+}
+
+fn ensure_supported(current: i64) -> Result<(), DbError> {
     if current > SCHEMA_VERSION {
         return Err(DbError::SchemaTooNew {
             found: current,
             supported: SCHEMA_VERSION,
         });
+    }
+    Ok(())
+}
+
+/// Applies pending migrations; an existing database (schema above 0) is
+/// first copied to `backups`, if given.
+pub(crate) fn run(conn: &mut Connection, backups: Option<&Backups>) -> Result<(), DbError> {
+    let current = user_version(conn)?;
+    ensure_supported(current)?;
+    if let Some(backups) = backups.filter(|_| current > 0 && current < SCHEMA_VERSION) {
+        backup(conn, current, backups)?;
     }
     for (version, sql) in (1..).zip(MIGRATIONS).skip(current as usize) {
         let tx = conn.transaction()?;
@@ -40,9 +69,53 @@ pub(crate) fn run(conn: &mut Connection) -> Result<(), DbError> {
     Ok(())
 }
 
+/// Copies the database to `<dir>/hub-<from>-<release>.db` with SQLite's
+/// online backup, then prunes all but the newest [`KEEP_BACKUPS`].
+fn backup(conn: &Connection, from: i64, backups: &Backups) -> Result<(), DbError> {
+    let release: String = backups
+        .release
+        .chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '+' | '_' => c,
+            _ => '_',
+        })
+        .collect();
+    let path = backups.dir.join(format!("hub-{from}-{release}.db"));
+    let fail = |err: &dyn std::fmt::Display| DbError::Backup(format!("{}: {err}", path.display()));
+    std::fs::create_dir_all(&backups.dir).map_err(|err| fail(&err))?;
+    let tmp = path.with_extension("db.tmp");
+    match std::fs::remove_file(&tmp) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(fail(&err)),
+        _ => {}
+    }
+    conn.backup(MAIN_DB, &tmp, None).map_err(|err| fail(&err))?;
+    std::fs::rename(&tmp, &path).map_err(|err| fail(&err))?;
+    prune_backups(&backups.dir, KEEP_BACKUPS).map_err(|err| fail(&err))
+}
+
+/// Deletes all but the `keep` newest (by modification time, then name)
+/// `hub-*.db` files in `dir`.
+fn prune_backups(dir: &Path, keep: usize) -> io::Result<()> {
+    let mut files: Vec<(SystemTime, String)> = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if name.starts_with("hub-") && name.ends_with(".db") {
+            files.push((entry.metadata()?.modified()?, name));
+        }
+    }
+    files.sort_unstable_by(|a, b| b.cmp(a));
+    for (_, name) in files.into_iter().skip(keep) {
+        std::fs::remove_file(dir.join(name))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{Db, DbError, SCHEMA_VERSION};
+    use crate::{Backups, Db, DbError, SCHEMA_VERSION};
 
     fn user_version(conn: &rusqlite::Connection) -> Result<i64, DbError> {
         Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?)
@@ -457,14 +530,154 @@ mod tests {
         );
     }
 
-    #[test]
-    fn newer_schema_is_rejected() {
+    /// Creates a file database at schema `version` holding one `meta` row.
+    fn database_at(path: &std::path::Path, version: usize) {
+        let mut conn = rusqlite::Connection::open(path).unwrap();
+        conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))
+            .unwrap();
+        for (v, sql) in (1..).zip(&super::MIGRATIONS[..version]) {
+            let tx = conn.transaction().unwrap();
+            tx.execute_batch(sql).unwrap();
+            tx.pragma_update(None, "user_version", v).unwrap();
+            tx.commit().unwrap();
+        }
+        conn.execute("INSERT INTO meta (key, value) VALUES ('k', 'v')", [])
+            .unwrap();
+    }
+
+    fn backups(dir: &std::path::Path, release: &str) -> Backups {
+        Backups {
+            dir: dir.join("backups"),
+            release: release.into(),
+        }
+    }
+
+    fn file_names(dir: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[tokio::test]
+    async fn existing_database_is_backed_up_before_migrating() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hub.db");
-        let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+        let from = SCHEMA_VERSION as usize - 1;
+        database_at(&path, from);
+        let db = Db::open_with_backups(&path, &backups(dir.path(), "0.2.0")).unwrap();
+        assert_eq!(db.read(user_version).await.unwrap(), SCHEMA_VERSION);
+        drop(db);
+
+        let name = format!("hub-{from}-0.2.0.db");
+        assert_eq!(
+            file_names(&dir.path().join("backups")),
+            std::slice::from_ref(&name)
+        );
+        let copy = rusqlite::Connection::open(dir.path().join("backups").join(name)).unwrap();
+        assert_eq!(user_version(&copy).unwrap(), from as i64);
+        let value: String = copy
+            .query_row("SELECT value FROM meta WHERE key = 'k'", [], |row| {
+                row.get(0)
+            })
             .unwrap();
-        drop(conn);
-        assert!(matches!(Db::open(&path), Err(DbError::SchemaTooNew { .. })));
+        assert_eq!(value, "v");
+    }
+
+    #[test]
+    fn fresh_or_current_database_is_not_backed_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hub.db");
+        let backups = backups(dir.path(), "0.2.0");
+        drop(Db::open_with_backups(&path, &backups).unwrap());
+        drop(Db::open_with_backups(&path, &backups).unwrap());
+        assert!(!backups.dir.exists());
+    }
+
+    #[test]
+    fn only_the_newest_three_backups_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let backups = backups(dir.path(), "0.2.1");
+        std::fs::create_dir_all(&backups.dir).unwrap();
+        let epoch = std::time::SystemTime::UNIX_EPOCH;
+        for (i, name) in [
+            "hub-1-0.1.0.db",
+            "hub-2-0.1.1.db",
+            "hub-3-0.1.2.db",
+            "hub-4-0.1.3.db",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let file = std::fs::File::create(backups.dir.join(name)).unwrap();
+            file.set_modified(epoch + std::time::Duration::from_secs(1_000 + i as u64))
+                .unwrap();
+        }
+        std::fs::write(backups.dir.join("notes.txt"), "kept").unwrap();
+
+        let path = dir.path().join("hub.db");
+        let from = SCHEMA_VERSION as usize - 1;
+        database_at(&path, from);
+        drop(Db::open_with_backups(&path, &backups).unwrap());
+        let mut kept = vec![
+            "hub-3-0.1.2.db".to_owned(),
+            "hub-4-0.1.3.db".to_owned(),
+            format!("hub-{from}-0.2.1.db"),
+            "notes.txt".to_owned(),
+        ];
+        kept.sort();
+        assert_eq!(file_names(&backups.dir), kept);
+    }
+
+    #[test]
+    fn release_is_sanitized_in_backup_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hub.db");
+        database_at(&path, 1);
+        drop(Db::open_with_backups(&path, &backups(dir.path(), "../1.0/x")).unwrap());
+        assert_eq!(
+            file_names(&dir.path().join("backups")),
+            ["hub-1-.._1.0_x.db"]
+        );
+    }
+
+    #[test]
+    fn newer_schema_is_rejected_without_writes() {
+        for wal in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("hub.db");
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            if wal {
+                conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap();
+            }
+            conn.execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES (1);")
+                .unwrap();
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+                .unwrap();
+            drop(conn);
+            let before = std::fs::read(&path).unwrap();
+
+            let err = Db::open(&path).err().unwrap();
+            assert!(matches!(err, DbError::SchemaTooNew { .. }), "{err}");
+            let message = err.to_string();
+            assert!(
+                message.contains(&format!("schema version {}", SCHEMA_VERSION + 1))
+                    && message.contains(&format!("up to {SCHEMA_VERSION}"))
+                    && message.contains("restore a backup or run a newer release"),
+                "{message}"
+            );
+            let backups = backups(dir.path(), "0.2.0");
+            assert!(matches!(
+                Db::open_with_backups(&path, &backups),
+                Err(DbError::SchemaTooNew { .. })
+            ));
+            assert_eq!(std::fs::read(&path).unwrap(), before, "wal={wal}");
+            assert!(!backups.dir.exists());
+        }
     }
 }

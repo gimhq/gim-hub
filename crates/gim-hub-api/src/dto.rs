@@ -87,8 +87,9 @@ pub enum HealthStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Health {
     pub status: HealthStatus,
-    /// Hub version.
-    #[schema(example = "0.1.0")]
+    /// Hub release version: the version the lode supervisor launched
+    /// (`LODE_ACTIVE_VERSION`), else the package version.
+    #[schema(example = "0.2.0")]
     pub version: String,
 }
 
@@ -102,8 +103,9 @@ pub struct HubInfo {
     /// derived from it.
     #[schema(content_encoding = "base64")]
     pub hub_root_pubkey: String,
-    /// Hub version.
-    #[schema(example = "0.1.0")]
+    /// Hub release version: the version the lode supervisor launched
+    /// (`LODE_ACTIVE_VERSION`), else the package version.
+    #[schema(example = "0.2.0")]
     pub version: String,
     /// The hub's canonical client-API base URL (`GIM_HUB_PUBLIC_URL`,
     /// normalized), if configured.
