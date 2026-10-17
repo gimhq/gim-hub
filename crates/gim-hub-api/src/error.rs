@@ -26,6 +26,9 @@ pub enum ApiError {
     DeviceNotActive,
     #[error("{0}")]
     Forbidden(String),
+    /// An admin suspended the user (docs/admin.md): no sign-in.
+    #[error("user is suspended")]
+    UserSuspended,
     #[error("not a member of the group")]
     NotMember,
     #[error("not found")]
@@ -82,9 +85,10 @@ impl ApiError {
             | Self::InvalidChallenge
             | Self::InvalidSignature
             | Self::DeviceNotActive => StatusCode::UNAUTHORIZED,
-            Self::Forbidden(_) | Self::NotMember | Self::HostingRecordRequired => {
-                StatusCode::FORBIDDEN
-            }
+            Self::Forbidden(_)
+            | Self::UserSuspended
+            | Self::NotMember
+            | Self::HostingRecordRequired => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::HandleTaken
             | Self::Conflict(_)
@@ -113,6 +117,7 @@ impl ApiError {
             Self::InvalidDeviceList(_) => "invalid_device_list",
             Self::DeviceNotActive => "device_not_active",
             Self::Forbidden(_) => "forbidden",
+            Self::UserSuspended => "user_suspended",
             Self::NotMember => "not_member",
             Self::NotFound => "not_found",
             Self::HandleTaken => "handle_taken",
@@ -247,6 +252,13 @@ mod tests {
         let (status, body) = render(gim_hub_s2s::HostingError::Required.into()).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body["error"]["code"], "hosting_record_required");
+    }
+
+    #[tokio::test]
+    async fn user_suspended_is_403() {
+        let (status, body) = render(ApiError::UserSuspended).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "user_suspended");
     }
 
     #[tokio::test]

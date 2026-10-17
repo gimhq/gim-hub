@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Run the project checks: fmt, clippy, test.
+# Run the project checks: admin UI gates (scripts/admin-ui.sh check), then
+# fmt, clippy, test.
 #
-# By default the checks run in a rust container (override the image with
-# CHECK_IMAGE). Pass --in-container or set GIM_HUB_CHECK_NATIVE=1 to run the
+# By default the checks run in containers (override the rust image with
+# CHECK_IMAGE). Pass --in-container or set GIM_HUB_CHECK_NATIVE=1 to run only the
 # cargo commands directly (used by CI).
 set -euo pipefail
 
@@ -13,6 +14,8 @@ CMDS='cargo fmt --all --check && cargo clippy --workspace --all-targets --locked
 if [[ "${1:-}" == "--in-container" || "${GIM_HUB_CHECK_NATIVE:-}" == "1" ]]; then
     exec bash -c "$CMDS"
 fi
+
+bash scripts/admin-ui.sh check
 
 IMAGE="${CHECK_IMAGE:-rust:1.99-bookworm}"
 mkdir -p /srv/.tmp/cache/cargo
