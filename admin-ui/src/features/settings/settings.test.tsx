@@ -32,7 +32,7 @@ describe('settings', () => {
 
     const federation = screen.getByText('Federation', { selector: '[data-slot=card-title]' }).closest('[data-slot=card]') as HTMLElement
     expect(within(federation).getAllByRole('listitem').map(li => li.getAttribute('aria-label')))
-      .toEqual(['GIM_HUB_FEDERATION_ENABLED', 'GIM_HUB_P2P_BOOTSTRAP'])
+      .toEqual(['GIM_HUB_FEDERATION', 'GIM_HUB_P2P_BOOTSTRAP'])
   })
 
   it('shows the value, the source and apply badges and the last update', async () => {
@@ -79,6 +79,23 @@ describe('settings', () => {
     expect(await retention.findByText('Saved.')).toBeInTheDocument()
     expect(await retention.findByText('14')).toBeInTheDocument()
     expect(lastMutation()).toEqual({ key: 'PUT /settings/GIM_HUB_EVENT_RETENTION_DAYS', csrf: CSRF, body: { value: 14 } })
+  })
+
+  it('refreshes the overview after a live change', async () => {
+    const user = userEvent.setup()
+    renderApp('/')
+    expect(await screen.findByText('30 days')).toBeInTheDocument()
+    const nav = screen.getByRole('navigation')
+    await user.click(within(nav).getByRole('link', { name: 'Settings' }))
+    const retention = await row('GIM_HUB_EVENT_RETENTION_DAYS')
+    await user.click(retention.getByRole('button', { name: 'Edit' }))
+    const input = retention.getByLabelText('New value for GIM_HUB_EVENT_RETENTION_DAYS')
+    await user.clear(input)
+    await user.type(input, '14')
+    await user.click(retention.getByRole('button', { name: 'Save' }))
+    await retention.findByText('Saved.')
+    await user.click(within(nav).getByRole('link', { name: 'Overview' }))
+    expect(await screen.findByText('14 days')).toBeInTheDocument()
   })
 
   it('shows a 422 message inline and keeps the editor open', async () => {
@@ -140,10 +157,10 @@ describe('settings', () => {
   it('saves a bool with the switch', async () => {
     const user = userEvent.setup()
     renderApp('/settings')
-    const enabled = await row('GIM_HUB_FEDERATION_ENABLED')
+    const enabled = await row('GIM_HUB_FEDERATION')
     expect(enabled.getAllByText('off')).toHaveLength(2)
     await user.click(enabled.getByRole('button', { name: 'Edit' }))
-    const toggle = enabled.getByRole('switch', { name: 'New value for GIM_HUB_FEDERATION_ENABLED' })
+    const toggle = enabled.getByRole('switch', { name: 'New value for GIM_HUB_FEDERATION' })
     expect(toggle).not.toBeChecked()
     await user.click(toggle)
     expect(toggle).toBeChecked()
@@ -229,6 +246,23 @@ describe('settings', () => {
     expect(state.mutations).toEqual([{ key: 'DELETE /settings/GIM_HUB_EVENT_RETENTION_DAYS', csrf: CSRF, body: undefined }])
   })
 
+  it('shows a refused reset (422) inline in the row', async () => {
+    const user = userEvent.setup()
+    state.settings = state.settings.map(s => (s.key === 'GIM_HUB_FEDERATION' ? { ...s, value: true, source: 'stored' } : s))
+    renderApp('/settings')
+    const url = await row('GIM_HUB_PUBLIC_URL')
+    await user.click(url.getByRole('button', { name: 'Reset to default' }))
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Reset to default' }))
+    expect(await url.findByRole('alert')).toHaveTextContent('GIM_HUB_PUBLIC_URL is required when GIM_HUB_FEDERATION is enabled')
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(url.getByText('https://hub.athens.example')).toBeInTheDocument()
+    expect(url.queryByText('Reset to default.')).not.toBeInTheDocument()
+
+    // Editing clears the refused reset.
+    await user.click(url.getByRole('button', { name: 'Edit' }))
+    expect(url.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('shows no restart banner while nothing is pending', async () => {
     renderApp('/settings')
     await screen.findByText('GIM_HUB_PUBLIC_URL')
@@ -259,7 +293,7 @@ describe('settings', () => {
   it('shows the banner after saving a restart setting', async () => {
     const user = userEvent.setup()
     renderApp('/settings')
-    const enabled = await row('GIM_HUB_FEDERATION_ENABLED')
+    const enabled = await row('GIM_HUB_FEDERATION')
     await user.click(enabled.getByRole('button', { name: 'Edit' }))
     await user.click(enabled.getByRole('switch'))
     await user.click(enabled.getByRole('button', { name: 'Save' }))

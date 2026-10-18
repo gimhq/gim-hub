@@ -1,3 +1,4 @@
+import type { QueryClient } from '@tanstack/react-query'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { request } from '@/shared/lib/http'
 
@@ -45,13 +46,22 @@ export function useSettingsQuery() {
   })
 }
 
-// The list carries the global restart_pending flag, so every change refetches it.
+// The list carries the global restart_pending flag, and live settings show up
+// in the overview and the effective configuration, so every change refetches them.
+function invalidateAfterChange(queryClient: QueryClient) {
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: settingsKey }),
+    queryClient.invalidateQueries({ queryKey: ['overview'] }),
+    queryClient.invalidateQueries({ queryKey: ['config'] }),
+  ])
+}
+
 export function useSaveSettingMutation(key: string) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (value: SettingValue) =>
       request<Setting>(`/settings/${encodeURIComponent(key)}`, { method: 'PUT', body: { value } }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: settingsKey }),
+    onSuccess: () => invalidateAfterChange(queryClient),
   })
 }
 
@@ -59,6 +69,6 @@ export function useResetSettingMutation(key: string) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: () => request<Setting>(`/settings/${encodeURIComponent(key)}`, { method: 'DELETE' }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: settingsKey }),
+    onSuccess: () => invalidateAfterChange(queryClient),
   })
 }

@@ -166,6 +166,7 @@ function SettingRow({ item }: { item: Setting }) {
                   size="sm"
                   onClick={() => {
                     setNotice(null)
+                    reset.reset()
                     setEditing(true)
                   }}
                 >
@@ -181,13 +182,23 @@ function SettingRow({ item }: { item: Setting }) {
                     value: formatValue(item, item.default, t),
                   })}
                   confirmLabel={secret ? t('settings.clear') : t('settings.reset')}
+                  // A refused unset (422 when other settings need the value) closes
+                  // the dialog and shows the message in the row, like a PUT error.
                   onConfirm={async () => {
                     setNotice(null)
-                    await reset.mutateAsync()
-                    setNotice(secret ? t('settings.cleared') : t('settings.reset_done'))
+                    try {
+                      await reset.mutateAsync()
+                      setNotice(secret ? t('settings.cleared') : t('settings.reset_done'))
+                    }
+                    catch {}
                   }}
                 />
                 {notice && <span role="status" className="text-sm text-muted-foreground">{notice}</span>}
+                {reset.isError && (
+                  <p role="alert" className="basis-full font-mono text-sm whitespace-pre-wrap text-destructive">
+                    {errorMessage(reset.error, t('common.error_generic'))}
+                  </p>
+                )}
               </div>
             )}
     </li>
