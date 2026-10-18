@@ -59,7 +59,7 @@ pub async fn upload_blob(
     headers: HeaderMap,
     body: Body,
 ) -> Result<(StatusCode, Json<BlobCreated>), ApiError> {
-    let max = state.config.max_blob_bytes;
+    let max = state.config.load().max_blob_bytes;
     let declared = headers
         .get(header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok()?.parse::<u64>().ok());
@@ -67,7 +67,7 @@ pub async fn upload_blob(
         return Err(ApiError::PayloadTooLarge);
     }
 
-    let dir = state.config.blobs_dir();
+    let dir = state.config.load().blobs_dir();
     tokio::fs::create_dir_all(&dir).await.map_err(internal)?;
     let blob_id = new_blob_id(state.hub.hub_id())?;
     let name = s2s_blob::file_name(&blob_id);
@@ -161,7 +161,11 @@ pub async fn download_blob(
                 .read(move |conn| blobs::get(conn, &lookup_id))
                 .await?
                 .ok_or(ApiError::NotFound)?;
-            state.config.blobs_dir().join(s2s_blob::file_name(&blob_id))
+            state
+                .config
+                .load()
+                .blobs_dir()
+                .join(s2s_blob::file_name(&blob_id))
         }
     };
     serve_file(&path, &headers).await
@@ -289,7 +293,11 @@ async fn remote_copy(
     origin: HubId,
     blob_id: String,
 ) -> Result<PathBuf, ApiError> {
-    let path = state.config.blobs_dir().join(s2s_blob::file_name(&blob_id));
+    let path = state
+        .config
+        .load()
+        .blobs_dir()
+        .join(s2s_blob::file_name(&blob_id));
     if cached(state, &blob_id).await? {
         return Ok(path);
     }
@@ -345,7 +353,7 @@ async fn fetch_remote(
     blob_id: &str,
     path: &FsPath,
 ) -> Result<(), ApiError> {
-    let dir = state.config.blobs_dir();
+    let dir = state.config.load().blobs_dir();
     tokio::fs::create_dir_all(&dir).await.map_err(internal)?;
     let mut raw = [0u8; 8];
     getrandom::fill(&mut raw).map_err(internal)?;
@@ -404,7 +412,7 @@ async fn download_to(
         .await
         .map_err(|err| fetch_error(origin, blob_id, err))?;
         let total = *size.get_or_insert(chunk.size);
-        if total > state.config.max_blob_bytes {
+        if total > state.config.load().max_blob_bytes {
             return Err(refused("blob exceeds the size limit"));
         }
         if chunk.size != total || chunk.offset != offset {
@@ -444,7 +452,7 @@ pub fn register_blob_op(state: &AppState, service: &FederationService) -> Arc<Bl
     let blobs = BlobService::new(
         state.db.clone(),
         state.hub.hub_id().clone(),
-        state.config.blobs_dir(),
+        state.config.load().blobs_dir(),
     );
     blobs.register(service);
     blobs

@@ -446,7 +446,7 @@ pub fn register_hosting_record_op(
 /// `GIM_HUB_UNHOSTED_GRACE_HOURS` ago (multihoming.md §7.3), keeping their
 /// hosting records as tombstones. Returns how many users were purged.
 pub async fn purge_removed_users(state: &AppState) -> Result<usize, DbError> {
-    let grace = i64::from(state.config.unhosted_grace_hours) * HOUR_MS;
+    let grace = i64::from(state.config.load().unhosted_grace_hours) * HOUR_MS;
     let cutoff = state.clock.now_ms().saturating_sub(grace);
     let purged = state
         .db

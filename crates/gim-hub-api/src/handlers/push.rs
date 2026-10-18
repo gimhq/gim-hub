@@ -96,7 +96,7 @@ pub async fn get_push_log(
     State(state): State<AppState>,
     Query(query): Query<PushLogQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    if !state.config.push.log_endpoint {
+    if !state.config.load().push.log_endpoint {
         return Err(ApiError::NotFound);
     }
     let notifications = state.push.log().recent(query.device_id.as_deref());

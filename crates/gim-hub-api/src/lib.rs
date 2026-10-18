@@ -12,6 +12,7 @@ pub mod hub;
 pub mod mls;
 pub mod notifier;
 pub mod ratelimit;
+pub mod settings;
 pub mod state;
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -21,7 +22,7 @@ pub use config::Config;
 pub use error::ApiError;
 pub use hub::HubIdentity;
 pub use notifier::Notifier;
-pub use state::{AppState, Clock};
+pub use state::{AppState, Clock, SharedConfig};
 
 use axum::{
     routing::{get, post, put},

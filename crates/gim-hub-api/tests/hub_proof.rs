@@ -1,7 +1,5 @@
 //! GET /v2/hub: `public_url` and the proof of possession for `?nonce=`.
 
-use std::sync::Arc;
-
 use axum::{
     body::{to_bytes, Body},
     http::{Request, StatusCode},
@@ -18,10 +16,10 @@ use tower::ServiceExt;
 
 const PUBLIC_URL: &str = "https://hub.example.eu";
 
-fn with_public_url(mut hub: TestHub, public_url: &str) -> TestHub {
-    let mut config = (*hub.state.config).clone();
+fn with_public_url(hub: TestHub, public_url: &str) -> TestHub {
+    let mut config = (*hub.state.config.load()).clone();
     config.public_url = Some(public_url.to_owned());
-    hub.state.config = Arc::new(config);
+    hub.state.config.store(config);
     hub
 }
 
@@ -97,10 +95,10 @@ async fn without_nonce_no_proof() {
 
 #[tokio::test]
 async fn version_is_the_release_version() {
-    let mut hub = TestHub::new();
-    let mut config = (*hub.state.config).clone();
+    let hub = TestHub::new();
+    let mut config = (*hub.state.config.load()).clone();
     config.release_version = "0.2.1".into();
-    hub.state.config = Arc::new(config);
+    hub.state.config.store(config);
     for uri in ["/v2/hub", "/healthz"] {
         let (status, body) = get(&hub, uri).await;
         assert_eq!(status, StatusCode::OK);

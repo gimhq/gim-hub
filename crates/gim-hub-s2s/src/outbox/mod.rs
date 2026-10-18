@@ -193,7 +193,7 @@ struct Inner {
     db: Db,
     federation: Arc<dyn Federation>,
     source: Arc<dyn OutboxSource>,
-    config: OutboxConfig,
+    config: Mutex<OutboxConfig>,
     clock: Clock,
     wake: Notify,
     /// Peers with a running drain task.
@@ -215,7 +215,7 @@ impl Drop for Inner {
 impl std::fmt::Debug for Outbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Outbox")
-            .field("config", &self.inner.config)
+            .field("config", &self.config())
             .finish_non_exhaustive()
     }
 }
@@ -245,7 +245,7 @@ impl Outbox {
                 db,
                 federation,
                 source,
-                config,
+                config: Mutex::new(config),
                 clock,
                 wake: Notify::new(),
                 active: Mutex::default(),
@@ -254,6 +254,17 @@ impl Outbox {
                 tasks: Mutex::default(),
             }),
         }
+    }
+
+    /// The current settings.
+    pub fn config(&self) -> OutboxConfig {
+        *self.inner.config.lock().expect("config lock")
+    }
+
+    /// Changes the TTL, backlog caps and maximum backoff; they apply to the
+    /// next enqueue and retry. The sweep interval of a started worker stays.
+    pub fn set_config(&self, config: OutboxConfig) {
+        *self.inner.config.lock().expect("config lock") = config;
     }
 
     /// Starts the worker. `peer_events` (the transport's
@@ -343,7 +354,7 @@ impl Outbox {
     /// Logs `error` at most hourly per peer while its backlog is over 80 %
     /// of either cap.
     fn check_backlog(&self, peer: &str, backlog: outbox::Backlog, now: i64) {
-        let limits = self.inner.config.limits();
+        let limits = self.config().limits();
         let over = |value: i64, max: i64| value.saturating_mul(5) > max.saturating_mul(4);
         if !over(backlog.entries, limits.max_entries) && !over(backlog.bytes, limits.max_bytes) {
             return;
@@ -373,7 +384,7 @@ impl OutboxSender for Outbox {
     ) -> Result<(), DbError> {
         let now = self.now();
         let peer = peer.as_str();
-        let enqueued = outbox::enqueue(tx, peer, entry, &self.inner.config.limits(), now)?;
+        let enqueued = outbox::enqueue(tx, peer, entry, &self.config().limits(), now)?;
         self.count_dropped(peer, DropReason::Evicted, enqueued.evicted as u64);
         self.check_backlog(peer, enqueued.backlog, now);
         // The worker reads through the same `Db`, so it sees the entry once

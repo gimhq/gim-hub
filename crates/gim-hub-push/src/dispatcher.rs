@@ -149,8 +149,8 @@ struct Queue {
 
 struct Inner {
     db: Db,
-    providers: Vec<Arc<dyn PushProvider>>,
-    settings: DispatcherSettings,
+    providers: RwLock<Vec<Arc<dyn PushProvider>>>,
+    settings: RwLock<DispatcherSettings>,
     log: PushLog,
     gate: RwLock<Option<PushGate>>,
     queue: Mutex<Queue>,
@@ -182,8 +182,8 @@ impl Dispatcher {
         Self {
             inner: Arc::new(Inner {
                 db,
-                providers,
-                settings,
+                providers: RwLock::new(providers),
+                settings: RwLock::new(settings),
                 log,
                 gate: RwLock::new(None),
                 queue: Mutex::new(Queue::default()),
@@ -201,6 +201,34 @@ impl Dispatcher {
             .gate
             .write()
             .unwrap_or_else(PoisonError::into_inner) = Some(gate);
+    }
+
+    /// Applies changed push settings (`GIM_HUB_PUSH_*`) at once: the
+    /// providers are rebuilt for `config` (sending as `hub_id`) and the
+    /// membership, minimal and queue capacity options replaced. Queued
+    /// pushes stay queued; the poll interval and workers of a started
+    /// dispatcher stay.
+    pub fn reconfigure(&self, config: &PushConfig, hub_id: &str) -> Result<(), String> {
+        let providers = crate::build_providers(config, self.inner.log.clone(), hub_id)?;
+        *self
+            .inner
+            .providers
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = providers;
+        let mut settings = self
+            .inner
+            .settings
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        settings.member_events = config.member_events;
+        settings.minimal = config.minimal;
+        settings.queue_capacity = config.queue_capacity;
+        Ok(())
+    }
+
+    /// The current settings.
+    pub fn settings(&self) -> DispatcherSettings {
+        self.inner.settings()
     }
 
     /// The `log` provider's sink.
@@ -230,8 +258,9 @@ impl Dispatcher {
     pub fn start(&self) -> Vec<JoinHandle<()>> {
         let mut tasks = Vec::new();
         let tail = self.clone();
+        let settings = self.settings();
         tasks.push(tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tail.inner.settings.poll_interval);
+            let mut interval = tokio::time::interval(settings.poll_interval);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 interval.tick().await;
@@ -240,7 +269,7 @@ impl Dispatcher {
                 }
             }
         }));
-        for _ in 0..self.inner.settings.workers.max(1) {
+        for _ in 0..settings.workers.max(1) {
             let inner = self.inner.clone();
             tasks.push(tokio::spawn(async move {
                 loop {
@@ -259,10 +288,8 @@ impl Dispatcher {
         let mut queued = 0;
         loop {
             let after = *cursor;
-            let (member_events, minimal) = (
-                self.inner.settings.member_events,
-                self.inner.settings.minimal,
-            );
+            let settings = self.settings();
+            let (member_events, minimal) = (settings.member_events, settings.minimal);
             let (last, read, jobs) = self
                 .inner
                 .db
@@ -290,6 +317,13 @@ impl Dispatcher {
 }
 
 impl Inner {
+    fn settings(&self) -> DispatcherSettings {
+        self.settings
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     fn admits(&self, job: &Job) -> bool {
         let gate = self.gate.read().unwrap_or_else(PoisonError::into_inner);
         gate.as_ref()
@@ -339,12 +373,13 @@ impl Inner {
             *pending = job;
             return Insert::Replaced;
         }
-        if queue.pending.len() >= self.settings.queue_capacity {
+        let capacity = self.settings().queue_capacity;
+        if queue.pending.len() >= capacity {
             bump(&self.metrics.dropped);
             tracing::warn!(
                 user_id = %key.0,
                 device_id = %key.1,
-                capacity = self.settings.queue_capacity,
+                capacity,
                 "push: queue full, notification dropped"
             );
             return Insert::Rejected;
@@ -379,11 +414,14 @@ impl Inner {
             job.notification.sent_at = now_ms();
         }
         let registration = &job.registration;
-        let Some(provider) = self
+        let provider = self
             .providers
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .find(|p| p.handles(&registration.provider))
-        else {
+            .cloned();
+        let Some(provider) = provider else {
             bump(&self.metrics.skipped);
             tracing::info!(
                 provider = %registration.provider,
@@ -416,10 +454,10 @@ impl Inner {
                 }
             }
             Err(PushError::Retryable(reason, retry_after))
-                if job.attempt + 1 < self.settings.max_attempts =>
+                if job.attempt + 1 < self.settings().max_attempts =>
             {
                 bump(&self.metrics.retried);
-                let backoff = self.settings.retry_base * 2u32.saturating_pow(job.attempt);
+                let backoff = self.settings().retry_base * 2u32.saturating_pow(job.attempt);
                 let delay =
                     retry_after.map_or(backoff, |after| backoff.max(after.min(MAX_RETRY_AFTER)));
                 tracing::warn!(
@@ -974,6 +1012,51 @@ mod tests {
         assert_eq!(d.run_pending().await, 1);
         let m = d.metrics();
         assert_eq!((m.dropped, m.skipped, m.sent), (1, 1, 0));
+    }
+
+    #[tokio::test]
+    async fn reconfigure_applies_options_and_providers_at_once() {
+        let db = db_with_devices(&[("u2", "d1", "apns"), ("u2", "d2", "apns")]).await;
+        let d = dispatcher(&db, Vec::new(), DispatcherSettings::default());
+        append(&db, "d1", "group.member_added", member_added(1)).await;
+        assert_eq!(d.poll_once().await.unwrap(), 0);
+
+        let config = PushConfig {
+            member_events: true,
+            minimal: true,
+            queue_capacity: 1,
+            webhook: Some(
+                crate::WebhookConfig::new(
+                    "http://127.0.0.1:9/hook",
+                    Some(&"s".repeat(32)),
+                    Duration::from_secs(1),
+                )
+                .unwrap(),
+            ),
+            ..PushConfig::default()
+        };
+        d.reconfigure(&config, "h1").unwrap();
+        let settings = d.settings();
+        assert!(settings.member_events && settings.minimal);
+        assert_eq!(settings.queue_capacity, 1);
+        let names: Vec<_> = d
+            .inner
+            .providers
+            .read()
+            .unwrap()
+            .iter()
+            .map(|p| p.name())
+            .collect();
+        assert_eq!(names, ["log", "webhook"]);
+        append(&db, "d1", "group.member_added", member_added(2)).await;
+        append(&db, "d2", "group.member_added", member_added(2)).await;
+        // Member events are pushed now; the second device overflows.
+        assert_eq!(d.poll_once().await.unwrap(), 1);
+        assert_eq!(d.metrics().dropped, 1);
+
+        d.reconfigure(&PushConfig::default(), "h1").unwrap();
+        assert_eq!(d.settings(), DispatcherSettings::default());
+        assert_eq!(d.inner.providers.read().unwrap().len(), 1);
     }
 
     #[tokio::test]

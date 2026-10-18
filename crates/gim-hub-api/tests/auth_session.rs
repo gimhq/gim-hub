@@ -3,8 +3,6 @@
 //! `identity.json`), the hub-proposed `auth-v2.json` and freshly signed
 //! AuthResponses.
 
-use std::sync::Arc;
-
 use axum::{
     body::{to_bytes, Body},
     http::{header, Request, StatusCode},
@@ -140,10 +138,10 @@ async fn issue_vector_challenge(hub: &TestHub) {
 }
 
 /// `hub` serving the client API at `public_url`.
-fn with_public_url(mut hub: TestHub, public_url: &str) -> TestHub {
-    let mut config = (*hub.state.config).clone();
+fn with_public_url(hub: TestHub, public_url: &str) -> TestHub {
+    let mut config = (*hub.state.config.load()).clone();
     config.public_url = Some(public_url.to_owned());
-    hub.state.config = Arc::new(config);
+    hub.state.config.store(config);
     hub
 }
 

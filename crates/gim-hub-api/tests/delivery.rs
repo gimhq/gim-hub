@@ -185,9 +185,9 @@ async fn events(hub: &TestHub, token: &str, query: &str) -> Reply {
 }
 
 fn with_config(hub: &mut TestHub, edit: impl FnOnce(&mut Config)) {
-    let mut config = (*hub.state.config).clone();
+    let mut config = (*hub.state.config.load()).clone();
     edit(&mut config);
-    hub.state.config = Arc::new(config);
+    hub.state.config.store(config);
 }
 
 /// Alice (u1) with devices d1 and d2, Bob (u2) with d1, all in one group.
@@ -787,12 +787,13 @@ async fn blob_roundtrip_with_ranges() {
     assert!(hub
         .state
         .config
+        .load()
         .blobs_dir()
         .join(blob_id.replace('/', "_"))
         .is_file());
     // No temp files are left behind.
     assert_eq!(
-        std::fs::read_dir(hub.state.config.blobs_dir())
+        std::fs::read_dir(hub.state.config.load().blobs_dir())
             .unwrap()
             .count(),
         1
@@ -877,7 +878,7 @@ async fn blob_size_limit() {
     assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
     // Only the first, accepted blob remains; the partial upload was removed.
     assert_eq!(
-        std::fs::read_dir(hub.state.config.blobs_dir())
+        std::fs::read_dir(hub.state.config.load().blobs_dir())
             .unwrap()
             .count(),
         1
