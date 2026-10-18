@@ -9,14 +9,15 @@ use gim_hub_proto::s2s::{
     DeliverWelcomeRequest, DeliverWelcomeResponse, ErrorCode,
 };
 
-use super::{internal, owner_of, GroupService};
+use super::{internal, not_admitted, owner_of, GroupService};
 use crate::{
     federation::{error, OpResult},
     hosting::HostingError,
 };
 
-/// `DeliverWelcome` on the recipient's hub (§3.7): the caller owns the gid
-/// and this hub hosts the recipient.
+/// `DeliverWelcome` on the recipient's hub (§3.7): the caller owns the gid,
+/// this hub hosts the recipient and the user policy admits the inviting
+/// sender.
 pub(super) async fn handle(
     service: &GroupService,
     caller: &HubId,
@@ -39,6 +40,9 @@ pub(super) async fn handle(
         Ok(_) => {}
         Err(HostingError::Db(err)) => return Err(internal(&err)),
         Err(_) => return Err(error(ErrorCode::NotFound, "recipient is not hosted here")),
+    }
+    if !(service.admitted)(&request.sender_user_id) {
+        return Err(not_admitted());
     }
     service.groups.deliver_welcome(request).await?;
     Ok(OpOutput::DeliverWelcome(DeliverWelcomeResponse {}))

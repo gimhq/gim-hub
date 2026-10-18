@@ -29,6 +29,15 @@ pub enum ApiError {
     /// An admin suspended the user (docs/admin.md): no sign-in.
     #[error("user is suspended")]
     UserSuspended,
+    /// The hub's user policy does not admit the user
+    /// (docs/operations.md, "User policy"): no registration, no sign-in.
+    #[error("user is not admitted on this hub")]
+    UserNotAdmitted,
+    /// The owning hub of a group, or the target user's hub, refused the
+    /// request because its user policy does not admit the caller
+    /// (S2S `UNAUTHORIZED`, `client_code` `user_not_admitted`).
+    #[error("a peer hub does not admit this user")]
+    NotAdmittedByPeer,
     #[error("not a member of the group")]
     NotMember,
     #[error("not found")]
@@ -87,6 +96,8 @@ impl ApiError {
             | Self::DeviceNotActive => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_)
             | Self::UserSuspended
+            | Self::UserNotAdmitted
+            | Self::NotAdmittedByPeer
             | Self::NotMember
             | Self::HostingRecordRequired => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
@@ -118,6 +129,8 @@ impl ApiError {
             Self::DeviceNotActive => "device_not_active",
             Self::Forbidden(_) => "forbidden",
             Self::UserSuspended => "user_suspended",
+            Self::UserNotAdmitted => "user_not_admitted",
+            Self::NotAdmittedByPeer => "not_admitted_by_peer",
             Self::NotMember => "not_member",
             Self::NotFound => "not_found",
             Self::HandleTaken => "handle_taken",
@@ -259,6 +272,22 @@ mod tests {
         let (status, body) = render(ApiError::UserSuspended).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body["error"]["code"], "user_suspended");
+    }
+
+    #[tokio::test]
+    async fn user_policy_errors_are_403() {
+        let (status, body) = render(ApiError::UserNotAdmitted).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            body,
+            json!({ "error": { "code": "user_not_admitted", "message": "user is not admitted on this hub" } })
+        );
+        let (status, body) = render(ApiError::NotAdmittedByPeer).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            body,
+            json!({ "error": { "code": "not_admitted_by_peer", "message": "a peer hub does not admit this user" } })
+        );
     }
 
     #[tokio::test]

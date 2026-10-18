@@ -56,6 +56,8 @@ pub struct Overview {
     pub counts: Counts,
     pub push: PushCounters,
     pub event_retention_days: u32,
+    /// The user policy mode in force: `open`, `allow` or `deny`.
+    pub user_policy: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -275,6 +277,53 @@ pub struct AllowlistUpdate {
     /// New file contents: one `hub_id [multiaddr ...]` per line, `#`
     /// comments.
     pub text: String,
+}
+
+/// The user policy: the mode and the user list (docs/operations.md, "User
+/// policy").
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct UserPolicy {
+    /// `open`, `allow` or `deny`: the effective `GIM_HUB_USER_POLICY`.
+    pub mode: String,
+    /// Where the mode comes from: `env` (read-only), `stored` or `default`.
+    pub mode_source: String,
+    /// Users of this hub the mode in force does not admit (they cannot sign
+    /// in). Always 0 in `open` mode.
+    pub not_admitted_users: i64,
+    /// The listed users, by user ID. Editable in every mode; the mode
+    /// decides whether and how the list is enforced.
+    pub entries: Vec<UserPolicyEntry>,
+}
+
+/// A listed user.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct UserPolicyEntry {
+    pub user_id: String,
+    /// The user's handle on this hub, if any.
+    pub handle: Option<String>,
+    pub added_at: i64,
+    /// `token`, `header:<identity>` or `cli`.
+    pub added_by: String,
+    pub note: Option<String>,
+}
+
+/// PUT /admin/api/users/policy body.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct UserPolicyUpdate {
+    /// The whole list: one user ID per line; `#` starts a comment, blank
+    /// lines are skipped.
+    pub text: String,
+}
+
+/// POST /admin/api/users/policy/entries body: exactly one of `user_id` and
+/// `handle`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct UserPolicyAdd {
+    pub user_id: Option<String>,
+    /// A handle on this hub (a leading `@` is ignored), resolved to its
+    /// user ID.
+    pub handle: Option<String>,
+    pub note: Option<String>,
 }
 
 /// lode status. Only `supervised` when the hub does not run under lode.

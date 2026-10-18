@@ -50,9 +50,10 @@ Resending the same `client_id` from the same device returns the stored message w
 emits nothing. A decoded message larger than the hub limit (default 262144 bytes) fails with 413.\n\n\
 For a group owned by another hub (federation), this hub forwards the message to the owning hub, \
 which assigns the `seq`; the response is the sequenced message. This needs the caller's hosting \
-record listing this hub (403 `hosting_record_required`); when the owning hub refuses the request \
-the result is 502 `peer_refused`, when it cannot be reached 503 `peer_unavailable` with \
-`Retry-After` (retry with the same `client_id`).",
+record listing this hub (403 `hosting_record_required`); when the owning hub's user policy does \
+not admit the caller the result is 403 `not_admitted_by_peer` (not retryable), when the owning hub \
+refuses the request otherwise 502 `peer_refused`, when it cannot be reached 503 \
+`peer_unavailable` with `Retry-After` (retry with the same `client_id`).",
     params(("gid" = String, Path, description = "Group ID, percent-encoded (`/` as `%2F`)", example = "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq%2Fhf4caruf7nbxzmwh5wvgefz6pa")),
     request_body = SendMessageRequest,
     security(("bearerAuth" = [])),
@@ -61,7 +62,7 @@ the result is 502 `peer_refused`, when it cannot be reached 503 `peer_unavailabl
         (status = 201, description = "Message stored", body = Message),
         (status = 400, description = "Validation failed (`validation_failed`)", body = Error),
         (status = 401, description = "Missing or invalid bearer token (`unauthorized`)", body = Error),
-        (status = 403, description = "Caller is not a member of the group (`not_member`), or the group is owned by another hub and the caller has no valid hosting record listing this hub (`hosting_record_required`)", body = Error),
+        (status = 403, description = "Caller is not a member of the group (`not_member`), or the group is owned by another hub and the caller has no valid hosting record listing this hub (`hosting_record_required`) or the owning hub's user policy does not admit the caller (`not_admitted_by_peer`)", body = Error),
         (status = 404, description = "Not found (`not_found`)", body = Error),
         (status = 409, description = "Message epoch is not the group epoch (`stale_epoch`)", body = StaleEpochError),
         (status = 413, description = "Payload too large (`payload_too_large`)", body = Error),

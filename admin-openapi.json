@@ -1194,6 +1194,283 @@
         ]
       }
     },
+    "/admin/api/users/policy": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "The user policy",
+        "description": "The mode in force (`GIM_HUB_USER_POLICY`: `open`, `allow` or `deny`) with its source, the number of users of this hub it does not admit, and the user list (table `user_policy_list`) with each user's handle. The mode is changed through the settings API (PUT /admin/api/settings/GIM_HUB_USER_POLICY), unless the environment sets it.",
+        "operationId": "get_user_policy",
+        "responses": {
+          "200": {
+            "description": "The user policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserPolicy"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Replace the user list",
+        "description": "Replaces the whole list with `text`: one user ID per line, `#` starts a comment, blank lines are skipped. Every line is validated with the user ID parser; on an invalid line nothing is stored (422, the message names the line number). Users that stay listed keep their `added_at`, `added_by` and `note`. Applied at once: users the policy no longer admits lose their sessions and pending sign-in challenges. Editable in every mode. Audited as `users_policy_update` (target `N entries`).",
+        "operationId": "put_user_policy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserPolicyUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Replaced and applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserPolicy"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid line, e.g. `line 3: invalid user ID ...` (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/users/policy/entries": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Add a user to the list",
+        "description": "Adds one user by `user_id` (validated with the user ID parser) or by `handle` (a handle on this hub, resolved to its user ID; a leading `@` is ignored), with an optional `note`. Applied at once, as for PUT. Audited as `users_policy_add` (target the user ID).",
+        "operationId": "add_user_policy_entry",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserPolicyAdd"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Added and applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserPolicy"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body, or not exactly one of `user_id` and `handle` (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown handle (`not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The user is already listed (`conflict`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid user ID (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/users/policy/entries/{user_id}": {
+      "delete": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Remove a user from the list",
+        "description": "Applied at once, as for PUT. Audited as `users_policy_remove` (target the user ID).",
+        "operationId": "remove_user_policy_entry",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Removed and applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserPolicy"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The user is not listed (`not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
     "/admin/api/users/{user_id}": {
       "get": {
         "tags": [
@@ -1976,7 +2253,8 @@
           "storage",
           "counts",
           "push",
-          "event_retention_days"
+          "event_retention_days",
+          "user_policy"
         ],
         "properties": {
           "counts": {
@@ -2013,6 +2291,10 @@
           "uptime_seconds": {
             "type": "integer",
             "format": "int64"
+          },
+          "user_policy": {
+            "type": "string",
+            "description": "The user policy mode in force: `open`, `allow` or `deny`."
           },
           "version": {
             "type": "string",
@@ -2446,6 +2728,111 @@
             "description": "Pass as `cursor` for the next page; `null` on the last page."
           }
         }
+      },
+      "UserPolicy": {
+        "type": "object",
+        "description": "The user policy: the mode and the user list (docs/operations.md, \"User\npolicy\").",
+        "required": [
+          "mode",
+          "mode_source",
+          "not_admitted_users",
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserPolicyEntry"
+            },
+            "description": "The listed users, by user ID. Editable in every mode; the mode\ndecides whether and how the list is enforced."
+          },
+          "mode": {
+            "type": "string",
+            "description": "`open`, `allow` or `deny`: the effective `GIM_HUB_USER_POLICY`."
+          },
+          "mode_source": {
+            "type": "string",
+            "description": "Where the mode comes from: `env` (read-only), `stored` or `default`."
+          },
+          "not_admitted_users": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Users of this hub the mode in force does not admit (they cannot sign\nin). Always 0 in `open` mode."
+          }
+        }
+      },
+      "UserPolicyAdd": {
+        "type": "object",
+        "description": "POST /admin/api/users/policy/entries body: exactly one of `user_id` and\n`handle`.",
+        "properties": {
+          "handle": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A handle on this hub (a leading `@` is ignored), resolved to its\nuser ID."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UserPolicyEntry": {
+        "type": "object",
+        "description": "A listed user.",
+        "required": [
+          "user_id",
+          "added_at",
+          "added_by"
+        ],
+        "properties": {
+          "added_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "added_by": {
+            "type": "string",
+            "description": "`token`, `header:<identity>` or `cli`."
+          },
+          "handle": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The user's handle on this hub, if any."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_id": {
+            "type": "string"
+          }
+        }
+      },
+      "UserPolicyUpdate": {
+        "type": "object",
+        "description": "PUT /admin/api/users/policy body.",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The whole list: one user ID per line; `#` starts a comment, blank\nlines are skipped."
+          }
+        }
       }
     },
     "securitySchemes": {
@@ -2468,7 +2855,7 @@
     },
     {
       "name": "users",
-      "description": "Users, devices, sessions and handles"
+      "description": "Users, devices, sessions, handles and the user policy"
     },
     {
       "name": "federation",

@@ -454,6 +454,11 @@ pub struct ClaimKeyPackagesResponse {
     pub missing: Vec<ClaimTarget>,
     /// Targets on another hub that could not be reached, refused, or timed out (retryable).
     pub unavailable: Vec<ClaimTarget>,
+    /// Targets on another hub whose user policy does not admit the caller (S2S `UNAUTHORIZED`,
+    /// `client_code` `user_not_admitted`): the target's hub does not accept contacts from the
+    /// caller. Not retryable.
+    #[serde(default)]
+    pub not_admitted: Vec<ClaimTarget>,
 }
 
 // ---------------------------------------------------------------------------

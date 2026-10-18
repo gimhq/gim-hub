@@ -8,7 +8,7 @@ use gim_hub_proto::s2s::{
     SubmitCommitRequest, SubmitCommitResponse, SubmitMessageRequest, SubmitMessageResponse,
 };
 
-use super::{caller_listed, GroupService};
+use super::{caller_listed, not_admitted, GroupService};
 use crate::{
     federation::{error, Federation, OpResult},
     transport::SendError,
@@ -74,9 +74,9 @@ async fn send(federation: &dyn Federation, owner: &HubId, op: Op) -> Result<OpOu
     }
 }
 
-/// `SubmitCommit` on the owning hub (§3.7): this hub owns the gid and the
-/// caller is listed for the sender; roster membership is checked when
-/// sequencing.
+/// `SubmitCommit` on the owning hub (§3.7): this hub owns the gid, the
+/// caller is listed for the sender and the user policy admits the sender;
+/// roster membership is checked when sequencing.
 pub(super) async fn handle_commit(
     service: &GroupService,
     caller: &HubId,
@@ -112,6 +112,9 @@ async fn authorize(
             ErrorCode::Unauthorized,
             "caller is not listed for the sender",
         ));
+    }
+    if !(service.admitted)(sender_user_id) {
+        return Err(not_admitted());
     }
     Ok(())
 }

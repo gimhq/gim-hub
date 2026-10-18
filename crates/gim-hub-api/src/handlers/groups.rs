@@ -245,9 +245,10 @@ Resubmitting the same Commit or Proposal (same hash) returns the original result
 For a group owned by another hub (federation), this hub forwards the Commit or Proposal to the \
 owning hub, which sequences it; the response is the owner's result and the local replica already \
 holds the message. Added members on other hubs get their Welcome through their own hub. This needs the \
-caller's hosting record listing this hub (403 `hosting_record_required`); when the owning hub \
-refuses the request the result is 502 `peer_refused`, when it cannot be reached 503 \
-`peer_unavailable` with `Retry-After` (retry the same Commit: it is idempotent by hash).",
+caller's hosting record listing this hub (403 `hosting_record_required`); when the owning hub's \
+user policy does not admit the caller the result is 403 `not_admitted_by_peer` (not retryable), \
+when the owning hub refuses the request otherwise 502 `peer_refused`, when it cannot be reached \
+503 `peer_unavailable` with `Retry-After` (retry the same Commit: it is idempotent by hash).",
     params(("gid" = String, Path, description = "Group ID, percent-encoded (`/` as `%2F`)", example = "hciqgtrdldzdkwq3c7fkmzvld7djgm3waetwtedhujnndujzulpgk6vq%2Fhf4caruf7nbxzmwh5wvgefz6pa")),
     request_body = SubmitCommitRequest,
     security(("bearerAuth" = [])),
@@ -256,7 +257,7 @@ refuses the request the result is 502 `peer_refused`, when it cannot be reached 
         (status = 201, description = "Commit or Proposal accepted", body = CommitResult),
         (status = 400, description = "Not a PublicMessage Commit/Proposal for this group, unknown proposal reference, invalid credential of an added member or of the sender's leaf, `welcome` not an MLSMessage carrying a Welcome, or Welcome fields inconsistent (`validation_failed`)", body = Error),
         (status = 401, description = "Missing or invalid bearer token (`unauthorized`)", body = Error),
-        (status = 403, description = "Caller is not a member of the group (`not_member`), group policy forbids the change (`forbidden`), or the group is owned by another hub and the caller has no valid hosting record listing this hub (`hosting_record_required`)", body = Error),
+        (status = 403, description = "Caller is not a member of the group (`not_member`), group policy forbids the change (`forbidden`), or the group is owned by another hub and the caller has no valid hosting record listing this hub (`hosting_record_required`) or the owning hub's user policy does not admit the caller (`not_admitted_by_peer`)", body = Error),
         (status = 404, description = "Not found (`not_found`)", body = Error),
         (status = 409, description = "Commit or Proposal epoch is not the group epoch (`stale_epoch`)", body = StaleEpochError),
         (status = 413, description = "Payload too large (`payload_too_large`)", body = Error),
@@ -1451,6 +1452,7 @@ pub(crate) async fn forward_error(
             ErrorCode::Invalid => ApiError::ValidationFailed(err.message),
             ErrorCode::Unauthorized => match err.client_code.as_str() {
                 "not_member" => ApiError::NotMember,
+                gim_hub_s2s::ops::USER_NOT_ADMITTED => ApiError::NotAdmittedByPeer,
                 "forbidden" => ApiError::Forbidden(err.message),
                 _ => ApiError::PeerRefused(err.message),
             },
@@ -1894,6 +1896,7 @@ pub fn register_group_ops(state: &AppState, service: &FederationService) -> Arc<
         state.db.clone(),
         state.hosting.clone(),
         Arc::new(StateGroups(state.clone())),
+        super::keypackages::admission(state),
     );
     groups.register(service);
     state.hosting.set_hub_set_hook(Bootstrap::new(

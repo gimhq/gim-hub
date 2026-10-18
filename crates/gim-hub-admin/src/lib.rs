@@ -57,6 +57,10 @@ from `state.json`. Every non-2xx JSON response has the shape `{\"error\":{\"code
         h::users::unsuspend_user,
         h::users::revoke_device_sessions,
         h::users::release_handle,
+        h::user_policy::get_user_policy,
+        h::user_policy::put_user_policy,
+        h::user_policy::add_user_policy_entry,
+        h::user_policy::remove_user_policy_entry,
         h::federation::get_federation,
         h::federation::get_allowlist,
         h::federation::put_allowlist,
@@ -76,7 +80,7 @@ from `state.json`. Every non-2xx JSON response has the shape `{\"error\":{\"code
     tags(
         (name = "auth", description = "Admin sessions"),
         (name = "overview", description = "Hub overview"),
-        (name = "users", description = "Users, devices, sessions and handles"),
+        (name = "users", description = "Users, devices, sessions, handles and the user policy"),
         (name = "federation", description = "Federation status and allowlist"),
         (name = "lode", description = "The lode supervisor"),
         (name = "config", description = "Effective configuration"),
@@ -122,6 +126,18 @@ pub fn api_router(state: AdminState) -> Router {
         .route("/admin/api/session", get(auth::get_session))
         .route("/admin/api/overview", get(h::overview::get_overview))
         .route("/admin/api/users", get(h::users::list_users))
+        .route(
+            "/admin/api/users/policy",
+            get(h::user_policy::get_user_policy).put(h::user_policy::put_user_policy),
+        )
+        .route(
+            "/admin/api/users/policy/entries",
+            post(h::user_policy::add_user_policy_entry),
+        )
+        .route(
+            "/admin/api/users/policy/entries/{user_id}",
+            delete(h::user_policy::remove_user_policy_entry),
+        )
         .route("/admin/api/users/{user_id}", get(h::users::get_user))
         .route(
             "/admin/api/users/{user_id}/suspend",

@@ -166,7 +166,10 @@ With federation, a target hosted on other hubs (per its hosting record) is claim
 listed hubs in `(priority, hub_id)` order on the caller's behalf, moving to the next hub when one \
 is unavailable or has no package; devices the first answering hub did not return are requested \
 from the following hubs. Targets for which no hub answered and a hub could not be reached, \
-refused or timed out are listed in `unavailable` (retryable). Claiming from another hub requires \
+refused or timed out are listed in `unavailable` (retryable). Targets for which no hub returned a \
+package and a hub refused because its user policy does not admit the caller (S2S `UNAUTHORIZED`, \
+`client_code` `user_not_admitted`) are listed in `not_admitted` (not retryable: the target's hub \
+does not accept contacts from the caller). Claiming from another hub requires \
 the caller to have a valid hosting record listing this hub. Claim and commit through the same \
 hub.",
     request_body = ClaimKeyPackagesRequest,
@@ -226,6 +229,7 @@ pub async fn claim_key_packages(
             .collect(),
         missing: claimed.missing,
         unavailable,
+        not_admitted: Vec::new(),
     };
     response.missing.extend(missing);
 
@@ -239,7 +243,9 @@ pub async fn claim_key_packages(
     let mut ledger = Vec::new();
     for ((target, _), outcome) in remote.into_iter().zip(outcomes) {
         if outcome.packages.is_empty() {
-            if outcome.unavailable {
+            if outcome.not_admitted {
+                response.not_admitted.push(target);
+            } else if outcome.unavailable {
                 response.unavailable.push(target);
             } else {
                 response.missing.push(target);
@@ -370,6 +376,8 @@ struct Routed {
     packages: Vec<(HubId, s2s::ClaimedKeyPackage)>,
     /// A hub was in the `unavailable` class (or refused).
     unavailable: bool,
+    /// A hub refused because its user policy does not admit the requester.
+    not_admitted: bool,
 }
 
 /// Claims `target` from `hubs` (multihoming.md §5.2 steps 2-4): the first
@@ -387,6 +395,7 @@ async fn claim_routed(
     let mut routed = Routed {
         packages: Vec::new(),
         unavailable: false,
+        not_admitted: false,
     };
     let mut answered = None;
     for (index, hub) in hubs.iter().enumerate() {
@@ -414,6 +423,10 @@ async fn claim_routed(
             ClaimOutcome::Unavailable(reason) => {
                 tracing::info!(%hub, %user_id, %reason, "remote claim failed, trying the next hub");
                 routed.unavailable = true;
+            }
+            ClaimOutcome::NotAdmitted => {
+                tracing::info!(%hub, %user_id, "remote claim refused by the user policy, trying the next hub");
+                routed.not_admitted = true;
             }
             ClaimOutcome::Rejected(reason) => {
                 tracing::info!(%hub, %user_id, %reason, "remote claim refused");
@@ -452,6 +465,9 @@ async fn claim_routed(
                 ClaimOutcome::Missing => {}
                 ClaimOutcome::Unavailable(reason) => {
                     tracing::info!(%hub, %user_id, %device_id, %reason, "device claim failed, trying the next hub");
+                }
+                ClaimOutcome::NotAdmitted => {
+                    tracing::info!(%hub, %user_id, %device_id, "device claim refused by the user policy, trying the next hub");
                 }
                 ClaimOutcome::Rejected(reason) => {
                     tracing::info!(%hub, %user_id, %device_id, %reason, "device claim refused");
@@ -637,9 +653,16 @@ pub fn register_claim_op(state: &AppState, service: &FederationService) -> Arc<C
         state.hosting.clone(),
         Arc::new(StateClaims(state.clone())),
         state.clock.as_now(),
+        admission(state),
     );
     claims.register(service);
     claims
+}
+
+/// The user policy of `state` for the S2S op handlers.
+pub(crate) fn admission(state: &AppState) -> gim_hub_s2s::Admission {
+    let policy = state.user_policy.clone();
+    Arc::new(move |user_id: &str| policy.admitted(user_id))
 }
 
 /// Remote claims older than this are pruned (§5.2).

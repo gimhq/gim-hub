@@ -1,6 +1,6 @@
 //! Admin reads and mutations: every mutation and its audit entry,
-//! suspension against real sign-in, the allowlist, lode and the redacted
-//! configuration.
+//! suspension and the user policy against real sign-in, the allowlist, lode
+//! and the redacted configuration.
 
 mod support;
 
@@ -281,6 +281,422 @@ async fn suspended_user_cannot_sign_in_until_unsuspended() {
         )
         .await;
     assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+}
+
+const NOT_ADMITTED: &str = "user is not admitted on this hub";
+/// A user ID that is not stored on the test hub.
+const OTHER: &str = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa";
+
+/// Gives the auth.json user the handle `alice`.
+async fn claim_handle(hub: &TestHub) {
+    let user_id = text(&vectors("auth")["user_id"]);
+    hub.state
+        .db
+        .write(move |tx| gim_hub_db::handles::claim(tx, "alice", &user_id, 1).map(drop))
+        .await
+        .unwrap();
+}
+
+async fn put_mode(admin: &Admin, login: &support::Login, mode: &str) -> support::Response {
+    admin
+        .call(
+            Method::PUT,
+            "/admin/api/settings/GIM_HUB_USER_POLICY",
+            login,
+            Some(&json!({ "value": mode })),
+        )
+        .await
+}
+
+fn not_admitted() -> Value {
+    json!({ "error": { "code": "user_not_admitted", "message": NOT_ADMITTED } })
+}
+
+/// Both sign-in endpoints refuse the vector user with 403
+/// `user_not_admitted`; `pending` is a challenge issued before.
+async fn assert_sign_in_refused(hub: &TestHub, pending: &Value) {
+    let (challenge, _) = sign_in(hub).await;
+    assert_eq!(challenge.0, StatusCode::FORBIDDEN);
+    assert_eq!(challenge.1, not_admitted());
+    let v = vectors("auth");
+    let bytes = STANDARD.decode(text(&pending["challenge"])).unwrap();
+    let key = SigningKey::from_bytes(&hex_bytes(&v["device_seed"]).try_into().unwrap());
+    let response = sign_response(&bytes, &text(&v["user_id"]), &text(&v["device_id"]), &key);
+    let (status, body) = client_post(
+        hub,
+        "/v2/auth/session",
+        json!({ "response": STANDARD.encode(response) }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body, not_admitted());
+}
+
+/// A challenge of the vector device, issued now.
+async fn challenge(hub: &TestHub) -> Value {
+    let v = vectors("auth");
+    let (status, body) = client_post(
+        hub,
+        "/v2/auth/challenge",
+        json!({ "user_id": text(&v["user_id"]), "device_id": text(&v["device_id"]) }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+
+/// Signs the vector device in; returns the token.
+async fn signed_in(hub: &TestHub) -> String {
+    let (challenge, session) = sign_in(hub).await;
+    assert_eq!(challenge.0, StatusCode::OK, "{}", challenge.1);
+    let (status, body) = session.unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    text(&body["token"])
+}
+
+#[tokio::test]
+async fn user_policy_list_is_edited_validated_and_audited() {
+    let admin = Admin::new();
+    store_vector_user(&admin.hub).await;
+    claim_handle(&admin.hub).await;
+    let alice = text(&vectors("auth")["user_id"]);
+    let login = admin.login().await;
+    let get = admin
+        .call(Method::GET, "/admin/api/users/policy", &login, None)
+        .await;
+    assert_eq!(get.status, StatusCode::OK);
+    assert_eq!(
+        get.body,
+        json!({ "mode": "open", "mode_source": "default", "not_admitted_users": 0, "entries": [] })
+    );
+
+    // Bulk replace: comments and blank lines; an invalid line stores nothing.
+    let text_ok = format!("# blocked\n\n{OTHER}  # spam\n{alice}\n");
+    let put = |text: String| {
+        let (admin, login) = (&admin, &login);
+        async move {
+            admin
+                .call(
+                    Method::PUT,
+                    "/admin/api/users/policy",
+                    login,
+                    Some(&json!({ "text": text })),
+                )
+                .await
+        }
+    };
+    let invalid = put(format!("{alice}\n# ok\nbad user\n")).await;
+    assert_eq!(invalid.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(invalid.code(), "validation_failed");
+    let message = invalid.body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("line 3: invalid user ID \"bad user\""),
+        "{message}"
+    );
+    let replaced = put(text_ok).await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
+    let entries = replaced.body["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    let listed = |body: &Value, user: &str| {
+        body["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["user_id"] == user)
+            .cloned()
+    };
+    let entry = listed(&replaced.body, &alice).unwrap();
+    assert_eq!(entry["handle"], "alice");
+    assert_eq!(entry["added_by"], "token");
+    assert_eq!(entry["note"], Value::Null);
+    assert!(entry["added_at"].is_i64());
+    assert_eq!(
+        listed(&replaced.body, OTHER).unwrap()["handle"],
+        Value::Null
+    );
+    assert_eq!(replaced.body["not_admitted_users"], 0, "open mode");
+
+    // Remove, then add back by handle with a note.
+    let remove = admin
+        .call(
+            Method::DELETE,
+            &format!("/admin/api/users/policy/entries/{alice}"),
+            &login,
+            None,
+        )
+        .await;
+    assert_eq!(remove.status, StatusCode::OK);
+    assert!(listed(&remove.body, &alice).is_none());
+    let again = admin
+        .call(
+            Method::DELETE,
+            &format!("/admin/api/users/policy/entries/{alice}"),
+            &login,
+            None,
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+    let add = |body: Value| {
+        let (admin, login) = (&admin, &login);
+        async move {
+            admin
+                .call(
+                    Method::POST,
+                    "/admin/api/users/policy/entries",
+                    login,
+                    Some(&body),
+                )
+                .await
+        }
+    };
+    let added = add(json!({ "handle": "@Alice", "note": "spam" })).await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.body);
+    assert_eq!(listed(&added.body, &alice).unwrap()["note"], "spam");
+    assert_eq!(
+        add(json!({ "user_id": alice })).await.status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        add(json!({ "handle": "nobody" })).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        add(json!({ "user_id": "bad user" })).await.status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    for body in [json!({}), json!({ "user_id": alice, "handle": "alice" })] {
+        assert_eq!(add(body).await.status, StatusCode::BAD_REQUEST);
+    }
+
+    // The replace keeps the metadata of users that stay listed.
+    let kept = put(format!("{alice}\n")).await;
+    assert_eq!(kept.body["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(listed(&kept.body, &alice).unwrap()["note"], "spam");
+
+    let rows: Vec<Value> = admin
+        .audit(&login)
+        .await
+        .iter()
+        .filter(|entry| {
+            entry["action"]
+                .as_str()
+                .unwrap()
+                .starts_with("users_policy_")
+        })
+        .map(audit_row)
+        .collect();
+    let row = |action: &str, target: Value, result: &str| {
+        json!(["token", action, target, "127.0.0.1", result])
+    };
+    assert_eq!(
+        rows,
+        [
+            row("users_policy_update", json!("1 entries"), "ok"),
+            row("users_policy_add", Value::Null, "error"),
+            row("users_policy_add", Value::Null, "error"),
+            row("users_policy_add", Value::Null, "error"),
+            row("users_policy_add", Value::Null, "error"),
+            row("users_policy_add", json!(alice), "error"),
+            row("users_policy_add", json!(alice), "ok"),
+            row("users_policy_remove", json!(alice), "error"),
+            row("users_policy_remove", json!(alice), "ok"),
+            row("users_policy_update", json!("2 entries"), "ok"),
+            row("users_policy_update", Value::Null, "error"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn user_policy_refuses_sign_in_and_deletes_sessions() {
+    let admin = Admin::new();
+    let hub = &admin.hub;
+    store_vector_user(hub).await;
+    claim_handle(hub).await;
+    let alice = text(&vectors("auth")["user_id"]);
+    let login = admin.login().await;
+
+    // Deny mode through the settings API, then deny alice by handle.
+    let token = signed_in(hub).await;
+    let pending = challenge(hub).await;
+    let mode = put_mode(&admin, &login, "deny").await;
+    assert_eq!(mode.status, StatusCode::OK, "{}", mode.body);
+    assert_eq!(
+        me_status(hub, &token).await,
+        StatusCode::OK,
+        "not listed yet"
+    );
+    let added = admin
+        .call(
+            Method::POST,
+            "/admin/api/users/policy/entries",
+            &login,
+            Some(&json!({ "handle": "alice" })),
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.body);
+    assert_eq!(added.body["mode"], "deny");
+    assert_eq!(added.body["not_admitted_users"], 1);
+    assert_eq!(me_status(hub, &token).await, StatusCode::UNAUTHORIZED);
+    assert_sign_in_refused(hub, &pending).await;
+    let pending_challenges = hub
+        .state
+        .db
+        .read(|conn| {
+            Ok::<_, gim_hub_db::DbError>(conn.query_row(
+                "SELECT count(*) FROM auth_challenges",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(pending_challenges, 0, "pending challenges deleted");
+
+    // Suspension is checked first: a suspended user gets user_suspended.
+    let suspend = admin
+        .call(
+            Method::POST,
+            &format!("/admin/api/users/{alice}/suspend"),
+            &login,
+            None,
+        )
+        .await;
+    assert_eq!(suspend.status, StatusCode::NO_CONTENT);
+    let (refused, _) = sign_in(hub).await;
+    assert_eq!(refused.1["error"]["code"], "user_suspended");
+    admin
+        .call(
+            Method::POST,
+            &format!("/admin/api/users/{alice}/unsuspend"),
+            &login,
+            None,
+        )
+        .await;
+
+    // Removed from the list: admitted again.
+    let removed = admin
+        .call(
+            Method::DELETE,
+            &format!("/admin/api/users/policy/entries/{alice}"),
+            &login,
+            None,
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::OK);
+    let token = signed_in(hub).await;
+
+    // Allow mode with an empty list admits nobody: the switch deletes the
+    // session.
+    let pending = challenge(hub).await;
+    assert_eq!(
+        put_mode(&admin, &login, "allow").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(me_status(hub, &token).await, StatusCode::UNAUTHORIZED);
+    assert_sign_in_refused(hub, &pending).await;
+    let policy = admin
+        .call(Method::GET, "/admin/api/users/policy", &login, None)
+        .await;
+    assert_eq!(
+        (
+            policy.body["mode"].clone(),
+            policy.body["mode_source"].clone()
+        ),
+        (json!("allow"), json!("stored"))
+    );
+    assert_eq!(policy.body["not_admitted_users"], 1);
+    // Listed: admitted.
+    admin
+        .call(
+            Method::PUT,
+            "/admin/api/users/policy",
+            &login,
+            Some(&json!({ "text": format!("{alice}\n") })),
+        )
+        .await;
+    let token = signed_in(hub).await;
+    assert_eq!(me_status(hub, &token).await, StatusCode::OK);
+
+    // Back to open: the list is kept but not enforced.
+    assert_eq!(
+        put_mode(&admin, &login, "open").await.status,
+        StatusCode::OK
+    );
+    admin
+        .call(
+            Method::PUT,
+            "/admin/api/users/policy",
+            &login,
+            Some(&json!({ "text": "" })),
+        )
+        .await;
+    assert_eq!(me_status(hub, &token).await, StatusCode::OK);
+    let audit = admin.audit(&login).await;
+    assert!(audit.iter().any(|entry| entry["action"] == "setting_update"
+        && entry["target"] == "GIM_HUB_USER_POLICY"
+        && entry["detail"] == "\"open\" -> \"deny\""));
+}
+
+#[tokio::test]
+async fn user_policy_mode_from_the_environment_is_read_only() {
+    let admin = Admin::with(
+        TestHub::new(),
+        Options {
+            env: vec![("GIM_HUB_USER_POLICY", "deny".into())],
+            ..Options::default()
+        },
+    );
+    let login = admin.login().await;
+    let policy = admin
+        .call(Method::GET, "/admin/api/users/policy", &login, None)
+        .await;
+    assert_eq!(policy.body["mode_source"], "env");
+    let refused = put_mode(&admin, &login, "open").await;
+    assert_eq!(refused.status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn cli_list_change_is_applied_by_the_poll() {
+    let admin = Admin::new();
+    let hub = &admin.hub;
+    store_vector_user(hub).await;
+    let alice = text(&vectors("auth")["user_id"]);
+    let watcher = admin
+        .state
+        .settings
+        .spawn_watcher(std::time::Duration::from_millis(20));
+    let token = signed_in(hub).await;
+    // What `gim-hub config set GIM_HUB_USER_POLICY deny` and
+    // `gim-hub config users add` do, on the same database.
+    gim_hub_api::settings::set(
+        &hub.state.db,
+        &gim_hub_api::settings::Vars::new(),
+        "GIM_HUB_USER_POLICY",
+        &json!("deny"),
+        "cli",
+        1,
+    )
+    .await
+    .unwrap();
+    let entry = gim_hub_db::user_policy::ListEntry {
+        user_id: alice,
+        added_at: 1,
+        added_by: "cli".into(),
+        note: None,
+    };
+    hub.state
+        .db
+        .write(move |tx| gim_hub_db::user_policy::add(tx, &entry))
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while me_status(hub, &token).await != StatusCode::UNAUTHORIZED {
+        assert!(std::time::Instant::now() < deadline, "not picked up");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    watcher.abort();
+    let (challenge, _) = sign_in(hub).await;
+    assert_eq!(challenge.1, not_admitted());
 }
 
 #[tokio::test]
