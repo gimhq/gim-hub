@@ -17,6 +17,15 @@ export interface MockState {
   lodeSupervised: boolean
   settings: MockSetting[]
   allowlistReadOnly: boolean
+  policyEntries: MockPolicyEntry[]
+}
+
+interface MockPolicyEntry {
+  user_id: string
+  handle: string | null
+  added_at: number
+  added_by: string
+  note: string | null
 }
 
 type MockSetting = Record<string, unknown> & {
@@ -86,11 +95,11 @@ export function initialSettings(): MockSetting[] {
       updated_at: 1_760_600_000,
       updated_by: 'cli',
     }),
-    setting('GIM_HUB_USER_LIST_MODE', 'users', 'enum', 'User list mode', { enum: ['open', 'allow', 'deny'], default: 'open' }),
+    setting('GIM_HUB_USER_POLICY', 'users', 'enum', 'Who may use this hub', { enum: ['open', 'allow', 'deny'], default: 'open' }),
   ]
 }
 
-export const state: MockState = { loggedIn: false, mutations: [], lodeSupervised: true, settings: initialSettings(), allowlistReadOnly: false }
+export const state: MockState = { loggedIn: false, mutations: [], lodeSupervised: true, settings: initialSettings(), allowlistReadOnly: false, policyEntries: [] }
 
 export function resetMockState() {
   state.loggedIn = false
@@ -98,6 +107,7 @@ export function resetMockState() {
   state.lodeSupervised = true
   state.settings = initialSettings()
   state.allowlistReadOnly = false
+  state.policyEntries = []
 }
 
 export function envelope(status: number, code: string, message: string) {
@@ -212,6 +222,22 @@ function updateSetting(key: string, next: (item: MockSetting) => Response | Mock
   return HttpResponse.json(settingResponse(result) as never)
 }
 
+// The user policy view: the mode is the GIM_HUB_USER_POLICY setting.
+function userPolicy() {
+  const item = state.settings.find(s => s.key === 'GIM_HUB_USER_POLICY')!
+  const mode = item.value as string
+  const listed = new Set(state.policyEntries.map(e => e.user_id))
+  const notAdmitted = mode === 'open' ? 0 : users.filter(u => (mode === 'allow') !== listed.has(u.user_id)).length
+  return { mode, mode_source: item.source, not_admitted_users: notAdmitted, entries: state.policyEntries }
+}
+
+function policyEntry(userId: string, note: string | null = null): MockPolicyEntry {
+  const handle = users.find(u => u.user_id === userId)?.handle ?? null
+  return { user_id: userId, handle, added_at: 1_760_700_000, added_by: 'token', note }
+}
+
+const validUserId = (raw: string) => /^u-[a-z]+$/.test(raw)
+
 export const handlers = [
   http.post(`${API}/login`, async ({ request }) => {
     const { token } = await request.json() as { token: string }
@@ -237,6 +263,7 @@ export const handlers = [
     counts: { users: 2, devices: 3, groups: 4, blobs: 5 },
     push: { enqueued: 10, coalesced: 1, upgraded: 0, dropped: 0, sent: 9, skipped: 0, invalid_token: 0, retried: 2, failed: 1 },
     event_retention_days: state.settings.find(s => s.key === 'GIM_HUB_EVENT_RETENTION_DAYS')?.value,
+    user_policy: state.settings.find(s => s.key === 'GIM_HUB_USER_POLICY')?.value,
   })),
   http.get(`${API}/users`, ({ request }) => {
     if (!state.loggedIn)
@@ -244,6 +271,45 @@ export const handlers = [
     const q = new URL(request.url).searchParams.get('q') ?? ''
     const items = users.filter(u => u.user_id.includes(q) || (u.handle ?? '').includes(q))
     return HttpResponse.json({ items, next_cursor: null })
+  }),
+  authed('/users/policy', userPolicy),
+  mutation('put', '/users/policy', async (request) => {
+    const { text } = await request.json() as { text: string }
+    const ids: string[] = []
+    for (const [index, raw] of text.split('\n').entries()) {
+      const line = raw.split('#')[0].trim()
+      if (!line)
+        continue
+      if (!validUserId(line))
+        return envelope(422, 'validation_failed', `line ${index + 1}: invalid user ID "${line}"`)
+      if (!ids.includes(line))
+        ids.push(line)
+    }
+    state.policyEntries = ids.map(id => state.policyEntries.find(e => e.user_id === id) ?? policyEntry(id))
+    return HttpResponse.json(userPolicy())
+  }),
+  mutation('post', '/users/policy/entries', async (request) => {
+    const body = await request.json() as { user_id?: string, handle?: string, note?: string }
+    let userId = body.user_id
+    if (body.handle !== undefined) {
+      userId = users.find(u => u.handle === body.handle!.replace(/^@/, '').toLowerCase())?.user_id
+      if (!userId)
+        return envelope(404, 'not_found', 'not found')
+    }
+    else if (!userId || !validUserId(userId)) {
+      return envelope(422, 'validation_failed', `invalid user ID "${userId ?? ''}"`)
+    }
+    if (state.policyEntries.some(e => e.user_id === userId))
+      return envelope(409, 'conflict', 'the user is already listed')
+    state.policyEntries = [...state.policyEntries, policyEntry(userId, body.note?.trim() || null)]
+    return HttpResponse.json(userPolicy())
+  }),
+  mutation('delete', '/users/policy/entries/:id', (request) => {
+    const id = decodeURIComponent(new URL(request.url).pathname.split('/').pop()!)
+    if (!state.policyEntries.some(e => e.user_id === id))
+      return envelope(404, 'not_found', 'not found')
+    state.policyEntries = state.policyEntries.filter(e => e.user_id !== id)
+    return HttpResponse.json(userPolicy())
   }),
   authed('/users/u-alice', () => aliceDetail),
   mutation('delete', '/users/u-alice/devices/d-phone/sessions', () => HttpResponse.json({ revoked: 1 })),

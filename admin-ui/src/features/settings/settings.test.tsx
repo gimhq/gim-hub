@@ -48,7 +48,7 @@ describe('settings', () => {
     const url = await row('GIM_HUB_PUBLIC_URL')
     expect(url.getByText('restart required')).toBeInTheDocument()
 
-    const mode = await row('GIM_HUB_USER_LIST_MODE')
+    const mode = await row('GIM_HUB_USER_POLICY')
     expect(mode.getByText('default')).toBeInTheDocument()
     expect(mode.getByRole('button', { name: 'Reset to default' })).toBeDisabled()
 
@@ -172,9 +172,9 @@ describe('settings', () => {
   it('saves an enum with the select', async () => {
     const user = userEvent.setup()
     renderApp('/settings')
-    const mode = await row('GIM_HUB_USER_LIST_MODE')
+    const mode = await row('GIM_HUB_USER_POLICY')
     await user.click(mode.getByRole('button', { name: 'Edit' }))
-    await user.click(mode.getByRole('combobox', { name: 'New value for GIM_HUB_USER_LIST_MODE' }))
+    await user.click(mode.getByRole('combobox', { name: 'New value for GIM_HUB_USER_POLICY' }))
     await user.click(await screen.findByRole('option', { name: 'deny' }))
     await user.click(mode.getByRole('button', { name: 'Save' }))
     expect(await mode.findByText('Saved.')).toBeInTheDocument()

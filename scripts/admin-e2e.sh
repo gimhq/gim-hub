@@ -17,6 +17,9 @@
 #      (GET item source stored, overview retention, settings table, audit)
 #   9. GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN set in the hub's env is read-only in
 #      the UI and PUT answers 409
+#  10. user policy: GIM_HUB_USER_POLICY=deny on the Settings page, the seeded
+#      user added by handle on the User policy page (its other device's
+#      session deleted, sign-in 403 user_not_admitted), removed, mode open
 #
 # The user, device and session are seeded with sqlite3 into a database built
 # from the migrations: a real sign-in needs a signed DeviceList made by the
@@ -106,6 +109,9 @@ for sql in crates/gim-hub-db/migrations/*.sql; do
 done
 USER_ID="$(multihash_id u)"
 DEVICE_ID="$(head -c 16 /dev/urandom | id d)"
+# A second device whose session outlives step 3 and is deleted by step 10.
+OTHER_DEVICE_ID="$(head -c 16 /dev/urandom | id d)"
+OTHER_SESSION_HASH="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 HANDLE="e2e$(od -An -tx1 -N3 /dev/urandom | tr -d ' \n')"
 SESSION_HASH="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 SESSION_REF="$(printf '%s' "$SESSION_HASH" | cut -c1-16)"
@@ -115,10 +121,12 @@ PRAGMA user_version = $schema;
 INSERT INTO users (user_id, root_pubkey, device_list, device_list_seq, created_at, updated_at)
     VALUES ('$USER_ID', zeroblob(32), x'00', 1, $now_ms, $now_ms);
 INSERT INTO devices (user_id, device_id, sig_pubkey, active, updated_at, created_at)
-    VALUES ('$USER_ID', '$DEVICE_ID', zeroblob(32), 1, $now_ms, $now_ms);
+    VALUES ('$USER_ID', '$DEVICE_ID', zeroblob(32), 1, $now_ms, $now_ms),
+           ('$USER_ID', '$OTHER_DEVICE_ID', zeroblob(32), 1, $now_ms, $now_ms);
 INSERT INTO handles (handle, user_id, created_at) VALUES ('$HANDLE', '$USER_ID', $now_ms);
 INSERT INTO sessions (token_hash, user_id, device_id, created_at, expires_at)
-    VALUES (x'$SESSION_HASH', '$USER_ID', '$DEVICE_ID', $now_ms, $((now_ms + 86400000)));
+    VALUES (x'$SESSION_HASH', '$USER_ID', '$DEVICE_ID', $now_ms, $((now_ms + 86400000))),
+           (x'$OTHER_SESSION_HASH', '$USER_ID', '$OTHER_DEVICE_ID', $now_ms, $((now_ms + 86400000)));
 SQL
 
 od -An -tx1 -N32 /dev/urandom | tr -d ' \n' >"$WORK/admin.token"
@@ -148,7 +156,7 @@ cat >"$STATE" <<'JSON'
 }
 JSON
 cp "$STATE" "$WORK/state.orig.json"
-pass "seed: user $USER_ID (@$HANDLE), device $DEVICE_ID, session $SESSION_REF; allowlist with $HUB_ONE; state.json current 0.3.0, available 0.3.1"
+pass "seed: user $USER_ID (@$HANDLE), devices $DEVICE_ID (session $SESSION_REF) and $OTHER_DEVICE_ID (one session); allowlist with $HUB_ONE; state.json current 0.3.0, available 0.3.1"
 
 # --- hub ---------------------------------------------------------------------
 docker network create "${LABELS[@]}" "$NET" >/dev/null
@@ -184,6 +192,7 @@ docker run --rm "${LABELS[@]}" --name "ai-agent-$RUN-playwright" --network "$NET
     -e E2E_USER_ID="$USER_ID" \
     -e E2E_HANDLE="$HANDLE" \
     -e E2E_DEVICE_ID="$DEVICE_ID" \
+    -e E2E_OTHER_DEVICE_ID="$OTHER_DEVICE_ID" \
     -e E2E_SESSION_REF="$SESSION_REF" \
     -e E2E_NEW_HUB="$HUB_TWO" \
     -e E2E_RETENTION_KEY="$RETENTION_KEY" \
@@ -196,8 +205,8 @@ docker run --rm "${LABELS[@]}" --name "ai-agent-$RUN-playwright" --network "$NET
 
 # --- on disk -----------------------------------------------------------------
 left="$(sqlite3 "$DB" "SELECT count(*) FROM sessions WHERE user_id = '$USER_ID'")"
-[[ "$left" == 0 ]] || fail "3: $left sessions left in the database"
-pass "3. database: no session left for $USER_ID"
+[[ "$left" == 0 ]] || fail "3, 10: $left sessions left in the database"
+pass "3, 10. database: no session left for $USER_ID"
 
 stored="$(sqlite3 "$DB" "SELECT hub_id FROM federation_allowlist ORDER BY hub_id")"
 grep -qx "$HUB_ONE" <<<"$stored" && grep -qx "$HUB_TWO" <<<"$stored" ||
@@ -211,7 +220,7 @@ lode_fields='{status, current, available, last_good, channel, last_check, histor
 pass "5. state.json: check_nonce 0 -> 1, lode's fields intact"
 
 audit="$(sqlite3 "$DB" "SELECT action FROM admin_audit WHERE actor = 'token' AND result = 'ok' ORDER BY id")"
-for action in device_sessions_revoke allowlist_update lode_check setting_update; do
+for action in device_sessions_revoke allowlist_update lode_check setting_update users_policy_add users_policy_remove; do
     grep -qx "$action" <<<"$audit" || fail "6: no '$action' in admin_audit: $audit"
 done
 pass "6. admin_audit: $(tr '\n' ' ' <<<"$audit")"
@@ -223,5 +232,10 @@ pass "8. settings table: $RETENTION_KEY = $row"
 row="$(sqlite3 "$DB" "SELECT count(*) FROM settings WHERE key = '$ENV_KEY'")"
 [[ "$row" == 0 ]] || fail "9: $ENV_KEY was stored despite the env"
 pass "9. settings table: no stored $ENV_KEY (env value $ENV_VALUE)"
+
+row="$(sqlite3 "$DB" "SELECT value FROM settings WHERE key = 'GIM_HUB_USER_POLICY'")"
+listed="$(sqlite3 "$DB" "SELECT count(*) FROM user_policy_list")"
+[[ "$row" == '"open"' && "$listed" == 0 ]] || fail "10: GIM_HUB_USER_POLICY '$row', $listed listed users"
+pass "10. settings table: GIM_HUB_USER_POLICY = $row, user_policy_list empty"
 
 echo "admin-e2e: all steps passed (run $RUN)"

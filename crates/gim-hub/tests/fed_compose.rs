@@ -93,6 +93,7 @@ async fn compose_federation() {
     leave_by_proposal(&a, &b, &c, &alice).await;
     webhook_push(&a, &b, &alice).await;
     push_coalescing(&a, &c, &alice).await;
+    user_policy(&a, &b).await;
     println!("fed: PASS ({:.1}s)", start.elapsed().as_secs_f64());
 }
 
@@ -1047,6 +1048,139 @@ async fn push_coalescing(a: &Hub, c: &Hub, alice: &User) {
     );
     ok(
         "push coalescing: newest payload, alert priority kept (message+receipt, Commit+membership)",
+        start,
+    );
+}
+
+/// H12: hub-b's user policy, changed with `gim-hub config` in its container
+/// and applied by the settings poll. heidi@A is a member of ivan@B's group
+/// (owned by hub-b). With heidi and ivan on hub-b's deny list, hub-b refuses
+/// heidi's claim (`not_admitted`) and her message (403
+/// `not_admitted_by_peer` on hub-a), deletes ivan's session and refuses his
+/// sign-in (403 `user_not_admitted`). In allow mode with only heidi listed,
+/// her message goes through; back to open, ivan signs in again and gets it.
+async fn user_policy(a: &Hub, b: &Hub) {
+    let start = Instant::now();
+    let heidi = User::sign_up("heidi", a, 8, 81, 2).await;
+    let ivan = User::sign_up("ivan", b, 9, 91, 1).await;
+    for (hub, user) in [(b, &heidi), (a, &ivan)] {
+        let path = format!("/v2/users/{}/hosting-record", user.user_id);
+        eventually(
+            &format!("{}'s record on {}", user.name, hub.service),
+            || async {
+                let (status, body) = hub.call(Method::GET, &path, None, None).await;
+                status == StatusCode::OK && body["seq"] == 1
+            },
+        )
+        .await;
+    }
+    let (gid, mut ivan_group) = ivan.create_group("group").await;
+    let kp = ivan.claim(&heidi).await;
+    let (commit, welcome, _) = ivan_group
+        .add_members(&ivan.provider, &ivan.signer, &[kp])
+        .unwrap();
+    let body = with_welcome(commit_body("p1", &commit), &welcome, &[&heidi]);
+    let (status, result) = ivan.submit_commit(&gid, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    ivan_group.merge_pending_commit(&ivan.provider).unwrap();
+    let mut heidi_group = heidi.join(&gid).await;
+
+    b.exec(&[
+        "gim-hub",
+        "config",
+        "users",
+        "add",
+        &heidi.user_id,
+        "fed-test",
+    ]);
+    b.exec(&["gim-hub", "config", "users", "add", &ivan.user_id]);
+    b.exec(&["gim-hub", "config", "set", "GIM_HUB_USER_POLICY", "deny"]);
+    let request = json!({ "targets": [{ "user_id": ivan.user_id, "device_id": ivan.device_id }] });
+    eventually("hub-b to refuse heidi's claim", || async {
+        let (status, body) = heidi
+            .call(Method::POST, "/v2/keypackages/claim", Some(request.clone()))
+            .await;
+        status == StatusCode::OK
+            && body["key_packages"] == json!([])
+            && body["not_admitted"]
+                .as_array()
+                .is_some_and(|targets| targets.iter().any(|t| t["user_id"] == json!(ivan.user_id)))
+    })
+    .await;
+    let mls = application(&heidi, &mut heidi_group, b"admitted again");
+    let (status, body) = heidi.post_message(&gid, "policy", &mls).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(code(&body), "not_admitted_by_peer");
+    // ivan's session was deleted with the change; sign-in is refused.
+    eventually("ivan's session to be deleted", || async {
+        ivan.call(Method::GET, "/v2/events?cursor=0", None).await.0 == StatusCode::UNAUTHORIZED
+    })
+    .await;
+    let (status, body) = b
+        .call(
+            Method::POST,
+            "/v2/auth/challenge",
+            None,
+            Some(json!({ "user_id": ivan.user_id, "device_id": ivan.device_id })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(
+        body,
+        json!({ "error": { "code": "user_not_admitted", "message": "user is not admitted on this hub" } })
+    );
+    ok(
+        "hub-b deny list: claim not_admitted, message 403 not_admitted_by_peer, sign-in 403 user_not_admitted",
+        start,
+    );
+
+    let start = Instant::now();
+    b.exec(&["gim-hub", "config", "users", "remove", &ivan.user_id]);
+    b.exec(&["gim-hub", "config", "set", "GIM_HUB_USER_POLICY", "allow"]);
+    let deadline = Instant::now() + CONVERGE;
+    let (status, body) = loop {
+        let result = heidi.post_message(&gid, "policy", &mls).await;
+        if result.0 != StatusCode::FORBIDDEN || Instant::now() > deadline {
+            break result;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["seq"], 2, "{body}");
+    let (status, body) = b
+        .call(
+            Method::POST,
+            "/v2/auth/challenge",
+            None,
+            Some(json!({ "user_id": ivan.user_id, "device_id": ivan.device_id })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(code(&body), "user_not_admitted");
+
+    b.exec(&["gim-hub", "config", "set", "GIM_HUB_USER_POLICY", "open"]);
+    let mut again = None;
+    let deadline = Instant::now() + CONVERGE;
+    while again.is_none() && Instant::now() < deadline {
+        let (status, _) = b
+            .call(
+                Method::POST,
+                "/v2/auth/challenge",
+                None,
+                Some(json!({ "user_id": ivan.user_id, "device_id": ivan.device_id })),
+            )
+            .await;
+        if status == StatusCode::OK {
+            again = Some(User::sign_in("ivan", b, 9, 91, 0).await);
+        } else {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+    let ivan = again.expect("ivan signs in again once hub-b is open");
+    assert_eq!(ivan.wait_message(&gid, 2).await["seq"], 2);
+    b.exec(&["gim-hub", "config", "users", "remove", &heidi.user_id]);
+    ok(
+        "hub-b allow list: heidi's message delivered, ivan refused; open: ivan signs in and receives it",
         start,
     );
 }

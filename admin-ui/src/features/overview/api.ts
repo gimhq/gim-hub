@@ -24,6 +24,8 @@ export interface Overview {
   counts: { users: number, devices: number, groups: number, blobs: number }
   push: PushCounters
   event_retention_days: number
+  // GIM_HUB_USER_POLICY in force: open, allow or deny.
+  user_policy: string
 }
 
 export const overviewQueryOptions = queryOptions({

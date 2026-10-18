@@ -135,6 +135,33 @@ pub fn docker(method: &str, path: &str) -> String {
     text
 }
 
+/// A Docker Engine API call with a JSON body.
+fn docker_json(path: &str, body: &Value) -> String {
+    let socket =
+        std::env::var("GIM_FED_DOCKER_SOCKET").unwrap_or_else(|_| "/var/run/docker.sock".into());
+    let output = Command::new("curl")
+        .args([
+            "-sS",
+            "--fail-with-body",
+            "--unix-socket",
+            &socket,
+            "-X",
+            "POST",
+        ])
+        .args(["-H", "Content-Type: application/json", "-d"])
+        .arg(body.to_string())
+        .arg(format!("http://localhost{path}"))
+        .output()
+        .expect("curl");
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        output.status.success(),
+        "docker POST {path}: {text} {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    text
+}
+
 /// A hub of the compose project.
 #[derive(Clone)]
 pub struct Hub {
@@ -165,6 +192,27 @@ impl Hub {
     pub async fn start(&self) {
         docker("POST", &format!("/containers/{}/start", self.container()));
         self.wait_healthy().await;
+    }
+
+    /// Runs `cmd` in the hub's container (`docker exec`); asserts exit 0
+    /// and returns the output.
+    pub fn exec(&self, cmd: &[&str]) -> String {
+        let created = docker_json(
+            &format!("/containers/{}/exec", self.container()),
+            &json!({ "Cmd": cmd, "AttachStdout": true, "AttachStderr": true }),
+        );
+        let id = serde_json::from_str::<Value>(&created).unwrap()["Id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let output = docker_json(
+            &format!("/exec/{id}/start"),
+            &json!({ "Detach": false, "Tty": false }),
+        );
+        let inspect: Value =
+            serde_json::from_str(&docker("GET", &format!("/exec/{id}/json"))).unwrap();
+        assert_eq!(inspect["ExitCode"], 0, "{} {cmd:?}: {output}", self.service);
+        output
     }
 
     pub fn logs(&self) -> String {
