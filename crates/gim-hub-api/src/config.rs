@@ -1,6 +1,9 @@
 //! Hub configuration from `GIM_HUB_*` environment variables.
 //!
-//! See `docs/operations.md`. Empty variables count as unset.
+//! See `docs/operations.md`. Empty variables count as unset. The binary
+//! passes the variables merged with the stored settings (see
+//! [`crate::settings`]); the bootstrap settings ([`Bootstrap`]) only come
+//! from the environment.
 
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, str::FromStr};
 
@@ -59,6 +62,58 @@ pub struct Config {
     pub release_version: String,
 }
 
+/// The bootstrap settings, read from the environment only: needed before
+/// the database (and the stored settings) can be opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bootstrap {
+    /// `GIM_HUB_LISTEN`.
+    pub listen: SocketAddr,
+    /// `GIM_HUB_DATA_DIR`.
+    pub data_dir: PathBuf,
+    /// `GIM_HUB_DATABASE_PATH`.
+    pub database_path: PathBuf,
+    /// See [`Config::release_version`].
+    pub release_version: String,
+}
+
+impl Bootstrap {
+    /// Reads the bootstrap settings from `(name, value)` pairs.
+    pub fn from_vars(
+        vars: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<Self, ConfigError> {
+        let vars = relevant(vars);
+        let get = |name: &str| vars.get(name).map(String::as_str);
+        let data_dir = PathBuf::from(get("GIM_HUB_DATA_DIR").unwrap_or("./data"));
+        Ok(Self {
+            listen: parse(
+                get,
+                "GIM_HUB_LISTEN",
+                SocketAddr::from(([0, 0, 0, 0], 8080)),
+                None,
+            )?,
+            database_path: get("GIM_HUB_DATABASE_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| data_dir.join("hub.db")),
+            release_version: release_version(get("LODE_ACTIVE_VERSION")),
+            data_dir,
+        })
+    }
+
+    /// Path of the hub's Ed25519 key seed.
+    pub fn hub_key_path(&self) -> PathBuf {
+        self.data_dir.join("hub_key")
+    }
+}
+
+/// The non-empty `GIM_HUB_*` and `LODE_ACTIVE_VERSION` pairs of `vars`.
+fn relevant(vars: impl IntoIterator<Item = (String, String)>) -> HashMap<String, String> {
+    vars.into_iter()
+        .filter(|(name, value)| {
+            (name.starts_with("GIM_HUB_") || name == "LODE_ACTIVE_VERSION") && !value.is_empty()
+        })
+        .collect()
+}
+
 /// Invalid configuration value.
 #[derive(Debug, thiserror::Error)]
 #[error("invalid {name}={value:?}: {reason}")]
@@ -78,18 +133,15 @@ impl Config {
     pub fn from_vars(
         vars: impl IntoIterator<Item = (String, String)>,
     ) -> Result<Self, ConfigError> {
-        let vars: HashMap<String, String> = vars
-            .into_iter()
-            .filter(|(name, value)| {
-                (name.starts_with("GIM_HUB_") || name == "LODE_ACTIVE_VERSION") && !value.is_empty()
-            })
-            .collect();
+        let vars = relevant(vars);
         let get = |name: &str| vars.get(name).map(String::as_str);
 
-        let data_dir = PathBuf::from(get("GIM_HUB_DATA_DIR").unwrap_or("./data"));
-        let database_path = get("GIM_HUB_DATABASE_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| data_dir.join("hub.db"));
+        let Bootstrap {
+            listen,
+            data_dir,
+            database_path,
+            release_version,
+        } = Bootstrap::from_vars(vars.clone())?;
         let public_url = get("GIM_HUB_PUBLIC_URL")
             .map(|raw| {
                 normalize_public_url(raw).map_err(|reason| ConfigError {
@@ -108,12 +160,7 @@ impl Config {
             });
         }
         Ok(Self {
-            listen: parse(
-                get,
-                "GIM_HUB_LISTEN",
-                SocketAddr::from(([0, 0, 0, 0], 8080)),
-                None,
-            )?,
+            listen,
             event_retention_days: parse(get, "GIM_HUB_EVENT_RETENTION_DAYS", 7, Some(1))?,
             keypackage_low_threshold: parse(get, "GIM_HUB_KEYPACKAGE_LOW_THRESHOLD", 10, None)?,
             max_message_bytes: parse(get, "GIM_HUB_MAX_MESSAGE_BYTES", 262_144, Some(1))?,
@@ -147,7 +194,7 @@ impl Config {
             trust_forwarded_for: parse(get, "GIM_HUB_TRUST_FORWARDED_FOR", false, None)?,
             push: push_config(get)?,
             unhosted_grace_hours: parse(get, "GIM_HUB_UNHOSTED_GRACE_HOURS", 168, Some(1))?,
-            release_version: release_version(get("LODE_ACTIVE_VERSION")),
+            release_version,
             public_url,
             data_dir,
             database_path,

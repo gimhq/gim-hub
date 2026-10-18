@@ -15,6 +15,10 @@ const deviceId = env('E2E_DEVICE_ID')
 const sessionRef = env('E2E_SESSION_REF')
 const newHub = env('E2E_NEW_HUB')
 const clientUrl = env('E2E_CLIENT_URL')
+const retentionKey = env('E2E_RETENTION_KEY')
+const retentionDays = Number(env('E2E_RETENTION_DAYS'))
+const envKey = env('E2E_ENV_KEY')
+const envValue = Number(env('E2E_ENV_VALUE'))
 
 function log(message: string) {
   process.stdout.write(`admin-e2e: ${message}\n`)
@@ -68,9 +72,11 @@ test('admin UI end to end', async ({ page, request }) => {
     const allowlist = await page.request.get('/admin/api/federation/allowlist')
     expect(allowlist.status()).toBe(200)
     const body = await allowlist.json()
+    expect(body.source).toBe('stored')
+    expect(body.read_only).toBe(false)
     expect(body.text).toContain(newHub)
     expect(body.entries.map((entry: { hub_id: string }) => entry.hub_id)).toContain(newHub)
-    log(`ok   4. allowlist saved with ${newHub}; GET returns ${body.entries.length} entries`)
+    log(`ok   4. allowlist (source ${body.source}) saved with ${newHub}; GET returns ${body.entries.length} entries`)
   })
 
   await test.step('5. lode: check now', async () => {
@@ -96,5 +102,48 @@ test('admin UI end to end', async ({ page, request }) => {
     const response = await request.get(`${clientUrl}/admin/`)
     expect(response.status()).toBe(404)
     log(`ok   7. GET ${clientUrl}/admin/ -> 404`)
+  })
+
+  await test.step('8. edit a live setting', async () => {
+    await nav.getByRole('link', { name: 'Settings' }).click()
+    const row = page.getByRole('listitem', { name: retentionKey, exact: true })
+    await expect(row.getByText('default', { exact: true })).toBeVisible()
+    await expect(row.getByText('live', { exact: true })).toBeVisible()
+    await row.getByRole('button', { name: 'Edit' }).click()
+    await row.getByLabel(`New value for ${retentionKey}`).fill(String(retentionDays))
+    await row.getByRole('button', { name: 'Save' }).click()
+    await expect(row.getByRole('status')).toHaveText('Saved.')
+    await expect(row.getByText('stored', { exact: true })).toBeVisible()
+    await expect(row.getByText(/ by token$/)).toBeVisible()
+
+    const item = await (await page.request.get(`/admin/api/settings/${retentionKey}`)).json()
+    expect(item).toMatchObject({ value: retentionDays, source: 'stored', read_only: false, apply: 'live', updated_by: 'token' })
+    // Applied at once: the overview reports the running hub's retention.
+    const overview = await (await page.request.get('/admin/api/overview')).json()
+    expect(overview.event_retention_days).toBe(retentionDays)
+    await nav.getByRole('link', { name: 'Overview' }).click()
+    await expect(page.getByText(`${retentionDays} days`)).toBeVisible()
+    log(`ok   8. ${retentionKey} 7 -> ${retentionDays} in the UI; GET item source stored, overview retention ${overview.event_retention_days} days`)
+  })
+
+  await test.step('9. a setting from the environment is read-only', async () => {
+    await nav.getByRole('link', { name: 'Settings' }).click()
+    const row = page.getByRole('listitem', { name: envKey, exact: true })
+    await expect(row.getByText('environment', { exact: true })).toBeVisible()
+    await expect(row.getByText(/^Set by environment/)).toBeVisible()
+    await expect(row.getByText(String(envValue), { exact: true })).toBeVisible()
+    await expect(row.getByRole('button')).toHaveCount(0)
+
+    const item = await (await page.request.get(`/admin/api/settings/${envKey}`)).json()
+    expect(item).toMatchObject({ value: envValue, source: 'env', read_only: true })
+    const session = await (await page.request.get('/admin/api/session')).json()
+    const put = await page.request.put(`/admin/api/settings/${envKey}`, {
+      headers: { 'X-CSRF-Token': session.csrf_token },
+      data: { value: envValue + 1 },
+    })
+    expect(put.status()).toBe(409)
+    const error = (await put.json()).error
+    expect(error.code).toBe('conflict')
+    log(`ok   9. ${envKey}=${envValue} from env: row read-only (no buttons); PUT -> 409 ${error.code} "${error.message}"`)
   })
 })

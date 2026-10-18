@@ -136,7 +136,9 @@ pub async fn get_link_bundle(
             "wait must be 0-{MAX_WAIT}"
         )));
     }
-    let wait = query.wait.min(state.config.longpoll_max_wait_seconds);
+    let wait = query
+        .wait
+        .min(state.config.load().longpoll_max_wait_seconds);
     let deadline = Instant::now() + Duration::from_secs(u64::from(wait));
     // Subscribe before the first attempt so a bundle posted in between
     // still wakes this request.

@@ -5,7 +5,10 @@
 //! The hub reads every DeviceList through [`DeviceLists::device_list_for`]:
 //! the `users` row of a local user, otherwise the cached remote copy.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use gim_hub_db::{
     hosting as hosting_store,
@@ -70,7 +73,7 @@ struct Inner {
     db: Db,
     federation: Arc<dyn Federation>,
     hosting: Hosting,
-    cache_ttl: Duration,
+    cache_ttl: RwLock<Duration>,
     now: Now,
     events: Arc<dyn DeviceListEvents>,
 }
@@ -78,7 +81,7 @@ struct Inner {
 impl std::fmt::Debug for DeviceLists {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeviceLists")
-            .field("cache_ttl", &self.inner.cache_ttl)
+            .field("cache_ttl", &self.cache_ttl())
             .finish_non_exhaustive()
     }
 }
@@ -99,7 +102,7 @@ impl DeviceLists {
                 db,
                 federation,
                 hosting,
-                cache_ttl,
+                cache_ttl: RwLock::new(cache_ttl),
                 now,
                 events,
             }),
@@ -140,12 +143,24 @@ impl DeviceLists {
         (self.inner.now)()
     }
 
+    /// Freshness of cached remote DeviceLists
+    /// (`GIM_HUB_DEVICE_LIST_CACHE_HOURS`).
+    pub fn cache_ttl(&self) -> Duration {
+        *self.inner.cache_ttl.read().expect("cache ttl lock")
+    }
+
+    /// Changes the freshness of cached remote DeviceLists; applies to the
+    /// next lookup.
+    pub fn set_cache_ttl(&self, cache_ttl: Duration) {
+        *self.inner.cache_ttl.write().expect("cache ttl lock") = cache_ttl;
+    }
+
     /// The DeviceList (CBOR) of `user_id`: a local user's stored list, else
     /// the cached remote copy, fetched from the user's hub when missing or
     /// older than the cache lifetime. A stale copy is returned when the
     /// user's hub cannot be reached; `Unavailable` only without any copy.
     pub async fn device_list_for(&self, user_id: &str) -> Result<Vec<u8>, HostingError> {
-        let max_age = i64::try_from(self.inner.cache_ttl.as_millis()).unwrap_or(i64::MAX);
+        let max_age = i64::try_from(self.cache_ttl().as_millis()).unwrap_or(i64::MAX);
         self.get(user_id, max_age).await
     }
 

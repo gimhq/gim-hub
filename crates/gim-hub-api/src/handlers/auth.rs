@@ -59,7 +59,7 @@ pub async fn create_auth_challenge(
     let now = state.clock.now_ms();
     let expires_at = now + CHALLENGE_TTL_MS;
     let (issued_at, expires) = (unix_ms(now), unix_ms(expires_at));
-    let challenge = match &state.config.public_url {
+    let challenge = match &state.config.load().public_url {
         Some(url) => gim_hub_identity::AuthChallenge::new_v2(
             state.hub.hub_id(),
             url,
@@ -130,9 +130,9 @@ pub async fn create_session(
     let token = URL_SAFE_NO_PAD.encode(random_bytes::<32>()?);
     let hash = token_hash(&token);
     let now = state.clock.now_ms();
-    let expires_at = now + i64::from(state.config.session_ttl_days) * DAY_MS;
+    let expires_at = now + i64::from(state.config.load().session_ttl_days) * DAY_MS;
     let hub_id = state.hub.hub_id().clone();
-    let public_url = state.config.public_url.clone();
+    let public_url = state.config.load().public_url.clone();
     state
         .db
         .write(move |tx| {

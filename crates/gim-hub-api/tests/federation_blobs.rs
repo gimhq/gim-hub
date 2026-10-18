@@ -309,7 +309,7 @@ async fn cross_hub_blob_is_fetched_cached_and_served() {
     assert_eq!(reply.headers[header::CONTENT_LENGTH], "300000");
     assert_eq!(b.fetches(), 1);
     // The cached copy: a file under the safe name, no temp file left.
-    let names: Vec<String> = std::fs::read_dir(b.hub.state.config.blobs_dir())
+    let names: Vec<String> = std::fs::read_dir(b.hub.state.config.load().blobs_dir())
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
@@ -468,7 +468,7 @@ async fn legacy_ids_mean_this_hub_and_foreign_ids_need_federation() {
 
     // A blob stored before origin-qualified ids.
     let legacy = "b_Hk4dN7sL2pX9cV0mB5qT1g";
-    let dir = a.hub.state.config.blobs_dir();
+    let dir = a.hub.state.config.load().blobs_dir();
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(legacy), b"old blob").unwrap();
     a.hub

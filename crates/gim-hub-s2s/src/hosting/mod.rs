@@ -173,7 +173,7 @@ struct Inner {
     hub_id: HubId,
     federation: Arc<dyn Federation>,
     dht: Option<Transport>,
-    settings: HostingSettings,
+    settings: RwLock<HostingSettings>,
     now: Now,
     flights: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     publish_failures: AtomicU64,
@@ -206,7 +206,7 @@ impl Hosting {
                 hub_id,
                 federation,
                 dht,
-                settings,
+                settings: RwLock::new(settings),
                 now,
                 flights: Mutex::default(),
                 publish_failures: AtomicU64::new(0),
@@ -214,6 +214,21 @@ impl Hosting {
                 local_record_listener: RwLock::default(),
             }),
         }
+    }
+
+    /// Freshness of cached remote records (`GIM_HUB_HOSTING_CACHE_SECONDS`).
+    pub fn cache_ttl(&self) -> Duration {
+        self.inner.settings.read().expect("settings lock").cache_ttl
+    }
+
+    /// Changes the freshness of cached remote records; applies to the next
+    /// resolution.
+    pub fn set_cache_ttl(&self, cache_ttl: Duration) {
+        self.inner
+            .settings
+            .write()
+            .expect("settings lock")
+            .cache_ttl = cache_ttl;
     }
 
     /// Hosting without federation: local records and the stored cache only.
@@ -472,8 +487,7 @@ impl Hosting {
             (&row, &valid_cached, *purpose == Purpose::Refresh)
         {
             let age = now.saturating_sub(row.fetched_at);
-            let fresh =
-                u128::try_from(age).unwrap_or(0) < self.inner.settings.cache_ttl.as_millis();
+            let fresh = u128::try_from(age).unwrap_or(0) < self.cache_ttl().as_millis();
             if fresh && caller.is_none_or(|caller| record.entry(caller).is_some()) {
                 return Ok(record.clone());
             }
@@ -672,7 +686,13 @@ impl Hosting {
         let dht = self.inner.dht.as_ref()?;
         let mut events = Some(dht.subscribe());
         let weak: Weak<Inner> = Arc::downgrade(&self.inner);
-        let mut interval = tokio::time::interval(self.inner.settings.republish_interval);
+        let republish_interval = self
+            .inner
+            .settings
+            .read()
+            .expect("settings lock")
+            .republish_interval;
+        let mut interval = tokio::time::interval(republish_interval);
         Some(tokio::spawn(async move {
             loop {
                 let all = tokio::select! {

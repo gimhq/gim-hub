@@ -1,4 +1,4 @@
-// MSW mock of the H10 admin API contract.
+// MSW mock of the H10 admin API contract, with the H14 settings endpoints.
 //
 // The tests run on the Bun runtime, where MSW's network interceptors do not
 // hook fetch. Instead `mockFetch` replaces the global fetch and resolves each
@@ -15,14 +15,89 @@ export interface MockState {
   // Records the X-CSRF-Token header of every mutation, keyed by "METHOD path".
   mutations: { key: string, csrf: string | null, body: unknown }[]
   lodeSupervised: boolean
+  settings: MockSetting[]
+  allowlistReadOnly: boolean
 }
 
-export const state: MockState = { loggedIn: false, mutations: [], lodeSupervised: true }
+type MockSetting = Record<string, unknown> & {
+  key: string
+  type: string
+  enum: string[] | null
+  default: unknown
+  value: unknown
+  is_set: boolean
+  source: string
+  read_only: boolean
+  apply: string
+  restart_pending: boolean
+  updated_at: number | null
+  updated_by: string | null
+}
+
+function setting(key: string, group: string, type: string, description: string, fields: Partial<MockSetting> = {}): MockSetting {
+  const base: MockSetting = {
+    key,
+    group,
+    type,
+    enum: null,
+    description,
+    default: null,
+    value: null,
+    is_set: false,
+    source: 'default',
+    read_only: false,
+    apply: 'live',
+    restart_pending: false,
+    updated_at: null,
+    updated_by: null,
+  }
+  return { ...base, value: fields.default ?? null, ...fields }
+}
+
+export const SECRET = 'webhook-secret-value'
+
+export function initialSettings(): MockSetting[] {
+  return [
+    setting('GIM_HUB_PUBLIC_URL', 'general', 'url', 'Public base URL of the hub', {
+      apply: 'restart',
+      value: 'https://hub.athens.example',
+      is_set: true,
+      source: 'stored',
+      updated_at: 1_760_600_000,
+      updated_by: 'token',
+    }),
+    setting('GIM_HUB_FEDERATION', 'federation', 'bool', 'Enable federation', { default: false, apply: 'restart' }),
+    setting('GIM_HUB_P2P_BOOTSTRAP', 'federation', 'list', 'Bootstrap peers', { default: [], apply: 'restart' }),
+    setting('GIM_HUB_PUSH_TOPIC', 'push', 'string', 'Push topic', { default: 'gim' }),
+    setting('GIM_HUB_PUSH_WEBHOOK_SECRET', 'push', 'secret', 'Push webhook secret'),
+    setting('GIM_HUB_RATE_LIMIT_PER_MINUTE', 'limits', 'integer', 'Requests per minute', {
+      default: 60,
+      value: 120,
+      is_set: true,
+      source: 'env',
+      read_only: true,
+    }),
+    setting('GIM_HUB_PUSH_RETRY_SECONDS', 'limits', 'duration_seconds', 'Push retry interval', { default: 30 }),
+    setting('GIM_HUB_EVENT_RETENTION_DAYS', 'storage', 'integer', 'Events older than this are pruned (days)', {
+      default: 7,
+      value: 30,
+      is_set: true,
+      source: 'stored',
+      updated_at: 1_760_600_000,
+      updated_by: 'cli',
+    }),
+    setting('GIM_HUB_USER_LIST_MODE', 'users', 'enum', 'User list mode', { enum: ['open', 'allow', 'deny'], default: 'open' }),
+  ]
+}
+
+export const state: MockState = { loggedIn: false, mutations: [], lodeSupervised: true, settings: initialSettings(), allowlistReadOnly: false }
 
 export function resetMockState() {
   state.loggedIn = false
   state.mutations = []
   state.lodeSupervised = true
+  state.settings = initialSettings()
+  state.allowlistReadOnly = false
 }
 
 export function envelope(status: number, code: string, message: string) {
@@ -94,6 +169,49 @@ export const lodeState = {
 
 export const allowlistText = 'hub-split /dns4/split.example/tcp/4001\n'
 
+function allowlistSource() {
+  return state.allowlistReadOnly
+    ? { source: 'file', read_only: true, path: '/etc/gim-hub/allowlist' }
+    : { source: 'stored', read_only: false, path: '/var/lib/gim-hub/hub.db#federation_allowlist' }
+}
+
+// The env parser's checks, reduced to what the tests need.
+function validate(item: MockSetting, value: unknown): string | null {
+  switch (item.type) {
+    case 'integer':
+    case 'duration_seconds':
+      return Number.isInteger(value) && (value as number) >= 0 ? null : `invalid ${item.key}: expected a non-negative integer`
+    case 'bool':
+      return typeof value === 'boolean' ? null : `invalid ${item.key}: expected a boolean`
+    case 'list':
+      return Array.isArray(value) && value.every(v => typeof v === 'string') ? null : `invalid ${item.key}: expected a list`
+    case 'enum':
+      return item.enum?.includes(value as string) ? null : `invalid ${item.key}: expected one of ${item.enum?.join(', ')}`
+    case 'url':
+      return typeof value === 'string' && /^https?:\/\//.test(value) ? null : `invalid ${item.key}: expected an http(s) URL`
+    default:
+      return typeof value === 'string' ? null : `invalid ${item.key}: expected a string`
+  }
+}
+
+function settingResponse(item: MockSetting) {
+  return item.type === 'secret' ? { ...item, value: null } : item
+}
+
+function updateSetting(key: string, next: (item: MockSetting) => Response | MockSetting) {
+  const item = state.settings.find(s => s.key === key)
+  if (!item)
+    return envelope(404, 'not_found', `unknown setting ${key}`)
+  if (item.source === 'env')
+    return envelope(409, 'conflict', 'set by environment')
+  const result = next(item)
+  if (result instanceof Response)
+    return result
+  result.restart_pending = result.apply === 'restart'
+  state.settings = state.settings.map(s => (s.key === key ? result : s))
+  return HttpResponse.json(settingResponse(result) as never)
+}
+
 export const handlers = [
   http.post(`${API}/login`, async ({ request }) => {
     const { token } = await request.json() as { token: string }
@@ -118,7 +236,7 @@ export const handlers = [
     storage: { db_bytes: 5_242_880, blob_bytes: 1024 },
     counts: { users: 2, devices: 3, groups: 4, blobs: 5 },
     push: { enqueued: 10, coalesced: 1, upgraded: 0, dropped: 0, sent: 9, skipped: 0, invalid_token: 0, retried: 2, failed: 1 },
-    event_retention_days: 30,
+    event_retention_days: state.settings.find(s => s.key === 'GIM_HUB_EVENT_RETENTION_DAYS')?.value,
   })),
   http.get(`${API}/users`, ({ request }) => {
     if (!state.loggedIn)
@@ -139,15 +257,45 @@ export const handlers = [
     peers: [{ hub_id: 'hub-split', connected: true, outbox_backlog: 0, last_error: null, last_seen: 1_760_600_000 }],
   })),
   authed('/federation/allowlist', () => ({
-    path: '/etc/gim-hub/allowlist',
+    ...allowlistSource(),
     text: allowlistText,
     entries: [{ hub_id: 'hub-split', addrs: ['/dns4/split.example/tcp/4001'] }],
   })),
   mutation('put', '/federation/allowlist', async (request) => {
+    if (state.allowlistReadOnly)
+      return envelope(409, 'conflict', 'managed by the allowlist file')
     const { text } = await request.json() as { text: string }
     if (text.includes('!'))
       return envelope(422, 'validation_failed', 'line 2: invalid hub id "!"')
-    return HttpResponse.json({ path: '/etc/gim-hub/allowlist', text, entries: [] })
+    return HttpResponse.json({ ...allowlistSource(), text, entries: [] })
+  }),
+  authed('/settings', () => ({
+    items: state.settings.map(settingResponse),
+    restart_pending: state.settings.some(s => s.restart_pending),
+  })),
+  mutation('put', '/settings/:key', async (request) => {
+    const key = decodeURIComponent(new URL(request.url).pathname.split('/').pop()!)
+    const { value } = await request.json() as { value: unknown }
+    return updateSetting(key, (item) => {
+      const error = validate(item, value)
+      if (error)
+        return envelope(422, 'validation_failed', error)
+      return { ...item, value, is_set: true, source: 'stored', updated_at: 1_760_700_000, updated_by: 'token' }
+    })
+  }),
+  mutation('delete', '/settings/:key', (request) => {
+    const key = decodeURIComponent(new URL(request.url).pathname.split('/').pop()!)
+    const federation = state.settings.find(s => s.key === 'GIM_HUB_FEDERATION')?.value === true
+    if (key === 'GIM_HUB_PUBLIC_URL' && federation)
+      return envelope(422, 'validation_failed', 'GIM_HUB_PUBLIC_URL is required when GIM_HUB_FEDERATION is enabled')
+    return updateSetting(key, item => ({
+      ...item,
+      value: item.default,
+      is_set: false,
+      source: 'default',
+      updated_at: 1_760_700_000,
+      updated_by: 'token',
+    }))
   }),
   authed('/lode', () => (state.lodeSupervised ? lodeState : { supervised: false })),
   mutation('post', '/lode/check', () => new HttpResponse(null, { status: 202 })),

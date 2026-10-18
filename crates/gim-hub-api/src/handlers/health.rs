@@ -25,7 +25,7 @@ use crate::{
 pub async fn healthz(State(state): State<AppState>) -> Json<Health> {
     Json(Health {
         status: HealthStatus::Ok,
-        version: state.config.release_version.clone(),
+        version: state.config.load().release_version.clone(),
     })
 }
 
@@ -53,7 +53,7 @@ pub async fn get_hub(
     query: Result<Query<HubQuery>, QueryRejection>,
 ) -> Result<Json<HubInfo>, ApiError> {
     let Query(query) = query.map_err(|err| ApiError::ValidationFailed(err.body_text()))?;
-    let public_url = state.config.public_url.clone();
+    let public_url = state.config.load().public_url.clone();
     let proof = match query.nonce {
         None => None,
         Some(nonce) => {
@@ -81,7 +81,7 @@ pub async fn get_hub(
     Ok(Json(HubInfo {
         hub_id: state.hub.hub_id().to_string(),
         hub_root_pubkey: STANDARD.encode(state.hub.signing_key().verifying_key().as_bytes()),
-        version: state.config.release_version.clone(),
+        version: state.config.load().release_version.clone(),
         public_url,
         proof,
     }))

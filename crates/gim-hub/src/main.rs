@@ -1,5 +1,6 @@
 //! gim hub server binary.
 
+mod cli;
 mod lode;
 
 use std::{
@@ -11,7 +12,11 @@ use std::{
 };
 
 use gim_hub_admin::{AdminConfig, AdminState};
-use gim_hub_api::{AppState, Clock, Config, HubIdentity};
+use gim_hub_api::{
+    config::Bootstrap,
+    settings::{self, Effective},
+    AppState, Clock, Config, HubIdentity,
+};
 use gim_hub_db::{Backups, Db};
 use gim_hub_push::{Dispatcher, DispatcherSettings, PushLog};
 use gim_hub_s2s::{
@@ -29,16 +34,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match std::env::args().nth(1).as_deref() {
         None => {}
         Some("healthcheck") => {
-            let config = Config::from_env()?;
-            return Ok(healthcheck(probe_addr(config.listen))?);
+            let boot = Bootstrap::from_vars(std::env::vars())?;
+            return Ok(healthcheck(probe_addr(boot.listen))?);
         }
         Some("hub-id") => {
-            let config = Config::from_env()?;
+            let boot = Bootstrap::from_vars(std::env::vars())?;
             println!(
                 "{}",
-                HubIdentity::load_or_create(&config.hub_key_path())?.hub_id()
+                HubIdentity::load_or_create(&boot.hub_key_path())?.hub_id()
             );
             return Ok(());
+        }
+        Some("config") => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            let env = settings::env_vars(std::env::vars());
+            return cli::run(&args, env, &mut io::stdout().lock()).await;
         }
         Some("version" | "--version") => {
             println!(
@@ -49,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(other) => {
             return Err(format!(
-                "unknown command {other:?}; usage: gim-hub [healthcheck|hub-id|version]"
+                "unknown command {other:?}; usage: gim-hub [healthcheck|hub-id|version|config]"
             )
             .into())
         }
@@ -61,14 +71,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let config = Config::from_env()?;
+    let env = settings::env_vars(std::env::vars());
+    let boot = Bootstrap::from_vars(env.clone())?;
     let admin_config = AdminConfig::from_env()?;
     let supervisor = supervisor(|name| std::env::var(name).ok());
     if supervisor.is_some() {
-        tracing::info!(version = %config.release_version, "supervised by lode");
+        tracing::info!(version = %boot.release_version, "supervised by lode");
     }
-    let federation_config = FederationConfig::from_env(&config.data_dir)?;
-    let mut state = open_state(config)?;
+    let db = open_db(&boot)?;
+    // Environment > stored settings > defaults (docs/operations.md).
+    let (settings, effective) = settings::Runtime::load(db.clone(), env).await?;
+    let Effective {
+        config,
+        federation: federation_config,
+        ..
+    } = effective;
+    let mut state = open_state(db, config)?;
     tracing::info!(hub_id = %state.hub.hub_id(), "hub identity loaded");
     let push = start_push(&mut state).await?;
     let federation = start_federation(&federation_config, &state).await?;
@@ -87,9 +105,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ops = federation
         .as_ref()
         .map(|service| register_ops(&state, service));
+    // Live settings changed through the admin API or `gim-hub config`.
+    settings::install(&settings, state.clone(), federation.clone(), outbox.clone());
+    let settings_watcher = settings.spawn_watcher(settings::POLL_INTERVAL);
 
-    let listener = tokio::net::TcpListener::bind(state.config.listen).await?;
-    tracing::info!(listen = %state.config.listen, "gim-hub listening");
+    let listener = tokio::net::TcpListener::bind(state.config.load().listen).await?;
+    tracing::info!(listen = %state.config.load().listen, "gim-hub listening");
     let admin = match admin_config.listen {
         Some(listen) => {
             let listener = tokio::net::TcpListener::bind(listen).await?;
@@ -99,6 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 admin_config,
                 federation_config.clone(),
                 federation.clone(),
+                settings.clone(),
                 std::env::var_os("LODE_DIR")
                     .filter(|dir| !dir.is_empty())
                     .map(Into::into),
@@ -136,6 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => client.await?,
     }
     pruning.abort();
+    settings_watcher.abort();
     for task in push {
         task.abort();
     }
@@ -188,17 +211,20 @@ fn report_ready(supervisor: &lode::Lode) {
     }
 }
 
-/// Creates the data directory, opens the database (applying migrations,
-/// after a backup to `backups/` if the database exists) and loads or creates
-/// the hub key.
-fn open_state(config: Config) -> Result<AppState, Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(&config.data_dir)?;
-    std::fs::create_dir_all(config.blobs_dir())?;
+/// Creates the data directory and opens the database, applying migrations
+/// after a backup to `backups/` if the database exists.
+fn open_db(boot: &Bootstrap) -> Result<Db, gim_hub_db::DbError> {
+    std::fs::create_dir_all(&boot.data_dir)?;
     let backups = Backups {
-        dir: config.data_dir.join("backups"),
-        release: config.release_version.clone(),
+        dir: boot.data_dir.join("backups"),
+        release: boot.release_version.clone(),
     };
-    let db = Db::open_with_backups(&config.database_path, &backups)?;
+    Db::open_with_backups(&boot.database_path, &backups)
+}
+
+/// Creates the blobs directory and loads or creates the hub key.
+fn open_state(db: Db, config: Config) -> Result<AppState, Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(config.blobs_dir())?;
     let hub = HubIdentity::load_or_create(&config.hub_key_path())?;
     Ok(AppState::new(db, config, hub, Clock::system()))
 }
@@ -210,7 +236,7 @@ async fn start_push(
 ) -> Result<Vec<tokio::task::JoinHandle<()>>, Box<dyn std::error::Error>> {
     let log = PushLog::default();
     let providers = gim_hub_push::build_providers(
-        &state.config.push,
+        &state.config.load().push,
         log.clone(),
         state.hub.hub_id().as_str(),
     )?;
@@ -220,7 +246,7 @@ async fn start_push(
         state.db.clone(),
         providers,
         log,
-        DispatcherSettings::from(&state.config.push),
+        DispatcherSettings::from(&state.config.load().push),
         head,
     );
     tracing::info!(providers = ?names, "push dispatcher started");
@@ -375,7 +401,7 @@ async fn prune_periodically(state: AppState) {
 /// detached replicas (docs/federation.md §5.4).
 async fn prune(state: &AppState) -> Result<(usize, usize, usize), gim_hub_db::DbError> {
     let now = state.clock.now_ms();
-    let cutoff = now - i64::from(state.config.event_retention_days) * DAY_MS;
+    let cutoff = now - i64::from(state.config.load().event_retention_days) * DAY_MS;
     state
         .db
         .write(move |tx| {
@@ -550,7 +576,7 @@ mod tests {
     async fn prune_deletes_detached_replicas_past_retention() {
         let hub = TestHub::new();
         let now = hub.state.clock.now_ms();
-        let retention = i64::from(hub.state.config.event_retention_days) * DAY_MS;
+        let retention = i64::from(hub.state.config.load().event_retention_days) * DAY_MS;
         hub.state
             .db
             .write(move |tx| {
@@ -595,7 +621,8 @@ mod tests {
     #[tokio::test]
     async fn federation_is_off_by_default() {
         let hub = TestHub::new();
-        let config = FederationConfig::from_vars(Vec::new(), &hub.state.config.data_dir).unwrap();
+        let config =
+            FederationConfig::from_vars(Vec::new(), &hub.state.config.load().data_dir).unwrap();
         assert!(start_federation(&config, &hub.state)
             .await
             .unwrap()
@@ -605,7 +632,7 @@ mod tests {
     #[tokio::test]
     async fn federation_starts_when_enabled_and_fails_without_allowlist() {
         let hub = TestHub::new();
-        let data_dir = hub.state.config.data_dir.clone();
+        let data_dir = hub.state.config.load().data_dir.clone();
         let config = |allowlist: &std::path::Path| {
             FederationConfig::from_vars(
                 [
@@ -713,9 +740,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_state_backs_up_into_the_data_dir() {
+    async fn open_db_backs_up_into_the_data_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        let config = Config::from_vars([
+        let boot = Bootstrap::from_vars([
             (
                 "GIM_HUB_DATA_DIR".to_owned(),
                 tmp.path().display().to_string(),
@@ -723,7 +750,7 @@ mod tests {
             ("LODE_ACTIVE_VERSION".to_owned(), "0.2.1".to_owned()),
         ])
         .unwrap();
-        drop(open_state(config.clone()).unwrap());
+        drop(open_db(&boot).unwrap());
         // Fresh database: no backup.
         assert!(!tmp.path().join("backups").exists());
         // An existing database one schema step behind gets one.
@@ -733,7 +760,7 @@ mod tests {
         drop(conn);
         // The last migration may not re-apply on top of itself; only the
         // backup matters here.
-        let _ = open_state(config);
+        let _ = open_db(&boot);
         assert!(tmp
             .path()
             .join(format!("backups/hub-{from}-0.2.1.db"))
@@ -744,19 +771,22 @@ mod tests {
     async fn open_state_lays_out_data_dir_and_keeps_hub_key() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        let config = || {
-            Config::from_vars([(
+        let vars = || {
+            [(
                 "GIM_HUB_DATA_DIR".to_owned(),
                 dir.join("data").display().to_string(),
-            )])
-            .unwrap()
+            )]
         };
-        let first = open_state(config()).unwrap();
+        let open = || {
+            let db = open_db(&Bootstrap::from_vars(vars()).unwrap()).unwrap();
+            open_state(db, Config::from_vars(vars()).unwrap()).unwrap()
+        };
+        let first = open();
         assert!(dir.join("data/hub.db").is_file());
         assert!(dir.join("data/hub_key").is_file());
         assert!(dir.join("data/blobs").is_dir());
         let hub_id = first.hub.hub_id().clone();
         drop(first);
-        assert_eq!(open_state(config()).unwrap().hub.hub_id(), &hub_id);
+        assert_eq!(open().hub.hub_id(), &hub_id);
     }
 }

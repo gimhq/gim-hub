@@ -18,7 +18,10 @@ export interface Federation {
 }
 
 export interface Allowlist {
-  path: string
+  // "file" when GIM_HUB_FEDERATION_ALLOWLIST is set: the file is authoritative and read-only.
+  source: 'file' | 'stored'
+  read_only: boolean
+  path?: string | null
   text: string
   entries: { hub_id: string, addrs: string[] }[]
 }

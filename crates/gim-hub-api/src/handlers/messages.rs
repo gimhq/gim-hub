@@ -75,7 +75,7 @@ pub async fn send_message(
     Path(gid): Path<String>,
     body: Body,
 ) -> Result<(StatusCode, Json<Message>), ApiError> {
-    let max = state.config.max_message_bytes;
+    let max = state.config.load().max_message_bytes;
     let body_limit = max
         .div_ceil(3)
         .saturating_mul(4)
@@ -266,7 +266,7 @@ pub(crate) async fn submit_from_peer(
             "client_id must be 1-64 characters".into(),
         )));
     }
-    if request.mls_message.len() > state.config.max_message_bytes {
+    if request.mls_message.len() > state.config.load().max_message_bytes {
         return Err(stale(ApiError::PayloadTooLarge));
     }
     let epoch = application_message_epoch(&request.mls_message, &request.gid).map_err(stale)?;

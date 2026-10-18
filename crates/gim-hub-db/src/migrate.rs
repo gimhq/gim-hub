@@ -21,6 +21,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0010_remote_blobs.sql"),
     include_str!("../migrations/0011_push_opaque_provider.sql"),
     include_str!("../migrations/0012_admin.sql"),
+    include_str!("../migrations/0013_settings.sql"),
 ];
 
 /// Schema version after all migrations.
@@ -148,6 +149,7 @@ mod tests {
                 "commit_membership",
                 "devices",
                 "events",
+                "federation_allowlist",
                 "group_members",
                 "groups",
                 "handles",
@@ -166,6 +168,7 @@ mod tests {
                 "s2s_outbox",
                 "s2s_peers",
                 "sessions",
+                "settings",
                 "users",
             ]
         );
