@@ -24,6 +24,8 @@ pub struct AdminConfig {
     pub listen: Option<SocketAddr>,
     /// `GIM_HUB_ADMIN_TOKEN_FILE`: file holding the admin token.
     pub token_file: Option<PathBuf>,
+    /// Whether `GIM_HUB_ADMIN_TOKEN` (the token itself) was set.
+    pub token_env: bool,
     /// SHA-256 of the trimmed token; the token itself is not kept.
     token_hash: Option<[u8; 32]>,
     /// `GIM_HUB_ADMIN_TRUSTED_HEADER`: identity header set by a trusted
@@ -41,6 +43,7 @@ impl std::fmt::Debug for AdminConfig {
         f.debug_struct("AdminConfig")
             .field("listen", &self.listen)
             .field("token_file", &self.token_file)
+            .field("token_env", &self.token_env)
             .field("trusted_header", &self.trusted_header)
             .field("trusted_proxies", &self.trusted_proxies)
             .field("cookie_secure", &self.cookie_secure)
@@ -55,9 +58,9 @@ impl AdminConfig {
     }
 
     /// Reads the configuration from `(name, value)` pairs. With a listen
-    /// address, the token file is read and at least one of the token file
-    /// and the trusted header is required; the trusted header requires
-    /// trusted proxies.
+    /// address, the token comes from `GIM_HUB_ADMIN_TOKEN` or the token file
+    /// (not both), and at least one of a token and the trusted header is
+    /// required; the trusted header requires trusted proxies.
     pub fn from_vars(
         vars: impl IntoIterator<Item = (String, String)>,
     ) -> Result<Self, ConfigError> {
@@ -84,21 +87,22 @@ impl AdminConfig {
                 })?;
 
         let token_file = get("GIM_HUB_ADMIN_TOKEN_FILE").map(PathBuf::from);
-        let token_hash = match &token_file {
-            None => None,
-            Some(path) => {
+        let token_env = get("GIM_HUB_ADMIN_TOKEN");
+        let token_hash = match (token_env, &token_file) {
+            (None, None) => None,
+            (Some(_), Some(_)) => {
+                return Err(invalid(
+                    "GIM_HUB_ADMIN_TOKEN",
+                    REDACTED,
+                    "set either GIM_HUB_ADMIN_TOKEN or GIM_HUB_ADMIN_TOKEN_FILE, not both",
+                ))
+            }
+            (Some(token), None) => Some(parse_token("GIM_HUB_ADMIN_TOKEN", REDACTED, token)?),
+            (None, Some(path)) => {
                 let raw = path.display().to_string();
                 let text = std::fs::read_to_string(path)
                     .map_err(|err| invalid("GIM_HUB_ADMIN_TOKEN_FILE", &raw, &err.to_string()))?;
-                let token = text.trim();
-                if token.chars().count() < MIN_TOKEN_LEN {
-                    return Err(invalid(
-                        "GIM_HUB_ADMIN_TOKEN_FILE",
-                        &raw,
-                        &format!("the token must be at least {MIN_TOKEN_LEN} characters"),
-                    ));
-                }
-                Some(token_hash(token))
+                Some(parse_token("GIM_HUB_ADMIN_TOKEN_FILE", &raw, &text)?)
             }
         };
 
@@ -137,7 +141,7 @@ impl AdminConfig {
             return Err(invalid(
                 "GIM_HUB_ADMIN_LISTEN",
                 listen_raw,
-                "needs GIM_HUB_ADMIN_TOKEN_FILE or GIM_HUB_ADMIN_TRUSTED_HEADER",
+                "needs GIM_HUB_ADMIN_TOKEN, GIM_HUB_ADMIN_TOKEN_FILE or GIM_HUB_ADMIN_TRUSTED_HEADER",
             ));
         }
         let cookie_secure = match get("GIM_HUB_ADMIN_COOKIE_SECURE").map(str::trim) {
@@ -154,6 +158,7 @@ impl AdminConfig {
         Ok(Self {
             listen: Some(listen),
             token_file,
+            token_env: token_env.is_some(),
             token_hash,
             trusted_header,
             trusted_proxies,
@@ -185,6 +190,24 @@ impl AdminConfig {
         let ip = ip.to_canonical();
         self.trusted_proxies.iter().any(|cidr| cidr.contains(ip))
     }
+}
+
+/// Stands in for a secret value in a [`ConfigError`].
+const REDACTED: &str = "<redacted>";
+
+/// Validates an admin token from `name` (the variable value or the file
+/// content; `shown` is what the error displays instead of it) and returns
+/// the SHA-256 of the trimmed token.
+fn parse_token(name: &'static str, shown: &str, text: &str) -> Result<[u8; 32], ConfigError> {
+    let token = text.trim();
+    if token.chars().count() < MIN_TOKEN_LEN {
+        return Err(ConfigError {
+            name,
+            value: shown.to_owned(),
+            reason: format!("too short (minimum {MIN_TOKEN_LEN} characters)"),
+        });
+    }
+    Ok(token_hash(token))
 }
 
 fn token_hash(token: &str) -> [u8; 32] {
@@ -308,6 +331,68 @@ mod tests {
     }
 
     #[test]
+    fn env_token_is_trimmed_hashed_and_compared() {
+        let token = "e".repeat(40);
+        let config = config(&[
+            ("GIM_HUB_ADMIN_LISTEN", "127.0.0.1:8081"),
+            ("GIM_HUB_ADMIN_TOKEN", &format!(" \t{token}\r\n")),
+        ]);
+        assert!(config.token_login());
+        assert!(config.token_env);
+        assert!(config.token_file.is_none());
+        assert!(config.token_matches(&token));
+        assert!(!config.token_matches(&"f".repeat(40)));
+        let debug = format!("{config:?}");
+        assert!(!debug.contains(&token), "{debug}");
+        assert!(!debug.contains("eeee"), "{debug}");
+
+        // Padding is trimmed before the length check, as for the file.
+        let padded = format!("  {}\n", "e".repeat(MIN_TOKEN_LEN - 1));
+        let e = AdminConfig::from_vars(vars(&[
+            ("GIM_HUB_ADMIN_LISTEN", "127.0.0.1:8081"),
+            ("GIM_HUB_ADMIN_TOKEN", &padded),
+        ]))
+        .unwrap_err();
+        assert_eq!(e.name, "GIM_HUB_ADMIN_TOKEN");
+
+        // Ignored without a listen address.
+        let disabled = AdminConfig::from_vars(vars(&[("GIM_HUB_ADMIN_TOKEN", "short")])).unwrap();
+        assert!(!disabled.enabled());
+    }
+
+    #[test]
+    fn env_token_errors_hide_the_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = token_file(&dir, &"a".repeat(64));
+        let listen = ("GIM_HUB_ADMIN_LISTEN", "127.0.0.1:8081");
+        let err = |pairs: &[(&str, &str)]| AdminConfig::from_vars(vars(pairs)).unwrap_err();
+
+        let both = err(&[
+            listen,
+            ("GIM_HUB_ADMIN_TOKEN", &"s3cret-env-token-".repeat(3)),
+            ("GIM_HUB_ADMIN_TOKEN_FILE", &path),
+        ]);
+        let message = both.to_string();
+        assert!(message.contains("GIM_HUB_ADMIN_TOKEN "), "{message}");
+        assert!(message.contains("GIM_HUB_ADMIN_TOKEN_FILE"), "{message}");
+        assert!(!message.contains("s3cret-env-token"), "{message}");
+
+        let short = err(&[listen, ("GIM_HUB_ADMIN_TOKEN", "s3cret-short")]);
+        assert_eq!(short.name, "GIM_HUB_ADMIN_TOKEN");
+        let message = short.to_string();
+        assert!(
+            message.contains("too short (minimum 32 characters)"),
+            "{message}"
+        );
+        assert!(!message.contains("s3cret-short"), "{message}");
+        assert!(!format!("{short:?}").contains("s3cret-short"));
+
+        let none = err(&[listen]).to_string();
+        assert!(none.contains("GIM_HUB_ADMIN_TOKEN,"), "{none}");
+        assert!(none.contains("GIM_HUB_ADMIN_TOKEN_FILE"), "{none}");
+    }
+
+    #[test]
     fn startup_validation() {
         let dir = tempfile::tempdir().unwrap();
         let short = token_file(&dir, "short-token");
@@ -318,6 +403,7 @@ mod tests {
         assert_eq!(e.name, "GIM_HUB_ADMIN_LISTEN");
         let e = err(&[listen, ("GIM_HUB_ADMIN_TOKEN_FILE", &short)]);
         assert_eq!(e.name, "GIM_HUB_ADMIN_TOKEN_FILE");
+        assert_eq!(e.reason, "too short (minimum 32 characters)");
         assert!(!e.to_string().contains("short-token"));
         let e = err(&[listen, ("GIM_HUB_ADMIN_TOKEN_FILE", "/nonexistent/token")]);
         assert_eq!(e.name, "GIM_HUB_ADMIN_TOKEN_FILE");
