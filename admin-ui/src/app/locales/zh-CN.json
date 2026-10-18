@@ -21,7 +21,7 @@
   "theme": { "toggle": "主题：{{mode}}", "light": "浅色", "dark": "深色", "system": "跟随系统" },
   "login": {
     "title": "登录",
-    "description": "输入 GIM_HUB_ADMIN_TOKEN_FILE 中配置的管理员令牌。",
+    "description": "输入 GIM_HUB_ADMIN_TOKEN 或 GIM_HUB_ADMIN_TOKEN_FILE 中配置的管理员令牌。",
     "token": "管理员令牌",
     "submit": "登录"
   },

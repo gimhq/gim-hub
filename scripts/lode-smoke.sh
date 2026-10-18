@@ -8,11 +8,11 @@
 # native manifest served over http by a sibling container on a per-run
 # network, signed with a throwaway key generated here (never printed):
 #
-#   a. install 0.3.0 over a seeded schema-(N-1) database -> ready, pre-migration
+#   a. install 0.3.1 over a seeded schema-(N-1) database -> ready, pre-migration
 #      backup taken, data written, admin UI served on the admin listener
-#   b. publish 0.3.1 (same binary) -> update -> ready on 0.3.1, data kept
-#   c. publish a broken 0.3.2 (exits 3 at startup) -> update -> lode rolls
-#      back to 0.3.1, data kept
+#   b. publish 0.3.2 (same binary) -> update -> ready on 0.3.2, data kept
+#   c. publish a broken 0.3.3 (exits 3 at startup) -> update -> lode rolls
+#      back to 0.3.2, data kept
 #   d. docker stop -t 30 -> clean exit, time printed
 #
 # Requires docker, jq and sqlite3. Every container, network and image carries
@@ -163,45 +163,45 @@ chmod 666 "$WORK/data/hub.db"
 od -An -tx1 -N32 /dev/urandom | tr -d ' \n' >"$WORK/data/admin.token"
 chmod 644 "$WORK/data/admin.token"
 
-# --- a. install 0.3.0 ---------------------------------------------------------
-publish 0.3.0 "$WORK/bin/good"
+# --- a. install 0.3.1 ---------------------------------------------------------
+publish 0.3.1 "$WORK/bin/good"
 docker run -d "${LABELS[@]}" --name "$LODE" --network "$NET" \
     -e GIM_HUB_ADMIN_LISTEN=0.0.0.0:8081 -e GIM_HUB_ADMIN_TOKEN_FILE=/data/admin.token \
     -v "$WORK/lode:/srv/lode" -v "$WORK/data:/data" "$IMAGE" >/dev/null
-wait_for 90 "a: 0.3.0 running and ready" serving 0.3.0
-[[ -f "$WORK/data/backups/hub-$from-0.3.0.db" ]] || fail "a: backup hub-$from-0.3.0.db missing: $(ls "$WORK/data/backups" 2>&1)"
-[[ "$(sqlite3 "$WORK/data/backups/hub-$from-0.3.0.db" 'PRAGMA user_version')" == "$from" ]] || fail "a: backup schema"
+wait_for 90 "a: 0.3.1 running and ready" serving 0.3.1
+[[ -f "$WORK/data/backups/hub-$from-0.3.1.db" ]] || fail "a: backup hub-$from-0.3.1.db missing: $(ls "$WORK/data/backups" 2>&1)"
+[[ "$(sqlite3 "$WORK/data/backups/hub-$from-0.3.1.db" 'PRAGMA user_version')" == "$from" ]] || fail "a: backup schema"
 [[ "$(sqlite3 "$WORK/data/hub.db" 'PRAGMA user_version')" == "$schema" ]] || fail "a: schema not migrated"
-[[ ! -e "$WORK/lode/versions/0.3.0/hub.db" ]] || fail "a: data written into LODE_DIR"
-sqlite3 "$WORK/data/hub.db" "INSERT INTO meta (key, value) VALUES ('smoke-0.3.0', '$RUN');"
+[[ ! -e "$WORK/lode/versions/0.3.1/hub.db" ]] || fail "a: data written into LODE_DIR"
+sqlite3 "$WORK/data/hub.db" "INSERT INTO meta (key, value) VALUES ('smoke-0.3.1', '$RUN');"
 HUB_ID="$(hub_id)"
 admin_ui="$(hub_get /admin/users 8081)" || fail "a: admin listener"
 grep -q '<div id="root"' <<<"$admin_ui" || fail "a: /admin/ is not the embedded admin UI"
-pass "a: install 0.3.0 (signed, fetched + verified) -> status=$(state .status) current=$(state .current) ready=$(state .ready) version=$(hub_version); backup backups/hub-$from-0.3.0.db; data written; admin UI served on :8081"
+pass "a: install 0.3.1 (signed, fetched + verified) -> status=$(state .status) current=$(state .current) ready=$(state .ready) version=$(hub_version); backup backups/hub-$from-0.3.1.db; data written; admin UI served on :8081"
 
-# --- b. update to 0.3.1 -------------------------------------------------------
-publish 0.3.1 "$WORK/bin/good"
-lode_cli update --version 0.3.1 >/dev/null
-wait_for 90 "b: 0.3.1 running and ready" serving 0.3.1
-wait_for 30 "b: 0.3.1 committed as last_good" test "$(state .last_good)" == 0.3.1
+# --- b. update to 0.3.2 -------------------------------------------------------
+publish 0.3.2 "$WORK/bin/good"
+lode_cli update --version 0.3.2 >/dev/null
+wait_for 90 "b: 0.3.2 running and ready" serving 0.3.2
+wait_for 30 "b: 0.3.2 committed as last_good" test "$(state .last_good)" == 0.3.2
 [[ "$(hub_id)" == "$HUB_ID" ]] || fail "b: hub identity changed"
-[[ "$(meta smoke-seed)" == "$RUN" && "$(meta smoke-0.3.0)" == "$RUN" ]] || fail "b: data lost"
-[[ "$(ls "$WORK/data/backups")" == "hub-$from-0.3.0.db" ]] || fail "b: unexpected backups: $(ls "$WORK/data/backups")"
-pass "b: update 0.3.0 -> 0.3.1 -> current=$(state .current) last_good=$(state .last_good) version=$(hub_version); data kept; no backup (schema current)"
+[[ "$(meta smoke-seed)" == "$RUN" && "$(meta smoke-0.3.1)" == "$RUN" ]] || fail "b: data lost"
+[[ "$(ls "$WORK/data/backups")" == "hub-$from-0.3.1.db" ]] || fail "b: unexpected backups: $(ls "$WORK/data/backups")"
+pass "b: update 0.3.1 -> 0.3.2 -> current=$(state .current) last_good=$(state .last_good) version=$(hub_version); data kept; no backup (schema current)"
 
-# --- c. broken 0.3.2 rolls back -----------------------------------------------
-publish 0.3.2 "$WORK/bin/broken"
-lode_cli update --version 0.3.2 >/dev/null || true
+# --- c. broken 0.3.3 rolls back -----------------------------------------------
+publish 0.3.3 "$WORK/bin/broken"
+lode_cli update --version 0.3.3 >/dev/null || true
 rolled_back() {
-    [[ "$(state '[.history[]? | select(.version == "0.3.2" and .result == "bad")] | length')" -ge 1 ]] &&
-        serving 0.3.1
+    [[ "$(state '[.history[]? | select(.version == "0.3.3" and .result == "bad")] | length')" -ge 1 ]] &&
+        serving 0.3.2
 }
-wait_for 120 "c: rollback from 0.3.2 to 0.3.1" rolled_back
-[[ "$(state .last_good)" == 0.3.1 ]] || fail "c: last_good $(state .last_good)"
+wait_for 120 "c: rollback from 0.3.3 to 0.3.2" rolled_back
+[[ "$(state .last_good)" == 0.3.2 ]] || fail "c: last_good $(state .last_good)"
 [[ "$(hub_id)" == "$HUB_ID" ]] || fail "c: hub identity changed"
-[[ "$(meta smoke-seed)" == "$RUN" && "$(meta smoke-0.3.0)" == "$RUN" ]] || fail "c: data lost"
-[[ "$(ls "$WORK/data/backups")" == "hub-$from-0.3.0.db" ]] || fail "c: unexpected backups: $(ls "$WORK/data/backups")"
-pass "c: broken 0.3.2 -> rolled back: current=$(state .current) last_good=$(state .last_good) version=$(hub_version); data kept; backups: $(ls "$WORK/data/backups")"
+[[ "$(meta smoke-seed)" == "$RUN" && "$(meta smoke-0.3.1)" == "$RUN" ]] || fail "c: data lost"
+[[ "$(ls "$WORK/data/backups")" == "hub-$from-0.3.1.db" ]] || fail "c: unexpected backups: $(ls "$WORK/data/backups")"
+pass "c: broken 0.3.3 -> rolled back: current=$(state .current) last_good=$(state .last_good) version=$(hub_version); data kept; backups: $(ls "$WORK/data/backups")"
 
 # --- d. graceful stop ---------------------------------------------------------
 start=$(date +%s%N)
