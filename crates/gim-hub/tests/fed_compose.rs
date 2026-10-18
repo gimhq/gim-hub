@@ -1061,8 +1061,8 @@ async fn push_coalescing(a: &Hub, c: &Hub, alice: &User) {
 /// her message goes through; back to open, ivan signs in again and gets it.
 async fn user_policy(a: &Hub, b: &Hub) {
     let start = Instant::now();
-    let heidi = User::sign_up("heidi", a, 8, 81, 2).await;
-    let ivan = User::sign_up("ivan", b, 9, 91, 1).await;
+    let heidi = User::sign_up("heidi", a, 14, 141, 2).await;
+    let ivan = User::sign_up("ivan", b, 15, 151, 1).await;
     for (hub, user) in [(b, &heidi), (a, &ivan)] {
         let path = format!("/v2/users/{}/hosting-record", user.user_id);
         eventually(
@@ -1171,7 +1171,7 @@ async fn user_policy(a: &Hub, b: &Hub) {
             )
             .await;
         if status == StatusCode::OK {
-            again = Some(User::sign_in("ivan", b, 9, 91, 0).await);
+            again = Some(User::sign_in("ivan", b, 15, 151, 0).await);
         } else {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
