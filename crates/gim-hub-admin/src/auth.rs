@@ -180,8 +180,8 @@ pub(crate) fn seconds(ms: i64) -> i64 {
     path = "/admin/api/login",
     tag = "auth",
     summary = "Log in with the admin token",
-    description = "Compares the token with `GIM_HUB_ADMIN_TOKEN_FILE` in constant time and sets \
-the `gim_admin_session` cookie (HttpOnly, SameSite=Strict, Path=/admin, 8 h absolute). At most 5 \
+    description = "Compares the token with `GIM_HUB_ADMIN_TOKEN` or `GIM_HUB_ADMIN_TOKEN_FILE` in \
+constant time and sets the `gim_admin_session` cookie (HttpOnly, SameSite=Strict, Path=/admin, 8 h absolute). At most 5 \
 failed logins per source IP and minute. Audited as `login_ok` or `login_failed` (never the token).",
     request_body = LoginRequest,
     responses(

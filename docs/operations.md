@@ -186,13 +186,17 @@ The admin API and UI listen on a separate socket, off unless
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `GIM_HUB_ADMIN_LISTEN` | unset | Socket address of the admin listener (recommended `127.0.0.1:8081` behind a TLS proxy); unset disables it and the other `GIM_HUB_ADMIN_*` variables are ignored |
-| `GIM_HUB_ADMIN_TOKEN_FILE` | unset | File holding the admin token (trimmed, at least 32 characters); unset disables token login |
+| `GIM_HUB_ADMIN_TOKEN_FILE` | unset | File holding the admin token (trimmed, at least 32 characters); recommended, e.g. a Docker/compose secret mounted as a file |
+| `GIM_HUB_ADMIN_TOKEN` | unset | The admin token itself (same rules); mutually exclusive with `GIM_HUB_ADMIN_TOKEN_FILE`. With neither set, token login is disabled |
 | `GIM_HUB_ADMIN_TRUSTED_HEADER` | unset | Identity header set by a reverse proxy (e.g. `X-Forwarded-User`); requires `GIM_HUB_ADMIN_TRUSTED_PROXIES` |
 | `GIM_HUB_ADMIN_TRUSTED_PROXIES` | unset | Comma-separated CIDRs whose `X-Forwarded-For` and identity header are trusted |
 | `GIM_HUB_ADMIN_COOKIE_SECURE` | `false` | `true` sets `Secure` on the session cookie |
 
-With `GIM_HUB_ADMIN_LISTEN` set, at least one of the token file and the trusted
-header is required; otherwise the hub does not start.
+With `GIM_HUB_ADMIN_LISTEN` set, at least one of `GIM_HUB_ADMIN_TOKEN`,
+`GIM_HUB_ADMIN_TOKEN_FILE` and the trusted header is required; otherwise the
+hub does not start. Prefer the file: an environment token is visible in
+`docker inspect` and `/proc/<pid>/environ`, is inherited by child processes,
+and is plaintext in `lode.toml` `[env]`.
 
 ## Data directory
 
@@ -355,7 +359,7 @@ set; without it nothing changes.
   `stop_grace_period: 40s`).
 - **Version reporting.** `GET /healthz`, `GET /v2/hub` (`version`) and
   `gim-hub version` report `LODE_ACTIVE_VERSION` when supervised (the
-  version lode installed, e.g. `0.3.1`), else the package version (`0.3.0`).
+  version lode installed, e.g. `0.3.1`), else the package version (`0.3.1`).
   `gim-hub version` adds the build revision: `gim-hub 0.3.1 (<rev>)`. The
   same version names the pre-migration backups.
 - **Rollback and the database.** lode rolls back the binary, not the data.
