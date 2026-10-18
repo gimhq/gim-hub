@@ -25,6 +25,9 @@ metadata. Groups appear only as an aggregate count.
 
    The token is trimmed and must be at least 32 characters. The hub reads the
    file at startup and keeps only its SHA-256; a changed token needs a restart.
+   Under Docker or compose, mount the token as a secret file (compose
+   `secrets:`, read from `/run/secrets/<name>`) and point
+   `GIM_HUB_ADMIN_TOKEN_FILE` at it.
 2. Set the variables and restart the hub:
 
    ```sh
@@ -37,14 +40,23 @@ metadata. Groups appear only as an aggregate count.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `GIM_HUB_ADMIN_LISTEN` | unset | Admin socket address. Unset: no listener, and the other variables are ignored |
-| `GIM_HUB_ADMIN_TOKEN_FILE` | unset | Admin token file. Unset: token login is disabled (POST /admin/api/login answers 403 `forbidden`) |
+| `GIM_HUB_ADMIN_TOKEN_FILE` | unset | Admin token file (recommended). Unset together with `GIM_HUB_ADMIN_TOKEN`: token login is disabled (POST /admin/api/login answers 403 `forbidden`) |
+| `GIM_HUB_ADMIN_TOKEN` | unset | The admin token itself, instead of a file; same trimming and minimum length. Setting both is a startup error |
 | `GIM_HUB_ADMIN_TRUSTED_HEADER` | unset | Identity header set by a trusted reverse proxy, e.g. `X-Forwarded-User` |
 | `GIM_HUB_ADMIN_TRUSTED_PROXIES` | unset | Comma-separated CIDRs (or single addresses) of trusted proxies; required with the header |
 | `GIM_HUB_ADMIN_COOKIE_SECURE` | `false` | Set `Secure` on the session cookie |
 
-With `GIM_HUB_ADMIN_LISTEN` set the hub refuses to start without a token file
-or a trusted header, with a trusted header but no trusted proxies, or with an
-unreadable or too short token file.
+With `GIM_HUB_ADMIN_LISTEN` set the hub refuses to start without a token
+(`GIM_HUB_ADMIN_TOKEN` or `GIM_HUB_ADMIN_TOKEN_FILE`) or a trusted header, with
+both token variables set, with a trusted header but no trusted proxies, or with
+an unreadable or too short token. Startup errors never contain the token.
+
+Prefer the token file. `GIM_HUB_ADMIN_TOKEN` exists for platforms that only
+inject environment variables, but an environment value is visible in
+`docker inspect` and `/proc/<pid>/environ`, is inherited by child processes,
+and sits in plaintext in `lode.toml` `[env]` when set there. Either way the
+hub keeps only the token's SHA-256, and GET /admin/api/config shows
+`GIM_HUB_ADMIN_TOKEN` as redacted.
 
 Bind the listener to loopback (or a private network only the proxy can reach)
 and terminate TLS in a reverse proxy. `GIM_HUB_ADMIN_COOKIE_SECURE` defaults to
@@ -64,7 +76,7 @@ GIM_HUB_ADMIN_LISTEN=0.0.0.0:8081          # reachable only on the proxy network
 GIM_HUB_ADMIN_TRUSTED_HEADER=X-Forwarded-User
 GIM_HUB_ADMIN_TRUSTED_PROXIES=172.18.0.0/16 # the traefik network
 GIM_HUB_ADMIN_COOKIE_SECURE=true
-# GIM_HUB_ADMIN_TOKEN_FILE unset: token login disabled
+# GIM_HUB_ADMIN_TOKEN_FILE and GIM_HUB_ADMIN_TOKEN unset: token login disabled
 ```
 
 traefik dynamic configuration (file provider):

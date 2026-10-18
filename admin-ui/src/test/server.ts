@@ -159,6 +159,7 @@ export const handlers = [
       { key: 'GIM_HUB_LISTEN', value: '0.0.0.0:8080', redacted: false },
       { key: 'GIM_HUB_PUSH_WEBHOOK_SECRET', value: null, redacted: true },
       { key: 'GIM_HUB_PUBLIC_URL', value: null, redacted: false },
+      { key: 'GIM_HUB_ADMIN_TOKEN', value: null, redacted: true },
     ],
   })),
   http.get(`${API}/audit`, ({ request }) => {

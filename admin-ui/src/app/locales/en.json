@@ -21,7 +21,7 @@
   "theme": { "toggle": "Theme: {{mode}}", "light": "light", "dark": "dark", "system": "system" },
   "login": {
     "title": "Sign in",
-    "description": "Enter the admin token configured in GIM_HUB_ADMIN_TOKEN_FILE.",
+    "description": "Enter the admin token configured in GIM_HUB_ADMIN_TOKEN or GIM_HUB_ADMIN_TOKEN_FILE.",
     "token": "Admin token",
     "submit": "Sign in"
   },
