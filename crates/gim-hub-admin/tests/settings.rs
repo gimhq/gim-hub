@@ -356,6 +356,92 @@ async fn secrets_are_never_returned() {
 }
 
 #[tokio::test]
+async fn ui_value_encodings_and_reset_of_a_default() {
+    let admin = Admin::new();
+    let login = admin.login().await;
+    // Raw text the UI could not parse as a number, or a non-integer: 422.
+    for (key, value) in [
+        ("GIM_HUB_EVENT_RETENTION_DAYS", json!("abc")),
+        ("GIM_HUB_EVENT_RETENTION_DAYS", json!("1.5")),
+        ("GIM_HUB_EVENT_RETENTION_DAYS", json!(1.5)),
+        ("GIM_HUB_EVENT_RETENTION_DAYS", json!(-1)),
+        ("GIM_HUB_PUSH_WEBHOOK_TIMEOUT_SECONDS", json!("10s")),
+        ("GIM_HUB_P2P_BOOTSTRAP", json!([1, 2])),
+        ("GIM_HUB_PUSH_MINIMAL", json!(1)),
+    ] {
+        let response = put(&admin, &login, key, value.clone()).await;
+        assert_eq!(
+            response.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{key} = {value}: {}",
+            response.body
+        );
+        assert_eq!(response.code(), "validation_failed");
+    }
+
+    // Typed values as the UI sends them; the list reflects each write at once.
+    for (key, value) in [
+        ("GIM_HUB_EVENT_RETENTION_DAYS", json!(9)),
+        ("GIM_HUB_PUSH_WEBHOOK_TIMEOUT_SECONDS", json!(20)),
+        ("GIM_HUB_PUSH_MINIMAL", json!(true)),
+        (
+            "GIM_HUB_P2P_BOOTSTRAP",
+            json!(["/dns4/hub-b.example.eu/tcp/4001"]),
+        ),
+        ("GIM_HUB_PUBLIC_URL", json!("https://hub.example.eu")),
+    ] {
+        let response = put(&admin, &login, key, value.clone()).await;
+        assert_eq!(response.status, StatusCode::OK, "{key}: {}", response.body);
+        assert_eq!(response.body["value"], value);
+        let list = admin
+            .call(Method::GET, "/admin/api/settings", &login, None)
+            .await;
+        let item = find(&list.body, key);
+        assert_eq!(
+            (&item["value"], &item["source"]),
+            (&value, &json!("stored"))
+        );
+        assert_eq!(item["updated_by"], "token");
+    }
+    let list = admin
+        .call(Method::GET, "/admin/api/settings", &login, None)
+        .await;
+    assert_eq!(list.body["restart_pending"], true);
+
+    // DELETE of a row at its default: 200 with the unchanged item.
+    let path = "/admin/api/settings/GIM_HUB_KEYPACKAGE_LOW_THRESHOLD";
+    let before = admin.call(Method::GET, path, &login, None).await;
+    let response = admin.call(Method::DELETE, path, &login, None).await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+    assert_eq!(response.body, before.body);
+    assert_eq!(response.body["source"], "default");
+
+    // Unsetting the restart setting clears the global flag at once.
+    let response = admin
+        .call(
+            Method::DELETE,
+            "/admin/api/settings/GIM_HUB_PUBLIC_URL",
+            &login,
+            None,
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    let response = admin
+        .call(
+            Method::DELETE,
+            "/admin/api/settings/GIM_HUB_P2P_BOOTSTRAP",
+            &login,
+            None,
+        )
+        .await;
+    assert_eq!(response.body["source"], "default");
+    let list = admin
+        .call(Method::GET, "/admin/api/settings", &login, None)
+        .await;
+    assert_eq!(list.body["restart_pending"], false);
+}
+
+#[tokio::test]
 async fn restart_settings_are_pending_until_restart() {
     let admin = Admin::new();
     let login = admin.login().await;
