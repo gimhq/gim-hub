@@ -219,13 +219,13 @@ Stored settings, their precedence, reload and CLI:
 | `enum` | Allowed values, or `null` (no setting has a fixed set today) |
 | `description` | One line |
 | `default` | The default as JSON (`null`: unset) |
-| `value` | The effective value as JSON (`null` when unset; always `null` for a secret) |
-| `is_set` | Whether a value is in effect (env or stored) |
+| `value` | The effective value as JSON: the default when neither env nor stored (`null` for a setting without default); always `null` for a secret |
+| `is_set` | Secrets: whether one is set (env or stored). Other settings: whether `value` differs from `default` |
 | `source` | `env`, `stored` or `default` |
 | `read_only` | `true` when set by the environment |
 | `apply` | `live` (applied at once) or `restart` |
 | `restart_pending` | `true` while the effective value differs from the one the hub started with (`restart` settings only) |
-| `updated_at`, `updated_by` | Last stored write (seconds; actor such as `token`, `header:<identity>`, `cli`), or `null` |
+| `updated_at`, `updated_by` | Last write of the stored row (seconds; actor verbatim: `token`, `header:<identity>`, `cli`), or `null` without a stored row; kept when the environment overrides the row |
 
 PUT takes the value in its JSON type or as a string in the environment
 variable's syntax (`30`, `"30"`, `true`, `"a,b"` and `["a","b"]` are all
