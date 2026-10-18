@@ -17,6 +17,7 @@ import { Route as AuthedConfigRouteImport } from './routes/_authed/config'
 import { Route as AuthedFederationRouteImport } from './routes/_authed/federation'
 import { Route as AuthedLodeRouteImport } from './routes/_authed/lode'
 import { Route as AuthedSettingsRouteImport } from './routes/_authed/settings'
+import { Route as AuthedUserPolicyRouteImport } from './routes/_authed/user-policy'
 import { Route as AuthedUsersIndexRouteImport } from './routes/_authed/users/index'
 import { Route as AuthedUsersUserIdRouteImport } from './routes/_authed/users/$userId'
 
@@ -59,6 +60,11 @@ const AuthedSettingsRoute = AuthedSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedUserPolicyRoute = AuthedUserPolicyRouteImport.update({
+  id: '/user-policy',
+  path: '/user-policy',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedUsersIndexRoute = AuthedUsersIndexRouteImport.update({
   id: '/users/',
   path: '/users/',
@@ -78,6 +84,7 @@ export interface FileRoutesByFullPath {
   '/federation': typeof AuthedFederationRoute
   '/lode': typeof AuthedLodeRoute
   '/settings': typeof AuthedSettingsRoute
+  '/user-policy': typeof AuthedUserPolicyRoute
   '/users/$userId': typeof AuthedUsersUserIdRoute
   '/users/': typeof AuthedUsersIndexRoute
 }
@@ -88,6 +95,7 @@ export interface FileRoutesByTo {
   '/federation': typeof AuthedFederationRoute
   '/lode': typeof AuthedLodeRoute
   '/settings': typeof AuthedSettingsRoute
+  '/user-policy': typeof AuthedUserPolicyRoute
   '/': typeof AuthedIndexRoute
   '/users/$userId': typeof AuthedUsersUserIdRoute
   '/users': typeof AuthedUsersIndexRoute
@@ -101,6 +109,7 @@ export interface FileRoutesById {
   '/_authed/federation': typeof AuthedFederationRoute
   '/_authed/lode': typeof AuthedLodeRoute
   '/_authed/settings': typeof AuthedSettingsRoute
+  '/_authed/user-policy': typeof AuthedUserPolicyRoute
   '/_authed/': typeof AuthedIndexRoute
   '/_authed/users/$userId': typeof AuthedUsersUserIdRoute
   '/_authed/users/': typeof AuthedUsersIndexRoute
@@ -115,6 +124,7 @@ export interface FileRouteTypes {
     | '/federation'
     | '/lode'
     | '/settings'
+    | '/user-policy'
     | '/users/$userId'
     | '/users/'
   fileRoutesByTo: FileRoutesByTo
@@ -125,6 +135,7 @@ export interface FileRouteTypes {
     | '/federation'
     | '/lode'
     | '/settings'
+    | '/user-policy'
     | '/'
     | '/users/$userId'
     | '/users'
@@ -137,6 +148,7 @@ export interface FileRouteTypes {
     | '/_authed/federation'
     | '/_authed/lode'
     | '/_authed/settings'
+    | '/_authed/user-policy'
     | '/_authed/'
     | '/_authed/users/$userId'
     | '/_authed/users/'
@@ -205,6 +217,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedSettingsRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/user-policy': {
+      id: '/_authed/user-policy'
+      path: '/user-policy'
+      fullPath: '/user-policy'
+      preLoaderRoute: typeof AuthedUserPolicyRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/users/': {
       id: '/_authed/users/'
       path: '/users'
@@ -228,6 +247,7 @@ interface AuthedRouteChildren {
   AuthedFederationRoute: typeof AuthedFederationRoute
   AuthedLodeRoute: typeof AuthedLodeRoute
   AuthedSettingsRoute: typeof AuthedSettingsRoute
+  AuthedUserPolicyRoute: typeof AuthedUserPolicyRoute
   AuthedIndexRoute: typeof AuthedIndexRoute
   AuthedUsersUserIdRoute: typeof AuthedUsersUserIdRoute
   AuthedUsersIndexRoute: typeof AuthedUsersIndexRoute
@@ -239,6 +259,7 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedFederationRoute: AuthedFederationRoute,
   AuthedLodeRoute: AuthedLodeRoute,
   AuthedSettingsRoute: AuthedSettingsRoute,
+  AuthedUserPolicyRoute: AuthedUserPolicyRoute,
   AuthedIndexRoute: AuthedIndexRoute,
   AuthedUsersUserIdRoute: AuthedUsersUserIdRoute,
   AuthedUsersIndexRoute: AuthedUsersIndexRoute,

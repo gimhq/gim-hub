@@ -6,4 +6,5 @@ pub mod federation;
 pub mod lode;
 pub mod overview;
 pub mod settings;
+pub mod user_policy;
 pub mod users;

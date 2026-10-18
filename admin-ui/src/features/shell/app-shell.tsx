@@ -28,6 +28,7 @@ export function AppShell() {
         <nav aria-label={t('app.nav')} className="flex flex-1 flex-wrap gap-1">
           <Link to="/" className={linkClass} activeOptions={{ exact: true }}>{t('nav.overview')}</Link>
           <Link to="/users" className={linkClass}>{t('nav.users')}</Link>
+          <Link to="/user-policy" className={linkClass}>{t('nav.user_policy')}</Link>
           <Link to="/federation" className={linkClass}>{t('nav.federation')}</Link>
           {lode.data?.supervised && <Link to="/lode" className={linkClass}>{t('nav.lode')}</Link>}
           <Link to="/settings" className={linkClass}>{t('nav.settings')}</Link>

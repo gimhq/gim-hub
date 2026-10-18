@@ -66,6 +66,7 @@ pub async fn get_overview(State(state): State<AdminState>) -> Result<Json<Overvi
             failed: push.failed,
         },
         event_retention_days: state.app.config.load().event_retention_days,
+        user_policy: state.app.user_policy.mode().as_str().to_owned(),
     }))
 }
 

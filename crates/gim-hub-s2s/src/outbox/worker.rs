@@ -538,7 +538,8 @@ enum Outcome {
     /// (the transport already re-sent `Hello` once), or a malformed response.
     Retry(String),
     Unauthorized(String),
-    /// `INVALID`, `NOT_FOUND`.
+    /// `INVALID`, `NOT_FOUND`, `UNAUTHORIZED` with `client_code`
+    /// `user_not_admitted`.
     Permanent(String),
 }
 
@@ -550,6 +551,9 @@ fn classify(response: Result<S2sResponse, SendError>) -> Outcome {
         }) => {
             let reason = format!("{:?}: {}", error.code(), error.message);
             match error.code() {
+                // The user policy refusal does not change with a hosting
+                // refresh.
+                _ if crate::ops::is_not_admitted(&error) => Outcome::Permanent(reason),
                 ErrorCode::Invalid | ErrorCode::NotFound => Outcome::Permanent(reason),
                 ErrorCode::Unauthorized => Outcome::Unauthorized(reason),
                 _ => Outcome::Retry(reason),

@@ -1,17 +1,18 @@
 //! Group federation across in-process hubs on 127.0.0.1 (real libp2p
 //! transport, ephemeral ports): Commits and messages of remote members on
 //! the owning hub, forwarding from member hubs, replicas, `Deliver`,
-//! `DeliverWelcome`, `FetchLog` gap fill and refusals
-//! (docs/federation.md §5.3, §5.4, §6.2-§6.7).
+//! `DeliverWelcome`, `FetchLog` gap fill and refusals, including the user
+//! policy (docs/federation.md §5.3, §5.4, §6.2-§6.7).
 
 mod mls_support;
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use axum::http::{Method, StatusCode};
 use gim_hub_api::{
     handlers::{register_claim_op, register_device_list_ops, register_group_ops},
     testing::{TestHub, TEST_NOW},
+    user_policy::Mode,
 };
 use gim_hub_db::groups;
 use gim_hub_identity::{HostingRecord, HubId};
@@ -1135,4 +1136,186 @@ async fn proposal_forwarded_and_committed_by_reference_from_a_third_hub() {
     let (status, body) = send(&b.hub, Method::GET, &group_path(&gid), &bob.token, None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(code(&body), "not_member");
+}
+
+/// The user policy on the relay (docs/operations.md, "User policy"; s2s.md):
+/// once B's policy (`mode`) stops admitting alice@A, B refuses her
+/// `ClaimKeyPackage`, her `SubmitCommit` / `SubmitMessage` in B's group and
+/// the `DeliverWelcome` of her invite (dropped by A's outbox for good), with
+/// `UNAUTHORIZED` / `user_not_admitted`; A's client sees `not_admitted` /
+/// 403 `not_admitted_by_peer`. carol@A stays admitted, and the `Deliver` of
+/// A's group still reaches bob.
+async fn relay_refusals(mode: Mode) {
+    let nodes = cluster(&[101, 102], 1000).await;
+    let (a, b) = (&nodes[0], &nodes[1]);
+    let alice = Client::new(&a.hub, 1, 11).await;
+    alice.upload_key_packages(&a.hub, 1).await;
+    let bob = Client::new(&b.hub, 2, 21).await;
+    bob.upload_key_packages(&b.hub, 3).await;
+    let carol = Client::new(&a.hub, 3, 31).await;
+    host(&[a, b], 1, a).await;
+    host(&[a, b], 2, b).await;
+    host(&[a, b], 3, a).await;
+
+    // Before the policy: alice joins bob's group on B, bob joins alice's on A.
+    let (gid_b, mut bob_group) = create_group(&bob, &b.hub, "group").await;
+    let kp = bob.claim(&b.hub, &alice).await;
+    let (commit, welcome, _) = bob_group
+        .add_members(&bob.provider, &bob.signer, &[kp])
+        .unwrap();
+    let body = with_welcome(commit_body("b1", &commit), &welcome, &[&alice]);
+    let (status, result) = bob.submit_commit(&b.hub, &gid_b, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    bob_group.merge_pending_commit(&bob.provider).unwrap();
+    let welcomes = wait_events(&alice, &a.hub, "welcome", 1).await;
+    let mut alice_in_b = join(&alice, &welcomes[0]);
+
+    let (gid_a, mut alice_group) = create_group(&alice, &a.hub, "group").await;
+    let kp = alice.claim(&a.hub, &bob).await;
+    let (commit, welcome, _) = alice_group
+        .add_members(&alice.provider, &alice.signer, &[kp])
+        .unwrap();
+    let body = with_welcome(commit_body("a1", &commit), &welcome, &[&bob]);
+    let (status, result) = alice.submit_commit(&a.hub, &gid_a, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    alice_group.merge_pending_commit(&alice.provider).unwrap();
+    let welcomes = wait_events(&bob, &b.hub, "welcome", 1).await;
+    let mut bob_in_a = join(&bob, &welcomes[0]);
+    // A KeyPackage of bob claimed before the policy, for an invite after it.
+    let spare = alice.claim(&a.hub, &bob).await;
+
+    let listed = match mode {
+        Mode::Allow => [bob.user_id.clone(), carol.user_id.clone()],
+        _ => [alice.user_id.clone(), "u-unrelated".to_owned()],
+    };
+    b.hub.state.user_policy.set(mode, BTreeSet::from(listed));
+
+    // ClaimKeyPackage: refused for alice, served for carol.
+    let (status, claimed) = send(
+        &a.hub,
+        Method::POST,
+        "/v2/keypackages/claim",
+        &alice.token,
+        Some(json!({ "targets": [{ "user_id": bob.user_id }] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    assert_eq!(
+        claimed,
+        json!({
+            "key_packages": [],
+            "missing": [],
+            "unavailable": [],
+            "not_admitted": [{ "user_id": bob.user_id }],
+        })
+    );
+    carol.claim(&a.hub, &bob).await;
+    let refusal = |response: gim_hub_proto::s2s::S2sResponse| {
+        let error = response.error.expect("refused");
+        (error.code(), error.client_code)
+    };
+    let not_admitted = (ErrorCode::Unauthorized, "user_not_admitted".to_owned());
+    let direct = S2sRequest {
+        request_id: "r".into(),
+        op: Some(Op::ClaimKeyPackage(
+            gim_hub_proto::s2s::ClaimKeyPackageRequest {
+                requester_user_id: alice.user_id.clone(),
+                target_user_id: bob.user_id.clone(),
+                device_id: None,
+            },
+        )),
+    };
+    let response = a.service.send(&b.id(), direct).await.unwrap();
+    assert_eq!(refusal(response), not_admitted);
+
+    // SubmitMessage and SubmitCommit in B's group: 403 not_admitted_by_peer.
+    let mls = application(&alice, &mut alice_in_b, b"hi");
+    let (status, body) = post_message(&alice, &a.hub, &gid_b, "m1", &mls).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(
+        body,
+        json!({ "error": { "code": "not_admitted_by_peer", "message": "a peer hub does not admit this user" } })
+    );
+    let update = alice_in_b
+        .self_update(
+            &alice.provider,
+            &alice.signer,
+            LeafNodeParameters::default(),
+        )
+        .unwrap()
+        .into_commit();
+    let (status, body) = alice
+        .submit_commit(&a.hub, &gid_b, commit_body("u1", &update))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(code(&body), "not_admitted_by_peer");
+    let direct = S2sRequest {
+        request_id: "r".into(),
+        op: Some(Op::SubmitMessage(SubmitMessageRequest {
+            gid: gid_b.clone(),
+            sender_user_id: alice.user_id.clone(),
+            sender_device_id: alice.device_id.clone(),
+            client_id: "m2".into(),
+            mls_message: mls,
+        })),
+    };
+    let response = a.service.send(&b.id(), direct).await.unwrap();
+    assert_eq!(refusal(response), not_admitted);
+    // Bob, admitted, still posts in his group; nothing of alice's was stored.
+    let mls = application(&bob, &mut bob_group, b"bob");
+    let (status, message) = post_message(&bob, &b.hub, &gid_b, "b2", &mls).await;
+    assert_eq!(status, StatusCode::CREATED, "{message}");
+    assert_eq!(message["seq"], 2);
+
+    // Deliver of A's group is never filtered: alice's message reaches bob.
+    let mls = application(&alice, &mut alice_group, b"still here");
+    let (status, message) = post_message(&alice, &a.hub, &gid_a, "a2", &mls).await;
+    assert_eq!(status, StatusCode::CREATED, "{message}");
+    let text = receive(&bob, &b.hub, &mut bob_in_a, 2).await;
+    assert_eq!(text.unwrap(), b"still here");
+
+    // DeliverWelcome: alice invites bob into a new group on A; the Commit is
+    // sequenced on A, B refuses the Welcome and A's outbox drops it.
+    let (gid_c, mut invite) = create_group(&alice, &a.hub, "group").await;
+    let (commit, welcome, _) = invite
+        .add_members(&alice.provider, &alice.signer, &[spare])
+        .unwrap();
+    let body = with_welcome(commit_body("c1", &commit), &welcome, &[&bob]);
+    let (status, result) = alice.submit_commit(&a.hub, &gid_c, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    let outbox = a.outbox.clone();
+    let b_id = b.id();
+    eventually("the refused Welcome to be dropped", || {
+        let (outbox, b_id) = (outbox.clone(), b_id.clone());
+        async move { outbox.dropped_total(&b_id, gim_hub_s2s::outbox::DropReason::Rejected) >= 1 }
+    })
+    .await;
+    let welcomes = bob.events_of(&b.hub, "welcome").await;
+    assert_eq!(welcomes.len(), 1, "only the Welcome from before the policy");
+    assert_eq!(welcomes[0]["gid"], json!(gid_a));
+    let direct = S2sRequest {
+        request_id: "r".into(),
+        op: Some(Op::DeliverWelcome(
+            gim_hub_proto::s2s::DeliverWelcomeRequest {
+                gid: gid_c,
+                sender_user_id: alice.user_id.clone(),
+                recipient_user_id: bob.user_id.clone(),
+                recipient_device_ids: vec![bob.device_id.clone()],
+                group: Some(Default::default()),
+                ..Default::default()
+            },
+        )),
+    };
+    let response = a.service.send(&b.id(), direct).await.unwrap();
+    assert_eq!(refusal(response), not_admitted);
+}
+
+#[tokio::test]
+async fn relay_refuses_users_the_deny_list_names() {
+    relay_refusals(Mode::Deny).await;
+}
+
+#[tokio::test]
+async fn relay_refuses_users_the_allow_list_omits() {
+    relay_refusals(Mode::Allow).await;
 }

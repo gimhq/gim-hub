@@ -36,14 +36,14 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
     summary = "Request a sign-in challenge",
     description = "Issues a single-use gim-core AuthChallenge (audience = this hub's `hub_id`, \
 32-byte random nonce, valid for 5 minutes) for a device listed as active in the user's stored \
-DeviceList. A hub with a public URL issues version 2, which also carries `audience_url` = its \
+DeviceList, unless the user is suspended or not admitted by the hub's user policy (403). A hub with a public URL issues version 2, which also carries `audience_url` = its \
 `public_url`; a hub without one issues version 1. The device signs the challenge bytes into an AuthResponse and answers with \
 POST /v2/auth/session before `expires_at`.",
     request_body = AuthChallengeRequest,
     responses(
         (status = 200, description = "Challenge issued", body = AuthChallenge),
         (status = 400, description = "Malformed body, user ID or device ID (`validation_failed`)", body = Error),
-        (status = 403, description = "An admin suspended the user: `{\"error\":{\"code\":\"user_suspended\",\"message\":\"user is suspended\"}}`. Only the two sign-in endpoints return `user_suspended`; the suspension deleted the user's sessions, so endpoints called with an earlier token answer 401 `unauthorized`", body = Error),
+        (status = 403, description = "An admin suspended the user: `{\"error\":{\"code\":\"user_suspended\",\"message\":\"user is suspended\"}}`; or the hub's user policy (`GIM_HUB_USER_POLICY`) does not admit the user: `{\"error\":{\"code\":\"user_not_admitted\",\"message\":\"user is not admitted on this hub\"}}`. A suspended user that is also not admitted gets `user_suspended`. Both deleted the user's sessions, so endpoints called with an earlier token answer 401 `unauthorized`", body = Error),
         (status = 404, description = "No DeviceList stored for the user, or the device is not active in it (`not_found`)", body = Error),
     ),
 )]
@@ -77,11 +77,15 @@ pub async fn create_auth_challenge(
         challenge: challenge.clone(),
         expires_at,
     };
+    let admitted = state.user_policy.admitted(user_id.as_str());
     state
         .db
         .write(move |tx| {
             if admin::is_suspended(tx, &row.user_id)? {
                 return Err(ApiError::UserSuspended);
+            }
+            if !admitted {
+                return Err(ApiError::UserNotAdmitted);
             }
             if !db_auth::device_is_active(tx, &row.user_id, &row.device_id)? {
                 return Err(ApiError::NotFound);
@@ -107,14 +111,15 @@ pub async fn create_auth_challenge(
 this hub's `hub_id` (and, with a public URL, a version 2 challenge whose `audience_url` is this \
 hub's `public_url`; without one, only version 1), then consumes the challenge: its nonce must have been issued by this hub \
 for the same user and device, be unexpired and unused. The device must still be active (not \
-revoked) and the user not suspended by an admin. The token is revoked when a later DeviceList \
-revokes the device or an admin suspends the user.",
+revoked), the user not suspended by an admin and admitted by the hub's user policy. The token is \
+revoked when a later DeviceList revokes the device, an admin suspends the user or the user \
+policy stops admitting the user.",
     request_body = CreateSessionRequest,
     responses(
         (status = 200, description = "Session created", body = Session),
         (status = 400, description = "Malformed body or AuthResponse (`validation_failed`)", body = Error),
         (status = 401, description = "Unknown, used or expired challenge, one issued by another hub, for another URL or another device, or of the wrong version (`invalid_challenge`); bad signature (`invalid_signature`); device revoked or not in the DeviceList (`device_not_active`)", body = Error),
-        (status = 403, description = "An admin suspended the user: `{\"error\":{\"code\":\"user_suspended\",\"message\":\"user is suspended\"}}`. Only the two sign-in endpoints return `user_suspended`; the suspension deleted the user's sessions, so endpoints called with an earlier token answer 401 `unauthorized`", body = Error),
+        (status = 403, description = "An admin suspended the user: `{\"error\":{\"code\":\"user_suspended\",\"message\":\"user is suspended\"}}`; or the hub's user policy (`GIM_HUB_USER_POLICY`) does not admit the user: `{\"error\":{\"code\":\"user_not_admitted\",\"message\":\"user is not admitted on this hub\"}}`. A suspended user that is also not admitted gets `user_suspended`. Both deleted the user's sessions, so endpoints called with an earlier token answer 401 `unauthorized`", body = Error),
     ),
 )]
 pub async fn create_session(
@@ -133,6 +138,7 @@ pub async fn create_session(
     let expires_at = now + i64::from(state.config.load().session_ttl_days) * DAY_MS;
     let hub_id = state.hub.hub_id().clone();
     let public_url = state.config.load().public_url.clone();
+    let admitted = state.user_policy.admitted(user_id.as_str());
     state
         .db
         .write(move |tx| {
@@ -141,6 +147,9 @@ pub async fn create_session(
                 users::get_device_list(tx, user_id.as_str())?.ok_or(ApiError::InvalidChallenge)?;
             if admin::is_suspended(tx, user_id.as_str())? {
                 return Err(ApiError::UserSuspended);
+            }
+            if !admitted {
+                return Err(ApiError::UserNotAdmitted);
             }
             let list = DeviceList::verify(&stored.device_list, &user_id).map_err(|err| {
                 ApiError::Internal(format!("stored DeviceList of {user_id}: {err}"))

@@ -77,6 +77,14 @@ async fn precedence_is_env_then_stored_then_default_for_every_type() {
             json!("/config/allowlist"),
             json!("/srv/allowlist"),
         ),
+        (
+            "GIM_HUB_USER_POLICY",
+            "allow",
+            json!("deny"),
+            json!("open"),
+            json!("allow"),
+            json!("deny"),
+        ),
     ];
     for (key, env_value, stored, default, from_env, from_stored) in cases {
         let empty = Vars::new();
@@ -105,6 +113,12 @@ async fn precedence_is_env_then_stored_then_default_for_every_type() {
     let effective = load(&sources(&db, &Vars::new()).await).unwrap();
     assert_eq!(effective.config.event_retention_days, 14);
     assert!(effective.config.push.minimal);
+    assert_eq!(effective.config.user_policy, user_policy::Mode::Deny);
+    let env = vars(&[("GIM_HUB_USER_POLICY", "allow")]);
+    assert_eq!(
+        load(&sources(&db, &env).await).unwrap().config.user_policy,
+        user_policy::Mode::Allow
+    );
     assert_eq!(
         effective.config.public_url.as_deref(),
         Some("https://hub-b.example.eu")
@@ -580,4 +594,106 @@ async fn stored_allowlist_is_used_without_a_file() {
         set_allowlist(&db, &file_env, Vec::new()).await,
         Err(SettingsError::AllowlistFile)
     ));
+}
+
+#[tokio::test]
+async fn user_policy_mode_is_validated() {
+    let db = Db::open_in_memory().unwrap();
+    let err = set(
+        &db,
+        &Vars::new(),
+        "GIM_HUB_USER_POLICY",
+        &json!("closed"),
+        "cli",
+        1,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "invalid GIM_HUB_USER_POLICY: expected one of open, allow, deny"
+    );
+    let env = vars(&[("GIM_HUB_USER_POLICY", "deny")]);
+    assert!(matches!(
+        set(&db, &env, "GIM_HUB_USER_POLICY", &json!("open"), "cli", 1).await,
+        Err(SettingsError::SetByEnv)
+    ));
+    assert!(sources(&db, &Vars::new()).await.stored.is_empty());
+    // An invalid environment value fails startup, as for every setting.
+    let env = vars(&[("GIM_HUB_USER_POLICY", "closed")]);
+    assert!(matches!(
+        load(&sources(&db, &env).await),
+        Err(LoadError::Config(_))
+    ));
+}
+
+#[tokio::test]
+async fn user_policy_applies_on_reload_and_revokes_sessions() {
+    use gim_hub_db::user_policy::{self as list, ListEntry};
+
+    let hub = crate::testing::TestHub::new();
+    let db = hub.state.db.clone();
+    let (alice, bob) = ("u-alice", "u-bob");
+    hub.create_session(alice, "d1").await;
+    hub.create_session(bob, "d1").await;
+    let sessions = || {
+        db.read(|conn| {
+            Ok::<i64, DbError>(
+                conn.query_row("SELECT count(*) FROM sessions", [], |row| row.get(0))?,
+            )
+        })
+    };
+    let (runtime, effective) = Runtime::load(db.clone(), Vars::new()).await.unwrap();
+    assert!(effective.user_list.is_empty());
+    install(&runtime, hub.state.clone(), None, None);
+
+    // Another process lists alice and switches to deny mode.
+    let entry = ListEntry {
+        user_id: alice.into(),
+        added_at: 1,
+        added_by: CLI_ACTOR.into(),
+        note: None,
+    };
+    db.write(move |tx| list::add(tx, &entry)).await.unwrap();
+    set(
+        &db,
+        &Vars::new(),
+        "GIM_HUB_USER_POLICY",
+        &json!("deny"),
+        "cli",
+        1,
+    )
+    .await
+    .unwrap();
+    assert!(runtime.check().await.unwrap());
+    assert_eq!(hub.state.user_policy.mode(), user_policy::Mode::Deny);
+    assert!(!hub.state.user_policy.admitted(alice));
+    assert!(hub.state.user_policy.admitted(bob));
+    assert_eq!(sessions().await.unwrap(), 1, "alice's session deleted");
+
+    // Allow mode: only alice is admitted; bob loses his session.
+    set(
+        &db,
+        &Vars::new(),
+        "GIM_HUB_USER_POLICY",
+        &json!("allow"),
+        "cli",
+        1,
+    )
+    .await
+    .unwrap();
+    assert!(runtime.check().await.unwrap());
+    assert!(hub.state.user_policy.admitted(alice));
+    assert!(!hub.state.user_policy.admitted(bob));
+    assert_eq!(sessions().await.unwrap(), 0);
+
+    // Allow mode with an empty list admits nobody.
+    db.write(|tx| list::replace(tx, &[])).await.unwrap();
+    assert!(runtime.check().await.unwrap());
+    assert!(!hub.state.user_policy.admitted(alice));
+
+    // The environment overrides the stored mode.
+    let env = vars(&[("GIM_HUB_USER_POLICY", "open")]);
+    let (_, effective) = Runtime::load(db.clone(), env).await.unwrap();
+    assert_eq!(effective.config.user_policy, user_policy::Mode::Open);
 }

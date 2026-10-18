@@ -55,6 +55,28 @@ fn request_id() -> String {
     hex::encode(bytes)
 }
 
+/// Whether this hub's user policy admits a user (docs/operations.md, "User
+/// policy"). Ops acting for a user it does not admit fail with
+/// [`not_admitted`].
+pub type Admission = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// `client_code` of an S2S error refusing a user this hub's user policy
+/// does not admit.
+pub const USER_NOT_ADMITTED: &str = "user_not_admitted";
+
+/// `UNAUTHORIZED` with `client_code` [`USER_NOT_ADMITTED`].
+pub fn not_admitted() -> S2sError {
+    S2sError {
+        client_code: USER_NOT_ADMITTED.to_owned(),
+        ..error(ErrorCode::Unauthorized, "user is not admitted on this hub")
+    }
+}
+
+/// Whether `err` refuses a user the responder's user policy does not admit.
+pub fn is_not_admitted(err: &S2sError) -> bool {
+    err.code() == ErrorCode::Unauthorized && err.client_code == USER_NOT_ADMITTED
+}
+
 /// The owning hub's `hub_id` of a gid (`<owner hub_id>/<random>`).
 pub fn owner_of(gid: &str) -> Option<&str> {
     gid.split_once('/').map(|(owner, _)| owner)
@@ -113,14 +135,24 @@ pub struct GroupService {
     db: Db,
     hosting: Hosting,
     groups: Arc<dyn Groups>,
+    admitted: Admission,
 }
 
 impl GroupService {
-    pub fn new(db: Db, hosting: Hosting, groups: Arc<dyn Groups>) -> Arc<Self> {
+    /// `admitted` is the user policy: `SubmitCommit` / `SubmitMessage` on a
+    /// group owned here and `DeliverWelcome` refuse a sender it does not
+    /// admit; `Deliver` is never filtered.
+    pub fn new(
+        db: Db,
+        hosting: Hosting,
+        groups: Arc<dyn Groups>,
+        admitted: Admission,
+    ) -> Arc<Self> {
         Arc::new(Self {
             db,
             hosting,
             groups,
+            admitted,
         })
     }
 

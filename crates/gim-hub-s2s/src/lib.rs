@@ -38,7 +38,7 @@ pub use ops::{
     device_list::{DeviceListEvents, DeviceLists},
     owner_of,
     submit::SubmitError,
-    GroupService, Groups,
+    Admission, GroupService, Groups,
 };
 pub use outbox::{Outbox, OutboxConfig, OutboxSender, OutboxSource};
 pub use policy::{AllowlistPolicy, Decision, FederationPolicy, OpKind, PolicyError};

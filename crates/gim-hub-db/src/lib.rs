@@ -22,6 +22,7 @@ pub mod push;
 pub mod recovery;
 pub mod remote_identity;
 pub mod settings;
+pub mod user_policy;
 pub mod users;
 pub mod welcomes;
 

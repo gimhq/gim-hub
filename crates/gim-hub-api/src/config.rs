@@ -10,6 +10,8 @@ use std::{collections::HashMap, net::SocketAddr, path::PathBuf, str::FromStr};
 use gim_hub_identity::HUB_PROOF_MAX_URL_LEN;
 use gim_hub_push::{PushConfig, WebhookConfig};
 
+use crate::user_policy::{Mode, MODE_KEY};
+
 /// Hub configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -56,6 +58,9 @@ pub struct Config {
     /// removed this hub from their hosting record is kept before the purge
     /// (docs/multihoming.md §7.3). Only used with federation.
     pub unhosted_grace_hours: u32,
+    /// `GIM_HUB_USER_POLICY`: who may use this hub (see
+    /// [`crate::user_policy`]).
+    pub user_policy: Mode,
     /// The release version reported by `GET /healthz` and `GET /v2/hub`:
     /// `LODE_ACTIVE_VERSION` when supervised by lode, else the package
     /// version (see [`release_version`]).
@@ -194,6 +199,16 @@ impl Config {
             trust_forwarded_for: parse(get, "GIM_HUB_TRUST_FORWARDED_FOR", false, None)?,
             push: push_config(get)?,
             unhosted_grace_hours: parse(get, "GIM_HUB_UNHOSTED_GRACE_HOURS", 168, Some(1))?,
+            user_policy: get(MODE_KEY)
+                .map(|raw| {
+                    raw.parse().map_err(|reason| ConfigError {
+                        name: MODE_KEY,
+                        value: raw.to_owned(),
+                        reason,
+                    })
+                })
+                .transpose()?
+                .unwrap_or_default(),
             release_version,
             public_url,
             data_dir,
@@ -409,6 +424,20 @@ mod tests {
         assert_eq!(config.push, PushConfig::default());
         assert_eq!(config.release_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(config.public_url, None);
+        assert_eq!(config.user_policy, Mode::Open);
+    }
+
+    #[test]
+    fn user_policy_mode() {
+        let mode = |raw: &str| Config::from_vars(vars(&[(MODE_KEY, raw)]));
+        assert_eq!(mode("allow").unwrap().user_policy, Mode::Allow);
+        assert_eq!(mode("deny").unwrap().user_policy, Mode::Deny);
+        assert_eq!(mode("open").unwrap().user_policy, Mode::Open);
+        let err = mode("closed").unwrap_err();
+        assert_eq!(err.name, MODE_KEY);
+        assert!(err
+            .to_string()
+            .contains("expected one of open, allow, deny"));
     }
 
     /// testdata/identity/public-url.json, shared with gim-core.

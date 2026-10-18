@@ -40,7 +40,7 @@ pub use registry::{find, Apply, Kind, Setting, BOOTSTRAP, SETTINGS};
 
 use crate::{
     config::{Config, ConfigError},
-    AppState,
+    user_policy, AppState,
 };
 
 /// `(name, value)` variables by name.
@@ -80,17 +80,20 @@ impl Source {
     }
 }
 
-/// The environment, the stored settings and the stored allowlist.
+/// The environment, the stored settings, the stored allowlist and the user
+/// policy list.
 #[derive(Debug, Clone, Default)]
 pub struct Sources {
     pub env: Vars,
     pub stored: BTreeMap<String, StoredSetting>,
     /// `(hub_id, static multiaddrs)` by hub ID.
     pub allowlist: Vec<(String, Vec<String>)>,
+    /// The user IDs of the user policy list.
+    pub user_list: BTreeSet<String>,
 }
 
 impl Sources {
-    /// Reads the stored settings and allowlist.
+    /// Reads the stored settings, allowlist and user policy list.
     pub fn read(conn: &Connection, env: Vars) -> Result<Self, DbError> {
         Ok(Self {
             env,
@@ -99,6 +102,9 @@ impl Sources {
                 .map(|row| (row.key.clone(), row))
                 .collect(),
             allowlist: db::allowlist(conn)?,
+            user_list: gim_hub_db::user_policy::user_ids(conn)?
+                .into_iter()
+                .collect(),
         })
     }
 
@@ -155,6 +161,8 @@ pub struct Effective {
     pub federation: FederationConfig,
     /// The variables the configuration was built from.
     pub vars: Vars,
+    /// The user policy list ([`Config::user_policy`] is the mode).
+    pub user_list: BTreeSet<String>,
 }
 
 /// The configuration cannot be built.
@@ -209,6 +217,7 @@ fn parse(mut vars: Vars, stored: &BTreeSet<String>) -> Result<Effective, LoadErr
                     config,
                     federation,
                     vars,
+                    user_list: BTreeSet::new(),
                 })
             }
             Err(err) => {
@@ -222,11 +231,12 @@ fn parse(mut vars: Vars, stored: &BTreeSet<String>) -> Result<Effective, LoadErr
     }
 }
 
-/// Sets the stored allowlist on an enabled federation config when it is
-/// the allowlist source ([`allowlist_source`]); when no source has an
-/// allowlist, the stored (empty) one is used, which fails startup like a
-/// missing file did.
+/// Sets the user policy list and, on an enabled federation config, the
+/// stored allowlist when it is the allowlist source ([`allowlist_source`]);
+/// when no source has an allowlist, the stored (empty) one is used, which
+/// fails startup like a missing file did.
 fn with_allowlist(mut effective: Effective, sources: &Sources) -> Effective {
+    effective.user_list.clone_from(&sources.user_list);
     let federation = &mut effective.federation;
     if !federation.enabled {
         return effective;
@@ -656,6 +666,12 @@ impl Runtime {
                 for applier in appliers {
                     applier(&effective);
                 }
+                // Users the policy no longer admits lose their sessions.
+                let mode = effective.config.user_policy;
+                let revoked = user_policy::revoke_not_admitted(&self.inner.db, mode).await?;
+                if revoked > 0 {
+                    tracing::info!(revoked, %mode, "sessions of users not admitted deleted");
+                }
             }
             Err(err) => tracing::error!(%err, "stored settings not applied"),
         }
@@ -696,7 +712,7 @@ impl Runtime {
 
 /// Registers the applier of a running hub on `runtime`: changed live
 /// settings go to `state` ([`AppState::apply_live`]: handlers, rate limits,
-/// push) and, with federation, to the hosting and DeviceList caches, the
+/// push), the user policy to `state.user_policy` and, with federation, to the hosting and DeviceList caches, the
 /// outbox limits, the `FetchBlob` budget and, when it is the source, the
 /// stored allowlist (applied like a SIGHUP reload of the file). `state`
 /// must be the final state, with federation wired in.
@@ -710,6 +726,11 @@ pub fn install(
     runtime.on_apply(move |effective| {
         if let Err(err) = state.apply_live(effective.config.clone()) {
             tracing::error!(%err, "push settings not applied");
+        }
+        let mode = effective.config.user_policy;
+        if state.user_policy.set(mode, effective.user_list.clone()) {
+            tracing::info!(%mode, listed = effective.user_list.len(), "user policy applied");
+            user_policy::warn_if_nobody_admitted(mode, effective.user_list.len());
         }
         let config = &effective.federation;
         if !config.enabled {

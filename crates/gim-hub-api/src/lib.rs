@@ -16,6 +16,7 @@ pub mod settings;
 pub mod state;
 #[cfg(feature = "testing")]
 pub mod testing;
+pub mod user_policy;
 
 pub use auth::AuthDevice;
 pub use config::Config;

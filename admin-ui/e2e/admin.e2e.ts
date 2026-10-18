@@ -19,6 +19,7 @@ const retentionKey = env('E2E_RETENTION_KEY')
 const retentionDays = Number(env('E2E_RETENTION_DAYS'))
 const envKey = env('E2E_ENV_KEY')
 const envValue = Number(env('E2E_ENV_VALUE'))
+const otherDeviceId = env('E2E_OTHER_DEVICE_ID')
 
 function log(message: string) {
   process.stdout.write(`admin-e2e: ${message}\n`)
@@ -57,7 +58,8 @@ test('admin UI end to end', async ({ page, request }) => {
     const detail = await page.request.get(`/admin/api/users/${userId}`)
     expect(detail.status()).toBe(200)
     const body = await detail.json()
-    expect(body.devices[0].sessions).toEqual([])
+    const device = body.devices.find((d: { device_id: string }) => d.device_id === deviceId)
+    expect(device.sessions).toEqual([])
     log('ok   3. revoked 1 session; the UI and GET /admin/api/users/{id} show none left')
   })
 
@@ -145,5 +147,57 @@ test('admin UI end to end', async ({ page, request }) => {
     const error = (await put.json()).error
     expect(error.code).toBe('conflict')
     log(`ok   9. ${envKey}=${envValue} from env: row read-only (no buttons); PUT -> 409 ${error.code} "${error.message}"`)
+  })
+
+  await test.step('10. user policy: deny the seeded user, then open again', async () => {
+    const sessions = async () => {
+      const body = await (await page.request.get(`/admin/api/users/${userId}`)).json()
+      return body.devices.flatMap((d: { sessions: unknown[] }) => d.sessions).length
+    }
+    expect(await sessions()).toBe(1)
+
+    await nav.getByRole('link', { name: 'Settings' }).click()
+    const row = page.getByRole('listitem', { name: 'GIM_HUB_USER_POLICY', exact: true })
+    await row.getByRole('button', { name: 'Edit' }).click()
+    await row.getByRole('combobox', { name: 'New value for GIM_HUB_USER_POLICY' }).click()
+    await page.getByRole('option', { name: 'deny' }).click()
+    await row.getByRole('button', { name: 'Save' }).click()
+    await expect(row.getByRole('status')).toHaveText('Saved.')
+
+    await nav.getByRole('link', { name: 'User policy' }).click()
+    await expect(page.getByText('Every user except those on the list is admitted.')).toBeVisible()
+    await page.getByLabel('Handle or user ID').fill(`@${handle}`)
+    await page.getByLabel('Note').fill('e2e')
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
+    const entry = page.getByRole('row').filter({ has: page.getByRole('cell', { name: userId }) })
+    await expect(entry).toContainText(`@${handle}`)
+    await expect(page.getByText('1 user of this hub is not admitted')).toBeVisible()
+
+    // Applied at once: the sessions (here of the second device) are gone and
+    // sign-in is refused.
+    expect(await sessions()).toBe(0)
+    const challenge = await request.post(`${clientUrl}/v2/auth/challenge`, {
+      data: { user_id: userId, device_id: otherDeviceId },
+    })
+    expect(challenge.status()).toBe(403)
+    expect(await challenge.json()).toEqual({
+      error: { code: 'user_not_admitted', message: 'user is not admitted on this hub' },
+    })
+    log(`ok   10. GIM_HUB_USER_POLICY=deny with @${handle} listed: sessions deleted, POST /v2/auth/challenge -> 403 user_not_admitted`)
+
+    await entry.getByRole('button', { name: 'Remove' }).click()
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Remove' }).click()
+    await expect(page.getByText('The list is empty.')).toBeVisible()
+    await page.getByRole('combobox', { name: 'New mode' }).click()
+    await page.getByRole('option', { name: 'open' }).click()
+    await page.getByRole('button', { name: 'Apply mode' }).click()
+    await expect(page.getByText('Every user is admitted; the list is kept but not enforced.')).toBeVisible()
+    const policy = await (await page.request.get('/admin/api/users/policy')).json()
+    expect(policy).toMatchObject({ mode: 'open', mode_source: 'stored', not_admitted_users: 0, entries: [] })
+    const reopened = await request.post(`${clientUrl}/v2/auth/challenge`, {
+      data: { user_id: userId, device_id: otherDeviceId },
+    })
+    expect(reopened.status()).toBe(200)
+    log('ok   10. removed from the list, mode back to open; POST /v2/auth/challenge -> 200')
   })
 })

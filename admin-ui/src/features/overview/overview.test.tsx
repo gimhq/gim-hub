@@ -3,7 +3,7 @@ import { renderApp } from '@/test/render'
 import { state } from '@/test/server'
 
 describe('overview', () => {
-  it('renders version, uptime, storage, counts, push counters and retention', async () => {
+  it('renders version, uptime, storage, counts, push counters, retention and the user policy', async () => {
     state.loggedIn = true
     renderApp('/')
     expect(await screen.findByText('0.9.0 (abc1234)')).toBeInTheDocument()
@@ -13,5 +13,6 @@ describe('overview', () => {
     expect(screen.getByText('30 days')).toBeInTheDocument()
     expect(screen.getByText('Invalid token')).toBeInTheDocument()
     expect(screen.getByText('Coalesced').nextSibling).toHaveTextContent('1')
+    expect(screen.getByText('User policy', { selector: 'dt' }).nextSibling).toHaveTextContent('open')
   })
 })

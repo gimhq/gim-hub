@@ -22,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0011_push_opaque_provider.sql"),
     include_str!("../migrations/0012_admin.sql"),
     include_str!("../migrations/0013_settings.sql"),
+    include_str!("../migrations/0014_user_policy.sql"),
 ];
 
 /// Schema version after all migrations.
@@ -169,6 +170,7 @@ mod tests {
                 "s2s_peers",
                 "sessions",
                 "settings",
+                "user_policy_list",
                 "users",
             ]
         );

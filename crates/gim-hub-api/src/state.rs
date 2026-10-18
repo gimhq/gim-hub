@@ -15,7 +15,7 @@ use gim_hub_s2s::{DeviceLists, Disabled, Federation, Hosting, OutboxSender};
 
 use crate::{
     config::Config, handlers::IdentityEvents, hub::HubIdentity, notifier::Notifier,
-    ratelimit::PublicReadLimits,
+    ratelimit::PublicReadLimits, user_policy::UserPolicy,
 };
 
 /// State shared by all handlers (cheap to clone).
@@ -48,6 +48,10 @@ pub struct AppState {
     /// One lock per remote blob being fetched from its origin, so
     /// concurrent downloads fetch it once.
     pub blob_fetches: BlobFetches,
+    /// The user policy in force (mode and list), replaced on every
+    /// settings reload. [`AppState::new`] starts with the configured mode
+    /// and an empty list.
+    pub user_policy: Arc<UserPolicy>,
 }
 
 /// Per-blob locks of in-flight remote blob fetches, keyed by blob id.
@@ -86,6 +90,7 @@ impl AppState {
             config.recovery_read_per_user_per_min,
             config.trust_forwarded_for,
         );
+        let user_policy = Arc::new(UserPolicy::new(config.user_policy));
         Self {
             db,
             config: SharedConfig::new(config),
@@ -100,6 +105,7 @@ impl AppState {
             public_reads,
             recovery_reads,
             blob_fetches: BlobFetches::default(),
+            user_policy,
         }
     }
 }

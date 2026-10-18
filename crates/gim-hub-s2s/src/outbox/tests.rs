@@ -37,6 +37,8 @@ struct FakePeer {
     invalid_gids: Mutex<HashSet<String>>,
     /// Answer `DeliverWelcome` with `UNAUTHORIZED`.
     reject_welcomes: AtomicBool,
+    /// Answer `DeliverWelcome` with `UNAUTHORIZED` / `user_not_admitted`.
+    not_admitted_welcomes: AtomicBool,
     /// Answer this many more `DeliverWelcome`s with `UNAUTHORIZED`.
     stale_welcomes: AtomicUsize,
     /// Hosting records served by `GetHostingRecord`, by user.
@@ -84,6 +86,9 @@ impl FakePeer {
                         })
                         .collect(),
                 }))
+            }
+            Op::DeliverWelcome(_) if self.not_admitted_welcomes.load(Ordering::SeqCst) => {
+                Err(crate::ops::not_admitted())
             }
             Op::DeliverWelcome(_) if self.reject_welcomes.load(Ordering::SeqCst) => {
                 Err(error(ErrorCode::Unauthorized, "not the owner"))
@@ -586,6 +591,36 @@ async fn permanent_failures_drop_only_the_offending_entry() {
     assert_eq!(h.outbox.dropped_total(&h.hub, DropReason::Unbuildable), 2);
     assert_eq!(h.source.refreshes.load(Ordering::SeqCst), 1);
     assert_eq!(*h.peer.last_seq.lock().unwrap().get("g").unwrap(), 3);
+    assert_eq!(h.state().await.failures, 0);
+    h.outbox.shutdown();
+}
+
+#[tokio::test]
+async fn user_not_admitted_is_permanent_without_a_refresh() {
+    let h = Harness::new(Db::open_in_memory().unwrap(), config(), true);
+    h.peer.not_admitted_welcomes.store(true, Ordering::SeqCst);
+    let welcome = DeliverWelcomeRequest::default().encode_to_vec().leak();
+    h.enqueue(vec![
+        NewEntry::DeliverWelcome {
+            gid: "g",
+            payload: welcome,
+        },
+        deliver("g", 1),
+    ])
+    .await;
+    h.outbox.start(None);
+    eventually("queue drained", || async { h.queued().await.is_empty() }).await;
+
+    assert_eq!(h.outbox.dropped_total(&h.hub, DropReason::Rejected), 1);
+    assert_eq!(h.source.refreshes.load(Ordering::SeqCst), 0);
+    let welcomes = h
+        .peer
+        .requests()
+        .into_iter()
+        .filter(|op| matches!(op, Op::DeliverWelcome(_)))
+        .count();
+    assert_eq!(welcomes, 1, "sent once, never retried");
+    assert_eq!(*h.peer.last_seq.lock().unwrap().get("g").unwrap(), 1);
     assert_eq!(h.state().await.failures, 0);
     h.outbox.shutdown();
 }
