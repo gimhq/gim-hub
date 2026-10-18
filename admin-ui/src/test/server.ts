@@ -66,7 +66,7 @@ export function initialSettings(): MockSetting[] {
       updated_at: 1_760_600_000,
       updated_by: 'token',
     }),
-    setting('GIM_HUB_FEDERATION_ENABLED', 'federation', 'bool', 'Enable federation', { default: false, apply: 'restart' }),
+    setting('GIM_HUB_FEDERATION', 'federation', 'bool', 'Enable federation', { default: false, apply: 'restart' }),
     setting('GIM_HUB_P2P_BOOTSTRAP', 'federation', 'list', 'Bootstrap peers', { default: [], apply: 'restart' }),
     setting('GIM_HUB_PUSH_TOPIC', 'push', 'string', 'Push topic', { default: 'gim' }),
     setting('GIM_HUB_PUSH_WEBHOOK_SECRET', 'push', 'secret', 'Push webhook secret'),
@@ -172,7 +172,7 @@ export const allowlistText = 'hub-split /dns4/split.example/tcp/4001\n'
 function allowlistSource() {
   return state.allowlistReadOnly
     ? { source: 'file', read_only: true, path: '/etc/gim-hub/allowlist' }
-    : { source: 'stored', read_only: false, path: null }
+    : { source: 'stored', read_only: false, path: '/var/lib/gim-hub/hub.db#federation_allowlist' }
 }
 
 // The env parser's checks, reduced to what the tests need.
@@ -236,7 +236,7 @@ export const handlers = [
     storage: { db_bytes: 5_242_880, blob_bytes: 1024 },
     counts: { users: 2, devices: 3, groups: 4, blobs: 5 },
     push: { enqueued: 10, coalesced: 1, upgraded: 0, dropped: 0, sent: 9, skipped: 0, invalid_token: 0, retried: 2, failed: 1 },
-    event_retention_days: 30,
+    event_retention_days: state.settings.find(s => s.key === 'GIM_HUB_EVENT_RETENTION_DAYS')?.value,
   })),
   http.get(`${API}/users`, ({ request }) => {
     if (!state.loggedIn)
@@ -285,6 +285,9 @@ export const handlers = [
   }),
   mutation('delete', '/settings/:key', (request) => {
     const key = decodeURIComponent(new URL(request.url).pathname.split('/').pop()!)
+    const federation = state.settings.find(s => s.key === 'GIM_HUB_FEDERATION')?.value === true
+    if (key === 'GIM_HUB_PUBLIC_URL' && federation)
+      return envelope(422, 'validation_failed', 'GIM_HUB_PUBLIC_URL is required when GIM_HUB_FEDERATION is enabled')
     return updateSetting(key, item => ({
       ...item,
       value: item.default,

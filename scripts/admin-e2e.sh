@@ -9,10 +9,14 @@
 #   1. login with the token
 #   2. search the seeded user and open the detail
 #   3. revoke the device's sessions (UI, API and database)
-#   4. add a second fake hub to the allowlist (API and the stored table)
+#   4. add a second fake hub to the allowlist (source stored; API and the table)
 #   5. lode "check now" (state.json check_nonce bumped, lode's fields intact)
 #   6. audit entries for the revoke, allowlist_update and lode_check
 #   7. GET <client listener>/admin/ is 404
+#   8. edit the live setting GIM_HUB_EVENT_RETENTION_DAYS on the Settings page
+#      (GET item source stored, overview retention, settings table, audit)
+#   9. GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN set in the hub's env is read-only in
+#      the UI and PUT answers 409
 #
 # The user, device and session are seeded with sqlite3 into a database built
 # from the migrations: a real sign-in needs a signed DeviceList made by the
@@ -40,6 +44,11 @@ RUNTIME_IMAGE="debian:bookworm-slim"
 BUSYBOX="busybox:1.37"
 STATE="$WORK/lode/state.json"
 DB="$WORK/data/hub.db"
+# Step 8 edits RETENTION_KEY (default 7) to RETENTION_DAYS; step 9 checks ENV_KEY.
+RETENTION_KEY=GIM_HUB_EVENT_RETENTION_DAYS
+RETENTION_DAYS=30
+ENV_KEY=GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN
+ENV_VALUE=77
 
 for tool in docker jq sqlite3 base32; do
     command -v "$tool" >/dev/null || { echo "admin-e2e: $tool is required" >&2; exit 2; }
@@ -151,6 +160,7 @@ docker run -d "${LABELS[@]}" --name "$HUB" --network "$NET" \
     -e GIM_HUB_ADMIN_TOKEN_FILE="$WORK/admin.token" \
     -e GIM_HUB_FEDERATION=true \
     -e GIM_HUB_PUBLIC_URL=https://hub-e2e.example.eu \
+    -e "$ENV_KEY=$ENV_VALUE" \
     -e LODE_DIR="$WORK/lode" \
     -e LODE_INSTANCE="$RUN" \
     -e LODE_ACTIVE_VERSION=0.3.0 \
@@ -176,6 +186,10 @@ docker run --rm "${LABELS[@]}" --name "ai-agent-$RUN-playwright" --network "$NET
     -e E2E_DEVICE_ID="$DEVICE_ID" \
     -e E2E_SESSION_REF="$SESSION_REF" \
     -e E2E_NEW_HUB="$HUB_TWO" \
+    -e E2E_RETENTION_KEY="$RETENTION_KEY" \
+    -e E2E_RETENTION_DAYS="$RETENTION_DAYS" \
+    -e E2E_ENV_KEY="$ENV_KEY" \
+    -e E2E_ENV_VALUE="$ENV_VALUE" \
     "$PLAYWRIGHT_IMAGE" \
     node node_modules/@playwright/test/cli.js test -c e2e/playwright.config.ts ||
     fail "browser steps (traces in $WORK/results with ADMIN_E2E_KEEP=1)"
@@ -197,9 +211,17 @@ lode_fields='{status, current, available, last_good, channel, last_check, histor
 pass "5. state.json: check_nonce 0 -> 1, lode's fields intact"
 
 audit="$(sqlite3 "$DB" "SELECT action FROM admin_audit WHERE actor = 'token' AND result = 'ok' ORDER BY id")"
-for action in device_sessions_revoke allowlist_update lode_check; do
+for action in device_sessions_revoke allowlist_update lode_check setting_update; do
     grep -qx "$action" <<<"$audit" || fail "6: no '$action' in admin_audit: $audit"
 done
 pass "6. admin_audit: $(tr '\n' ' ' <<<"$audit")"
+
+row="$(sqlite3 -separator ' ' "$DB" "SELECT value, updated_by FROM settings WHERE key = '$RETENTION_KEY'")"
+[[ "$(tr -d '"' <<<"$row")" == "$RETENTION_DAYS token" ]] || fail "8: settings row for $RETENTION_KEY: '$row'"
+pass "8. settings table: $RETENTION_KEY = $row"
+
+row="$(sqlite3 "$DB" "SELECT count(*) FROM settings WHERE key = '$ENV_KEY'")"
+[[ "$row" == 0 ]] || fail "9: $ENV_KEY was stored despite the env"
+pass "9. settings table: no stored $ENV_KEY (env value $ENV_VALUE)"
 
 echo "admin-e2e: all steps passed (run $RUN)"

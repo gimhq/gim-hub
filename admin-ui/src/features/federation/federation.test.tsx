@@ -42,6 +42,8 @@ describe('federation', () => {
   it('describes a stored allowlist as editable', async () => {
     renderApp('/federation')
     expect(await screen.findByText('Stored in the hub database and applied immediately.')).toBeInTheDocument()
+    // The stored "path" names the table, not a file: it is not shown.
+    expect(screen.queryByText(/federation_allowlist/)).not.toBeInTheDocument()
     expect(screen.getByLabelText('Allowlist file')).toBeEnabled()
     expect(screen.queryByText(/^Managed by the GIM_HUB_FEDERATION_ALLOWLIST file/)).not.toBeInTheDocument()
   })
