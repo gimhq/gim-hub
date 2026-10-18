@@ -53,6 +53,8 @@ GIM_HUB_LISTEN   = "0.0.0.0:8080"
 # GIM_HUB_ADMIN_COOKIE_SECURE = "true"                # TLS terminates at traefik
 # Log in with a token (`openssl rand -hex 32`, readable by the hub user only):
 # GIM_HUB_ADMIN_TOKEN_FILE    = "/data/admin.token"
+# or the token itself (not both). Plaintext here and in the process env; prefer the file:
+# GIM_HUB_ADMIN_TOKEN         = "<at least 32 characters>"
 # and/or trust the identity set by traefik's oidc middleware
 # (deploy/lode/traefik-admin.yml):
 # GIM_HUB_ADMIN_TRUSTED_HEADER  = "X-Forwarded-User"

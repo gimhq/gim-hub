@@ -884,6 +884,10 @@ async fn config_redacts_secrets() {
     );
     assert_eq!(get("GIM_HUB_LISTEN")["value"], "0.0.0.0:8080");
     assert_eq!(get("GIM_HUB_FEDERATION")["value"], "false");
+    assert_eq!(
+        get("GIM_HUB_ADMIN_TOKEN"),
+        json!({ "key": "GIM_HUB_ADMIN_TOKEN", "value": null, "redacted": false })
+    );
     let token_file = get("GIM_HUB_ADMIN_TOKEN_FILE");
     assert_eq!(token_file["redacted"], false);
     assert!(token_file["value"]

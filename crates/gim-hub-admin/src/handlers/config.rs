@@ -184,6 +184,7 @@ pub(crate) fn effective_config(
     }
     items.extend([
         item("GIM_HUB_ADMIN_LISTEN", admin.listen.map(|a| a.to_string())),
+        item("GIM_HUB_ADMIN_TOKEN", admin.token_env.then(String::new)),
         item(
             "GIM_HUB_ADMIN_TOKEN_FILE",
             admin.token_file.as_deref().and_then(path),
@@ -216,6 +217,7 @@ mod tests {
         for key in [
             "GIM_HUB_PUSH_WEBHOOK_SECRET",
             "GIM_HUB_P2P_PSK_FILE",
+            "GIM_HUB_ADMIN_TOKEN",
             "GIM_HUB_FOO_TOKEN",
             "GIM_HUB_FOO_KEY",
         ] {

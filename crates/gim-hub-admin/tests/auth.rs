@@ -170,6 +170,55 @@ async fn session_expires_after_eight_hours() {
     assert_eq!(expired.code(), "unauthorized");
 }
 
+/// An admin configured with `GIM_HUB_ADMIN_TOKEN` (padded) instead of the
+/// token file.
+fn env_token_admin() -> Admin {
+    let token = "t0ken-".repeat(8);
+    Admin::with(
+        TestHub::new(),
+        Options {
+            token_file: false,
+            vars: vec![("GIM_HUB_ADMIN_TOKEN", format!(" {token}\n"))],
+            ..Options::default()
+        },
+    )
+}
+
+#[tokio::test]
+async fn env_token_login() {
+    let admin = env_token_admin();
+    assert!(admin.state.config.token_env);
+    assert!(admin.state.config.token_file.is_none());
+    let debug = format!("{:?}", admin.state.config);
+    assert!(!debug.contains(&admin.token), "{debug}");
+    let response = admin.login_from(PEER, &admin.token).await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+    assert_eq!(response.body["actor"], "token");
+    let wrong = admin.login_from(PEER, &"x".repeat(48)).await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn config_redacts_the_env_token() {
+    let admin = env_token_admin();
+    let login = admin.login().await;
+    let response = admin
+        .call(Method::GET, "/admin/api/config", &login, None)
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert!(!response.body.to_string().contains(&admin.token));
+    let items = response.body["items"].as_array().unwrap();
+    let get = |key: &str| items.iter().find(|item| item["key"] == key).cloned();
+    assert_eq!(
+        get("GIM_HUB_ADMIN_TOKEN"),
+        Some(json!({ "key": "GIM_HUB_ADMIN_TOKEN", "value": null, "redacted": true }))
+    );
+    assert_eq!(
+        get("GIM_HUB_ADMIN_TOKEN_FILE"),
+        Some(json!({ "key": "GIM_HUB_ADMIN_TOKEN_FILE", "value": null, "redacted": false }))
+    );
+}
+
 #[tokio::test]
 async fn token_login_disabled_without_token_file() {
     let admin = Admin::with(

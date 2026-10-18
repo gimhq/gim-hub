@@ -6,10 +6,18 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 /// POST /admin/api/login body.
-#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[derive(Clone, Deserialize, ToSchema)]
 pub struct LoginRequest {
-    /// The admin token from `GIM_HUB_ADMIN_TOKEN_FILE`.
+    /// The admin token from `GIM_HUB_ADMIN_TOKEN` or `GIM_HUB_ADMIN_TOKEN_FILE`.
     pub token: String,
+}
+
+impl std::fmt::Debug for LoginRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginRequest")
+            .field("token", &"<redacted>")
+            .finish()
+    }
 }
 
 /// A new token session.
