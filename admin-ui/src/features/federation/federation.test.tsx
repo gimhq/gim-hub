@@ -39,6 +39,24 @@ describe('federation', () => {
     })
   })
 
+  it('describes a stored allowlist as editable', async () => {
+    renderApp('/federation')
+    expect(await screen.findByText('Stored in the hub database and applied immediately.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Allowlist file')).toBeEnabled()
+    expect(screen.queryByText(/^Managed by the GIM_HUB_FEDERATION_ALLOWLIST file/)).not.toBeInTheDocument()
+  })
+
+  it('disables the editor when the allowlist file is authoritative', async () => {
+    state.allowlistReadOnly = true
+    renderApp('/federation')
+    const editor = await screen.findByLabelText('Allowlist file')
+    expect(editor).toBeDisabled()
+    expect(editor).toHaveValue(allowlistText)
+    expect(screen.getByText('Read from /etc/gim-hub/allowlist.')).toBeInTheDocument()
+    expect(screen.getByText(/^Managed by the GIM_HUB_FEDERATION_ALLOWLIST file/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save and apply' })).toBeDisabled()
+  })
+
   it('shows a disabled notice when federation is off', async () => {
     server.use(
       http.get('/admin/api/federation', () =>
