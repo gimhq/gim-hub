@@ -15,7 +15,7 @@ use gim_hub_admin::{AdminConfig, AdminState};
 use gim_hub_api::{
     config::Bootstrap,
     settings::{self, Effective},
-    AppState, Clock, Config, HubIdentity,
+    user_policy, AppState, Clock, Config, HubIdentity,
 };
 use gim_hub_db::{Backups, Db};
 use gim_hub_push::{Dispatcher, DispatcherSettings, PushLog};
@@ -84,10 +84,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let Effective {
         config,
         federation: federation_config,
+        user_list,
         ..
     } = effective;
     let mut state = open_state(db, config)?;
     tracing::info!(hub_id = %state.hub.hub_id(), "hub identity loaded");
+    start_user_policy(&state, user_list).await?;
     let push = start_push(&mut state).await?;
     let federation = start_federation(&federation_config, &state).await?;
     let (republish, outbox) = match &federation {
@@ -227,6 +229,24 @@ fn open_state(db: Db, config: Config) -> Result<AppState, Box<dyn std::error::Er
     std::fs::create_dir_all(config.blobs_dir())?;
     let hub = HubIdentity::load_or_create(&config.hub_key_path())?;
     Ok(AppState::new(db, config, hub, Clock::system()))
+}
+
+/// Puts the user policy in force (docs/operations.md, "User policy") and
+/// deletes the sessions of users it does not admit.
+async fn start_user_policy(
+    state: &AppState,
+    user_list: std::collections::BTreeSet<String>,
+) -> Result<(), gim_hub_db::DbError> {
+    let mode = state.config.load().user_policy;
+    let listed = user_list.len();
+    state.user_policy.set(mode, user_list);
+    tracing::info!(%mode, listed, "user policy");
+    user_policy::warn_if_nobody_admitted(mode, listed);
+    let revoked = user_policy::revoke_not_admitted(&state.db, mode).await?;
+    if revoked > 0 {
+        tracing::info!(revoked, "sessions of users not admitted deleted");
+    }
+    Ok(())
 }
 
 /// Replaces the default push dispatcher with one on the configured providers,

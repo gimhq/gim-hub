@@ -14,6 +14,7 @@ use gim_hub_proto::s2s::{
     ClaimKeyPackageResponse, ClaimedKeyPackage, ErrorCode, S2sRequest,
 };
 
+use super::Admission;
 use crate::{
     federation::{error, BoxFuture, Federation, FederationService, OpResult},
     hosting::{Hosting, HostingError, Now, Purpose},
@@ -53,6 +54,10 @@ pub enum ClaimOutcome {
     Unavailable(String),
     /// Any other error (e.g. `INVALID`): routing stops here.
     Rejected(String),
+    /// `UNAUTHORIZED` with `client_code` `user_not_admitted`: the hub's
+    /// user policy does not admit the requester. Not retried on that hub;
+    /// routing moves to the next listed hub.
+    NotAdmitted,
 }
 
 /// Sends `ClaimKeyPackage{requester, target, device_id}` to `hub`.
@@ -80,6 +85,7 @@ pub async fn claim_remote(
             (Some(OpOutput::ClaimKeyPackage(response)), _) => {
                 ClaimOutcome::Claimed(response.key_packages)
             }
+            (_, Some(err)) if super::is_not_admitted(&err) => ClaimOutcome::NotAdmitted,
             (_, Some(err)) => {
                 let reason = format!("{:?}: {}", err.code(), err.message);
                 match err.code() {
@@ -105,15 +111,24 @@ pub struct ClaimService {
     hosting: Hosting,
     local: Arc<dyn LocalClaims>,
     now: Now,
+    admitted: Admission,
     windows: Mutex<HashMap<WindowKey, (i64, u32)>>,
 }
 
 impl ClaimService {
-    pub fn new(hosting: Hosting, local: Arc<dyn LocalClaims>, now: Now) -> Arc<Self> {
+    /// `admitted` is the user policy: a requester it does not admit is
+    /// refused.
+    pub fn new(
+        hosting: Hosting,
+        local: Arc<dyn LocalClaims>,
+        now: Now,
+        admitted: Admission,
+    ) -> Arc<Self> {
         Arc::new(Self {
             hosting,
             local,
             now,
+            admitted,
             windows: Mutex::default(),
         })
     }
@@ -138,7 +153,8 @@ impl ClaimService {
     }
 
     /// Serves a claim from `caller` (§3.7): the caller is listed for the
-    /// requester, this hub hosts the target, then the per-target rate limit.
+    /// requester, this hub hosts the target, the user policy admits the
+    /// requester, then the per-target rate limit.
     pub async fn handle(&self, caller: HubId, op: Op) -> OpResult {
         let Op::ClaimKeyPackage(request) = op else {
             return Err(error(ErrorCode::Invalid, "unexpected op"));
@@ -168,6 +184,9 @@ impl ClaimService {
             Ok(_) => {}
             Err(HostingError::Db(err)) => return Err(internal(&err)),
             Err(_) => return Err(error(ErrorCode::NotFound, "target is not hosted here")),
+        }
+        if !(self.admitted)(requester.as_str()) {
+            return Err(super::not_admitted());
         }
         if !self.admit(&caller, &requester, &target) {
             return Err(error(

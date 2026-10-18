@@ -116,7 +116,7 @@ pub fn version(conn: &Connection) -> Result<i64, DbError> {
     Ok(value.unwrap_or(0))
 }
 
-fn bump_version(tx: &Transaction<'_>) -> Result<(), DbError> {
+pub(crate) fn bump_version(tx: &Transaction<'_>) -> Result<(), DbError> {
     tx.execute(
         "INSERT INTO meta (key, value) VALUES (?1, '1') \
          ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",

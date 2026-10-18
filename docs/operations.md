@@ -29,6 +29,7 @@ deployment behaves exactly as before 0.4.0.
 | `GIM_HUB_RECOVERY_READ_PER_IP_PER_MIN` | stored live | `20` | Unauthenticated `GET /v2/users/{user_id}/recovery-backup` requests per client IP (IPv6: per /64) per minute, separate from the public reads (minimum 1) |
 | `GIM_HUB_RECOVERY_READ_PER_USER_PER_MIN` | stored live | `10` | Recovery backup reads of one `user_id` per minute, across all clients (minimum 1) |
 | `GIM_HUB_TRUST_FORWARDED_FOR` | stored live | `false` | `true` keys the per-IP limit by the left-most `X-Forwarded-For` address; set only behind a reverse proxy that overwrites the header |
+| `GIM_HUB_USER_POLICY` | stored live | `open` | Who may use this hub: `open` (everyone), `allow` (only listed users) or `deny` (everyone except listed users); see [User policy](#user-policy) |
 | `GIM_HUB_PUBLIC_URL` | stored restart | unset | Canonical client-API base URL (`scheme://host[:port]`), required when `GIM_HUB_FEDERATION=true`. Normalized at startup; see below |
 | `RUST_LOG` | env-only | `info` | Log filter (`tracing_subscriber` `EnvFilter` syntax, e.g. `gim_hub_api=debug,info`) |
 
@@ -42,6 +43,47 @@ longer than 65535 bytes is a startup error, as is an unset URL with `GIM_HUB_FED
 gim-core applies the same rules; the shared cases are in `testdata/identity/public-url.json`. Example:
 `HTTPS://Hub.Example.EU:443/` becomes `https://hub.example.eu`. Without federation it is
 optional; a hub without it issues version 1 challenges and answers `GET /v2/hub?nonce=` with 400.
+
+### User policy
+
+`GIM_HUB_USER_POLICY` selects which users the hub admits; the user list is the table
+`user_policy_list` (one row per user ID, with `added_at`, `added_by` and an optional note). The
+list is kept in every mode and only enforced in `allow` and `deny`:
+
+| Mode | Admitted |
+| --- | --- |
+| `open` (default) | every user; the list is not enforced |
+| `allow` | only users on the list |
+| `deny` | every user except those on the list |
+
+The list holds user IDs of any hub, local or remote. A user the policy does not admit:
+
+- cannot register: the first `PUT /v2/users/{user_id}/device-list` of an unknown user answers
+  403 `user_not_admitted` (an existing user's later uploads are accepted);
+- cannot sign in: `POST /v2/auth/challenge` and `POST /v2/auth/session` answer 403
+  `user_not_admitted` (`{"error":{"code":"user_not_admitted","message":"user is not admitted on
+  this hub"}}`); `user_suspended` takes precedence when both apply;
+- loses its sessions and pending sign-in challenges whenever the policy changes (admin API,
+  CLI picked up by the settings poll, or startup), as a suspension does;
+- is refused by this hub's relay: `ClaimKeyPackage` requested for it, `DeliverWelcome` sent by
+  it, and `SubmitCommit` / `SubmitMessage` it sends to a group this hub owns answer
+  `UNAUTHORIZED` with `client_code` `user_not_admitted` ([`s2s.md`](s2s.md)). Its own hub
+  reports the refusal to the client: 403 `not_admitted_by_peer` for a forwarded Commit or
+  message, the target under `not_admitted` for a KeyPackage claim; a refused Welcome is
+  dropped. `Deliver` of groups owned by other hubs is never filtered.
+
+Only metadata is used: the policy matches user IDs, never message content.
+
+`allow` with an empty list admits nobody: no user can register or sign in. The hub logs a
+warning at startup and on every change that leads to it, and the admin UI shows one. Fill the
+list before switching to `allow`.
+
+The mode is a stored setting (environment > stored > default; set by the environment, it is
+read-only in the admin API and CLI). The list is edited with the admin API
+([`admin.md`](admin.md), "User policy") or `gim-hub config users` ([CLI](#cli)); every change is
+audited (`users_policy_add`, `users_policy_remove`, `users_policy_update`; a mode change is a
+`setting_update`). Admin API changes apply before the response; CLI changes within about a
+second.
 
 ### Federation
 
@@ -130,7 +172,11 @@ only Docker:
    Commit conflict (one 201, one 409 `stale_epoch`), a member-hub outage (50 messages, no loss,
    no duplicates), an owner-hub outage (503 `peer_unavailable`, then delivery), the refusal of
    `hub-x`, a leave by Proposal and webhook push (one signed delivery per message at the mock,
-   none for a Proposal, a registration answered 410 deleted);
+   none for a Proposal, a registration answered 410 deleted) and the user policy (hub-b switched
+   with `docker exec ... gim-hub config` to `deny` and then `allow`: a remote user's claim
+   reported `not_admitted`, its message to a hub-b group refused with 403
+   `not_admitted_by_peer`, a listed local user's session deleted and sign-in refused with 403
+   `user_not_admitted`; back to `open`, the message is delivered and sign-in works);
 5. prints the hub logs on failure and always removes the containers, network and volumes.
 
 All containers, the network and the volumes carry the label `ai-agent=true`. Other variables:
@@ -247,7 +293,8 @@ protect the admin API itself.
   logged at `error` and ignored, so the default applies; the hub still starts. An invalid
   environment variable still stops startup.
 - Every change is audited in the admin audit log (`setting_update`, `setting_unset`,
-  `allowlist_update`), with actor `cli` for the CLI.
+  `allowlist_update`, `users_policy_add`, `users_policy_remove`, `users_policy_update`), with
+  actor `cli` for the CLI.
 - PSK: `GIM_HUB_P2P_PSK_FILE` names a `swarm.key` file; `GIM_HUB_P2P_PSK` holds the same content
   (stored as a secret, or in the environment). The file wins when both are set. Both apply at
   restart.
@@ -266,11 +313,18 @@ gim-hub config set KEY VALUE          # validate and store
 gim-hub config unset KEY              # delete the stored value (the default applies)
 gim-hub config allowlist list         # the effective allowlist and its source
 gim-hub config allowlist set FILE     # validate FILE (allowlist format) and store it in the table
+gim-hub config users list             # the user policy mode and its source, then the user list
+gim-hub config users add USER [NOTE]  # list a user: a user ID or @handle (a handle on this hub)
+gim-hub config users remove USER_ID   # remove a user from the list
+gim-hub config users set FILE         # replace the list with FILE: one user ID per line, # comments
 ```
 
 A key set in the CLI's environment is refused by `set` and `unset` (exit 1), as the environment
 would override the stored value. `allowlist set` is refused while `GIM_HUB_FEDERATION_ALLOWLIST`
-names a file. Invalid values exit 1 with the parser's message and store nothing. Every change,
+names a file. `users set` validates every line first and stores nothing on an invalid one (the
+message names the line); users that stay listed keep their metadata. `users add` of a listed
+user and `users remove` of an unlisted one exit 1. The mode is set with `gim-hub config set
+GIM_HUB_USER_POLICY allow|deny|open`. Invalid values exit 1 with the parser's message and store nothing. Every change,
 and every invalid value refused, is audited with actor `cli` (a refused environment key is not:
 nothing was attempted).
 

@@ -85,7 +85,7 @@ pub enum DefaultValue {
 pub struct Setting {
     /// The environment variable name.
     pub key: &'static str,
-    /// UI grouping: general, federation, push, limits, storage (users: H12).
+    /// UI grouping: general, users, federation, push, limits, storage.
     pub group: &'static str,
     pub kind: Kind,
     /// Choices of [`Kind::Enum`].
@@ -244,6 +244,17 @@ pub static SETTINGS: &[Setting] = &[
         Live,
         "Upper bound for long-poll wait (seconds)",
     ),
+    // users
+    Setting {
+        key: crate::user_policy::MODE_KEY,
+        group: "users",
+        kind: Kind::Enum,
+        choices: Some(crate::user_policy::Mode::CHOICES),
+        description: "Who may use this hub: open (everyone), allow (only the users on the user \
+policy list) or deny (everyone except the listed users)",
+        default: DefaultValue::Str("open"),
+        apply: Live,
+    },
     // limits
     setting(
         "GIM_HUB_MAX_MESSAGE_BYTES",
@@ -570,5 +581,14 @@ mod tests {
         assert!(secret.is_secret());
         assert_eq!(secret.default_json(), Value::Null);
         assert!(secret.raw(&json!(1)).is_err());
+        let policy = find("GIM_HUB_USER_POLICY").unwrap();
+        assert_eq!((policy.kind, policy.group), (Kind::Enum, "users"));
+        assert_eq!(policy.default_json(), json!("open"));
+        assert_eq!(policy.raw(&json!("deny")).unwrap(), "deny");
+        assert_eq!(
+            policy.raw(&json!("closed")).unwrap_err(),
+            "expected one of open, allow, deny"
+        );
+        assert!(policy.raw(&json!(1)).is_err());
     }
 }

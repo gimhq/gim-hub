@@ -45,6 +45,7 @@ export function OverviewPage() {
                         [t('overview.started_at'), formatDateTime(data.started_at, lng)],
                         [t('overview.uptime'), t('overview.uptime_value', splitDuration(data.uptime_seconds))],
                         [t('overview.retention'), t('overview.retention_value', { count: data.event_retention_days })],
+                        [t('overview.user_policy'), t(`user_policy.modes.${data.user_policy}`, data.user_policy)],
                       ]}
                     />
                   </CardContent>

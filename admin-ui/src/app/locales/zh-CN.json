@@ -3,6 +3,7 @@
   "nav": {
     "overview": "概览",
     "users": "用户",
+    "user_policy": "用户策略",
     "federation": "联邦",
     "lode": "lode",
     "settings": "设置",
@@ -52,7 +53,8 @@
     "push_skipped": "跳过",
     "push_invalid_token": "无效令牌",
     "push_retried": "重试",
-    "push_failed": "失败"
+    "push_failed": "失败",
+    "user_policy": "用户策略"
   },
   "users": {
     "search": "搜索",
@@ -210,5 +212,41 @@
     "result_error": "失败",
     "detail": "详情",
     "empty": "没有审计记录。"
+  },
+  "user_policy": {
+    "description": "谁可以在此 hub 上注册和登录。allow 模式下仅名单内用户被准入；deny 模式下名单外的所有用户被准入。未被准入的用户会话立即删除，此 hub 也拒绝为其转发的中继请求。",
+    "mode": "模式",
+    "modes": {
+      "open": "开放",
+      "allow": "白名单",
+      "deny": "黑名单"
+    },
+    "mode_open_description": "所有用户均被准入；名单保留但不生效。",
+    "mode_allow_description": "仅名单内的用户被准入。",
+    "mode_deny_description": "除名单内用户外，所有用户均被准入。",
+    "mode_read_only": "由环境变量 GIM_HUB_USER_POLICY 设置，此处只读。",
+    "open_settings": "打开设置",
+    "new_mode": "新模式",
+    "apply_mode": "应用模式",
+    "warning_empty_allow": "没有用户被准入",
+    "warning_empty_allow_description": "白名单模式且名单为空时不准入任何人：没有用户可以注册或登录。请添加用户或切换模式。",
+    "warning_locked_out_one": "此 hub 有 {{count}} 个用户未被准入",
+    "warning_locked_out_other": "此 hub 有 {{count}} 个用户未被准入",
+    "warning_locked_out_description": "他们无法登录，其会话已被删除。",
+    "list": "用户名单",
+    "list_description": "模式所匹配的用户。更改立即生效。",
+    "add_user": "Handle 或用户 ID",
+    "add_placeholder": "@alice 或用户 ID",
+    "note": "备注",
+    "add": "添加",
+    "added_at": "添加时间",
+    "empty": "名单为空。",
+    "remove": "移除",
+    "remove_title": "从名单中移除此用户？",
+    "remove_description": "{{id}} 将从用户名单中移除，更改立即生效。",
+    "bulk": "替换名单",
+    "bulk_description": "每行一个用户 ID；# 开始注释。保留在名单中的用户保留备注。任一行无效则不保存。",
+    "bulk_text": "用户 ID",
+    "bulk_save": "替换名单"
   }
 }

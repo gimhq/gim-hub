@@ -3,6 +3,7 @@
   "nav": {
     "overview": "Overview",
     "users": "Users",
+    "user_policy": "User policy",
     "federation": "Federation",
     "lode": "lode",
     "settings": "Settings",
@@ -53,7 +54,8 @@
     "push_skipped": "Skipped",
     "push_invalid_token": "Invalid token",
     "push_retried": "Retried",
-    "push_failed": "Failed"
+    "push_failed": "Failed",
+    "user_policy": "User policy"
   },
   "users": {
     "search": "Search",
@@ -213,5 +215,41 @@
     "result_error": "error",
     "detail": "Detail",
     "empty": "No audit entries."
+  },
+  "user_policy": {
+    "description": "Who may register and sign in on this hub. In allow mode only listed users are admitted; in deny mode everyone except listed users. Users not admitted lose their sessions at once, and this hub refuses relay requests made for them.",
+    "mode": "Mode",
+    "modes": {
+      "open": "open",
+      "allow": "allow list",
+      "deny": "deny list"
+    },
+    "mode_open_description": "Every user is admitted; the list is kept but not enforced.",
+    "mode_allow_description": "Only users on the list are admitted.",
+    "mode_deny_description": "Every user except those on the list is admitted.",
+    "mode_read_only": "Set by the GIM_HUB_USER_POLICY environment variable; read-only here.",
+    "open_settings": "Open settings",
+    "new_mode": "New mode",
+    "apply_mode": "Apply mode",
+    "warning_empty_allow": "No user is admitted",
+    "warning_empty_allow_description": "Allow mode with an empty list admits nobody: no user can register or sign in. Add users or switch the mode.",
+    "warning_locked_out_one": "{{count}} user of this hub is not admitted",
+    "warning_locked_out_other": "{{count}} users of this hub are not admitted",
+    "warning_locked_out_description": "They cannot sign in, and their sessions were deleted.",
+    "list": "User list",
+    "list_description": "Users matched by the mode. Changes apply at once.",
+    "add_user": "Handle or user ID",
+    "add_placeholder": "@alice or a user ID",
+    "note": "Note",
+    "add": "Add",
+    "added_at": "Added",
+    "empty": "The list is empty.",
+    "remove": "Remove",
+    "remove_title": "Remove this user from the list?",
+    "remove_description": "{{id}} is removed from the user list. The change applies at once.",
+    "bulk": "Replace the list",
+    "bulk_description": "One user ID per line; # starts a comment. Listed users keep their notes. Nothing is saved if a line is invalid.",
+    "bulk_text": "User IDs",
+    "bulk_save": "Replace list"
   }
 }

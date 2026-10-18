@@ -57,7 +57,9 @@ fn device_list_dto(list: &StoredDeviceList) -> DeviceList {
     description = "No authentication: the DeviceList is self-certifying. The hub verifies the root \
 key signature and that the list's user ID matches `user_id` (derived from the root key). The first \
 upload creates the user on this hub. A later upload with a higher `seq` replaces the stored list; \
-re-uploading the identical list (same `seq`, same bytes) is idempotent and returns 200. Devices revoked by the new list lose their tokens; a `device_list.updated` event is emitted to \
+re-uploading the identical list (same `seq`, same bytes) is idempotent and returns 200. The first \
+upload of a user the hub's user policy (`GIM_HUB_USER_POLICY`) does not admit is refused with 403 \
+`user_not_admitted`; later uploads of an existing user are not. Devices revoked by the new list lose their tokens; a `device_list.updated` event is emitted to \
 the user's other active devices and to every active device of users sharing a group with them. \
 With federation, a replaced list of a hosted user is pushed to the hubs sharing groups with the \
 user, which emit `device_list.updated` to their users in those groups.",
@@ -67,6 +69,7 @@ user, which emit `device_list.updated` to their users in those groups.",
         (status = 200, description = "DeviceList replaced, or identical to the stored one", body = DeviceList),
         (status = 201, description = "User created with this DeviceList", body = DeviceList),
         (status = 400, description = "Malformed or invalid DeviceList, or user ID mismatch (`invalid_device_list`)", body = Error),
+        (status = 403, description = "First upload (registration) of a user the hub's user policy does not admit: `{\"error\":{\"code\":\"user_not_admitted\",\"message\":\"user is not admitted on this hub\"}}`", body = Error),
         (status = 409, description = "`seq` is lower than the stored DeviceList, or equal with different bytes (`stale_device_list`)", body = Error),
         (status = 413, description = "Payload too large (`payload_too_large`)", body = Error),
     ),
@@ -87,9 +90,16 @@ pub async fn put_device_list(
     let response = upload.response.clone();
     let hub_id = state.hub.hub_id().clone();
     let outbox = state.outbox.clone();
+    let admitted = state.user_policy.admitted(expected.as_str());
     let applied = state
         .db
-        .write(move |tx| upload.apply(tx, Some((&hub_id, outbox.as_ref()))))
+        .write(move |tx| {
+            // Registration is refused for a user the policy does not admit.
+            if !admitted && users::get_device_list(tx, &upload.stored.user_id)?.is_none() {
+                return Err(ApiError::UserNotAdmitted);
+            }
+            upload.apply(tx, Some((&hub_id, outbox.as_ref())))
+        })
         .await?;
     let status = match applied {
         Applied::Created => StatusCode::CREATED,
