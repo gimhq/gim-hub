@@ -6,7 +6,10 @@ use std::{
     collections::HashMap,
     hash::Hash,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use axum::{
@@ -20,8 +23,9 @@ const MINUTE_MS: i64 = 60_000;
 
 /// Token buckets of `per_min` requests per minute (burst `per_min`), one per
 /// key. Buckets idle for a minute are full again and are dropped lazily.
+/// `per_min` can change at runtime ([`RateLimiter::set_per_min`]).
 pub struct RateLimiter<K> {
-    per_min: u32,
+    per_min: AtomicU32,
     inner: Mutex<Buckets<K>>,
 }
 
@@ -41,7 +45,7 @@ impl<K: Hash + Eq> RateLimiter<K> {
     /// A limiter allowing `per_min` requests per minute per key (at least 1).
     pub fn new(per_min: u32) -> Self {
         Self {
-            per_min: per_min.max(1),
+            per_min: AtomicU32::new(per_min.max(1)),
             inner: Mutex::new(Buckets {
                 map: HashMap::new(),
                 last_prune_ms: i64::MIN,
@@ -49,10 +53,17 @@ impl<K: Hash + Eq> RateLimiter<K> {
         }
     }
 
+    /// Changes the allowed requests per minute (at least 1); existing
+    /// buckets refill at the new rate up to the new burst.
+    pub fn set_per_min(&self, per_min: u32) {
+        self.per_min.store(per_min.max(1), Ordering::Relaxed);
+    }
+
     /// Takes one token for `key` at `now_ms` (ms since the Unix epoch), or
     /// returns the seconds (at least 1) until a token is available.
     pub fn check_at(&self, key: K, now_ms: i64) -> Result<(), u64> {
-        let per_min = i64::from(self.per_min);
+        let per_min_u32 = self.per_min.load(Ordering::Relaxed);
+        let per_min = i64::from(per_min_u32);
         let capacity = per_min * MINUTE_MS;
         let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
         if now_ms.saturating_sub(inner.last_prune_ms) >= MINUTE_MS {
@@ -77,7 +88,7 @@ impl<K: Hash + Eq> RateLimiter<K> {
             return Ok(());
         }
         let missing = u64::try_from(MINUTE_MS - bucket.units).unwrap_or(0);
-        let wait_ms = missing.div_ceil(u64::from(self.per_min));
+        let wait_ms = missing.div_ceil(u64::from(per_min_u32));
         Err(wait_ms.div_ceil(1000).max(1))
     }
 }
@@ -88,7 +99,7 @@ impl<K: Hash + Eq> RateLimiter<K> {
 pub struct PublicReadLimits {
     per_ip: Arc<RateLimiter<IpAddr>>,
     per_user: Arc<RateLimiter<String>>,
-    trust_forwarded_for: bool,
+    trust_forwarded_for: Arc<AtomicBool>,
 }
 
 impl PublicReadLimits {
@@ -99,8 +110,21 @@ impl PublicReadLimits {
         Self {
             per_ip: Arc::new(RateLimiter::new(per_ip)),
             per_user: Arc::new(RateLimiter::new(per_user)),
-            trust_forwarded_for,
+            trust_forwarded_for: Arc::new(AtomicBool::new(trust_forwarded_for)),
         }
+    }
+
+    /// Applies changed limits at once, to every clone.
+    pub fn reconfigure(&self, per_ip: u32, per_user: u32, trust_forwarded_for: bool) {
+        self.per_ip.set_per_min(per_ip);
+        self.per_user.set_per_min(per_user);
+        self.trust_forwarded_for
+            .store(trust_forwarded_for, Ordering::Relaxed);
+    }
+
+    /// Whether the client IP is the left-most `X-Forwarded-For` address.
+    pub fn trust_forwarded_for(&self) -> bool {
+        self.trust_forwarded_for.load(Ordering::Relaxed)
     }
 
     /// Checks the per-IP limit, then the per-user limit; 429
@@ -150,7 +174,7 @@ impl FromRequestParts<AppState> for ClientIp {
         Ok(Self::resolve(
             peer,
             &parts.headers,
-            state.public_reads.trust_forwarded_for,
+            state.public_reads.trust_forwarded_for(),
         ))
     }
 }
@@ -178,6 +202,23 @@ mod tests {
         assert_eq!(limiter.check_at("a", T0 + 10 * MINUTE_MS), Ok(()));
         assert_eq!(limiter.check_at("a", T0 + 10 * MINUTE_MS), Ok(()));
         assert!(limiter.check_at("a", T0 + 10 * MINUTE_MS).is_err());
+    }
+
+    #[test]
+    fn a_new_rate_applies_to_existing_buckets() {
+        let limiter = RateLimiter::new(1);
+        assert_eq!(limiter.check_at("a", T0), Ok(()));
+        assert_eq!(limiter.check_at("a", T0), Err(60));
+        limiter.set_per_min(2);
+        // One token refills every 30 s now.
+        assert_eq!(limiter.check_at("a", T0), Err(30));
+        assert_eq!(limiter.check_at("a", T0 + 30_000), Ok(()));
+        let limits = PublicReadLimits::new(1, 1, false);
+        let copy = limits.clone();
+        limits.reconfigure(5, 6, true);
+        assert!(copy.trust_forwarded_for());
+        assert_eq!(copy.per_ip.per_min.load(Ordering::Relaxed), 5);
+        assert_eq!(copy.per_user.per_min.load(Ordering::Relaxed), 6);
     }
 
     #[test]

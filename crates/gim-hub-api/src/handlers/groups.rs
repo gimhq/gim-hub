@@ -458,7 +458,7 @@ impl Submission {
         if client_id_chars == 0 || client_id_chars > MAX_CLIENT_ID_CHARS {
             return Err(invalid("client_id must be 1-64 characters"));
         }
-        if mls_message.len() > state.config.max_message_bytes {
+        if mls_message.len() > state.config.load().max_message_bytes {
             return Err(ApiError::PayloadTooLarge);
         }
         if let Some(welcome) = &welcome {
@@ -466,7 +466,7 @@ impl Submission {
                 return Err(invalid("welcome_recipients must hold 1-500 devices"));
             }
             if welcome.welcome.len() + welcome.ratchet_tree.as_ref().map_or(0, Vec::len)
-                > state.config.max_message_bytes
+                > state.config.load().max_message_bytes
             {
                 return Err(ApiError::PayloadTooLarge);
             }

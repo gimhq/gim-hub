@@ -2,28 +2,35 @@
 
 ## Configuration
 
-gim-hub reads its configuration from environment variables at startup. Empty
-variables count as unset. An invalid value stops the hub with an error naming
-the variable.
+gim-hub reads its configuration from environment variables and, for every
+setting except the bootstrap ones, from values stored in its database (see
+[Stored settings](#stored-settings)). Empty variables count as unset. An
+invalid environment variable stops the hub with an error naming the variable.
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `GIM_HUB_LISTEN` | `0.0.0.0:8080` | Socket address of the client API |
-| `GIM_HUB_DATA_DIR` | `./data` | Data directory (see below) |
-| `GIM_HUB_DATABASE_PATH` | `$GIM_HUB_DATA_DIR/hub.db` | SQLite database file |
-| `GIM_HUB_EVENT_RETENTION_DAYS` | `7` | Events older than this are pruned (minimum 1) |
-| `GIM_HUB_KEYPACKAGE_LOW_THRESHOLD` | `10` | A device is sent `keypackages.low` when its one-time KeyPackages drop below this |
-| `GIM_HUB_MAX_MESSAGE_BYTES` | `262144` | Largest accepted MLS message (minimum 1) |
-| `GIM_HUB_MAX_BLOB_BYTES` | `104857600` | Largest accepted blob (minimum 1) |
-| `GIM_HUB_LONGPOLL_MAX_WAIT_SECONDS` | `30` | Upper bound for long-poll `wait` |
-| `GIM_HUB_SESSION_TTL_DAYS` | `30` | Lifetime of device bearer tokens (minimum 1) |
-| `GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN` | `120` | Unauthenticated `GET /v2/users/{user_id}`, `.../device-list` and `.../hosting-record` requests per client IP (IPv6: per /64) per minute (minimum 1) |
-| `GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN` | `60` | Unauthenticated reads of one `user_id` per minute, across all clients (minimum 1) |
-| `GIM_HUB_RECOVERY_READ_PER_IP_PER_MIN` | `20` | Unauthenticated `GET /v2/users/{user_id}/recovery-backup` requests per client IP (IPv6: per /64) per minute, separate from the public reads (minimum 1) |
-| `GIM_HUB_RECOVERY_READ_PER_USER_PER_MIN` | `10` | Recovery backup reads of one `user_id` per minute, across all clients (minimum 1) |
-| `GIM_HUB_TRUST_FORWARDED_FOR` | `false` | `true` keys the per-IP limit by the left-most `X-Forwarded-For` address; set only behind a reverse proxy that overwrites the header |
-| `GIM_HUB_PUBLIC_URL` | unset | Canonical client-API base URL (`scheme://host[:port]`), required when `GIM_HUB_FEDERATION=true`. Normalized at startup; see below |
-| `RUST_LOG` | `info` | Log filter (`tracing_subscriber` `EnvFilter` syntax, e.g. `gim_hub_api=debug,info`) |
+The Tier column says where a setting may come from: `env-only` (bootstrap:
+the environment only), `stored live` (environment or stored value, a stored
+change applies within about a second) or `stored restart` (environment or
+stored value, a stored change applies at the next start). An environment-only
+deployment behaves exactly as before 0.4.0.
+
+| Variable | Tier | Default | Meaning |
+| --- | --- | --- | --- |
+| `GIM_HUB_LISTEN` | env-only | `0.0.0.0:8080` | Socket address of the client API |
+| `GIM_HUB_DATA_DIR` | env-only | `./data` | Data directory (see below) |
+| `GIM_HUB_DATABASE_PATH` | env-only | `$GIM_HUB_DATA_DIR/hub.db` | SQLite database file |
+| `GIM_HUB_EVENT_RETENTION_DAYS` | stored live | `7` | Events older than this are pruned (minimum 1) |
+| `GIM_HUB_KEYPACKAGE_LOW_THRESHOLD` | stored live | `10` | A device is sent `keypackages.low` when its one-time KeyPackages drop below this |
+| `GIM_HUB_MAX_MESSAGE_BYTES` | stored live | `262144` | Largest accepted MLS message (minimum 1) |
+| `GIM_HUB_MAX_BLOB_BYTES` | stored live | `104857600` | Largest accepted blob (minimum 1) |
+| `GIM_HUB_LONGPOLL_MAX_WAIT_SECONDS` | stored live | `30` | Upper bound for long-poll `wait` |
+| `GIM_HUB_SESSION_TTL_DAYS` | stored live | `30` | Lifetime of device bearer tokens (minimum 1) |
+| `GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN` | stored live | `120` | Unauthenticated `GET /v2/users/{user_id}`, `.../device-list` and `.../hosting-record` requests per client IP (IPv6: per /64) per minute (minimum 1) |
+| `GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN` | stored live | `60` | Unauthenticated reads of one `user_id` per minute, across all clients (minimum 1) |
+| `GIM_HUB_RECOVERY_READ_PER_IP_PER_MIN` | stored live | `20` | Unauthenticated `GET /v2/users/{user_id}/recovery-backup` requests per client IP (IPv6: per /64) per minute, separate from the public reads (minimum 1) |
+| `GIM_HUB_RECOVERY_READ_PER_USER_PER_MIN` | stored live | `10` | Recovery backup reads of one `user_id` per minute, across all clients (minimum 1) |
+| `GIM_HUB_TRUST_FORWARDED_FOR` | stored live | `false` | `true` keys the per-IP limit by the left-most `X-Forwarded-For` address; set only behind a reverse proxy that overwrites the header |
+| `GIM_HUB_PUBLIC_URL` | stored restart | unset | Canonical client-API base URL (`scheme://host[:port]`), required when `GIM_HUB_FEDERATION=true`. Normalized at startup; see below |
+| `RUST_LOG` | env-only | `info` | Log filter (`tracing_subscriber` `EnvFilter` syntax, e.g. `gim_hub_api=debug,info`) |
 
 `GIM_HUB_PUBLIC_URL` is the URL clients reach this hub's client API at, as listed for it by
 clients and other hubs. It is signed into `GET /v2/hub?nonce=` proofs and into sign-in
@@ -41,26 +48,27 @@ optional; a hub without it issues version 1 challenges and answers `GET /v2/hub?
 Federation is off unless `GIM_HUB_FEDERATION=true`; every other variable in this table is ignored
 while it is off. Design: [`federation.md`](federation.md).
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `GIM_HUB_FEDERATION` | `false` | `true` starts the libp2p host and federation |
-| `GIM_HUB_P2P_LISTEN` | `/ip4/0.0.0.0/udp/4001/quic-v1,/ip4/0.0.0.0/tcp/4001` | Comma-separated listen multiaddrs (TCP only when a PSK is set) |
-| `GIM_HUB_P2P_EXTERNAL_ADDRS` | unset | Comma-separated multiaddrs advertised to peers (default: the actual listen addresses that are not unspecified) |
-| `GIM_HUB_P2P_BOOTSTRAP` | unset | Comma-separated bootstrap multiaddrs, `/p2p/<PeerId>` optional |
-| `GIM_HUB_FEDERATION_ALLOWLIST` | `$GIM_HUB_DATA_DIR/allowlist` | Allowlist file, reloaded on SIGHUP |
-| `GIM_HUB_P2P_PSK_FILE` | unset | libp2p `swarm.key` file; set = private network (pnet), TCP only |
-| `GIM_HUB_RUNTIME_CERT_DAYS` | `30` | Runtime certificate lifetime (minimum 2) |
-| `GIM_HUB_S2S_TIMEOUT_SECONDS` | `10` | Timeout of one hub-to-hub request (minimum 1) |
-| `GIM_HUB_DHT_REPUBLISH_HOURS` | `12` | Republish cadence of hosted users' hosting records (minimum 1) |
-| `GIM_HUB_HOSTING_CACHE_SECONDS` | `600` | Freshness of cached remote hosting records |
-| `GIM_HUB_DEVICE_LIST_CACHE_HOURS` | `24` | Freshness of cached remote DeviceLists |
-| `GIM_HUB_OUTBOX_TTL_HOURS` | `168` | Lifetime of queued outbound hub-to-hub entries (minimum 1) |
-| `GIM_HUB_OUTBOX_MAX_ENTRIES_PER_PEER` | `100000` | Outbound backlog cap per peer hub, entries (minimum 1) |
-| `GIM_HUB_OUTBOX_MAX_BYTES_PER_PEER` | `1073741824` | Outbound backlog cap per peer hub, bytes (minimum 1) |
-| `GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS` | `300` | Maximum retry backoff per peer hub (minimum 1) |
-| `GIM_HUB_UNHOSTED_GRACE_HOURS` | `168` | How long a user who removed this hub from their hosting record keeps read access before their data is purged (minimum 1; [`multihoming.md`](multihoming.md) §7.3) |
-| `GIM_HUB_PUSH_FAILOVER_SECONDS` | `30` | A co-host hub without a successful ping or hub-to-hub exchange for this long is down; a fallback hub of a multi-homed user pushes only while every hub before it is down (minimum 1; [`multihoming.md`](multihoming.md) §8) |
-| `GIM_HUB_FETCH_BLOB_PER_MINUTE` | `600` | Blob chunk requests (`FetchBlob`, up to 4 MiB each) served per peer hub and minute (minimum 1; [`federation.md`](federation.md) §5.6) |
+| Variable | Tier | Default | Meaning |
+| --- | --- | --- | --- |
+| `GIM_HUB_FEDERATION` | stored restart | `false` | `true` starts the libp2p host and federation |
+| `GIM_HUB_P2P_LISTEN` | stored restart | `/ip4/0.0.0.0/udp/4001/quic-v1,/ip4/0.0.0.0/tcp/4001` | Comma-separated listen multiaddrs (TCP only when a PSK is set) |
+| `GIM_HUB_P2P_EXTERNAL_ADDRS` | stored restart | unset | Comma-separated multiaddrs advertised to peers (default: the actual listen addresses that are not unspecified) |
+| `GIM_HUB_P2P_BOOTSTRAP` | stored restart | unset | Comma-separated bootstrap multiaddrs, `/p2p/<PeerId>` optional |
+| `GIM_HUB_FEDERATION_ALLOWLIST` | stored restart | unset | Allowlist file, reloaded on SIGHUP; unset: the stored allowlist (see below) |
+| `GIM_HUB_P2P_PSK_FILE` | stored restart | unset | libp2p `swarm.key` file; set = private network (pnet), TCP only |
+| `GIM_HUB_P2P_PSK` | stored restart (secret) | unset | The `swarm.key` content itself (same format, same effect); `GIM_HUB_P2P_PSK_FILE` wins when both are set. Write-only: never shown by the admin API or the CLI |
+| `GIM_HUB_RUNTIME_CERT_DAYS` | stored restart | `30` | Runtime certificate lifetime (minimum 2) |
+| `GIM_HUB_S2S_TIMEOUT_SECONDS` | stored restart | `10` | Timeout of one hub-to-hub request (minimum 1) |
+| `GIM_HUB_DHT_REPUBLISH_HOURS` | stored restart | `12` | Republish cadence of hosted users' hosting records (minimum 1) |
+| `GIM_HUB_HOSTING_CACHE_SECONDS` | stored live | `600` | Freshness of cached remote hosting records |
+| `GIM_HUB_DEVICE_LIST_CACHE_HOURS` | stored live | `24` | Freshness of cached remote DeviceLists |
+| `GIM_HUB_OUTBOX_TTL_HOURS` | stored live | `168` | Lifetime of queued outbound hub-to-hub entries (minimum 1) |
+| `GIM_HUB_OUTBOX_MAX_ENTRIES_PER_PEER` | stored live | `100000` | Outbound backlog cap per peer hub, entries (minimum 1) |
+| `GIM_HUB_OUTBOX_MAX_BYTES_PER_PEER` | stored live | `1073741824` | Outbound backlog cap per peer hub, bytes (minimum 1) |
+| `GIM_HUB_OUTBOX_BACKOFF_MAX_SECONDS` | stored live | `300` | Maximum retry backoff per peer hub (minimum 1) |
+| `GIM_HUB_UNHOSTED_GRACE_HOURS` | stored live | `168` | How long a user who removed this hub from their hosting record keeps read access before their data is purged (minimum 1; [`multihoming.md`](multihoming.md) §7.3) |
+| `GIM_HUB_PUSH_FAILOVER_SECONDS` | stored restart | `30` | A co-host hub without a successful ping or hub-to-hub exchange for this long is down; a fallback hub of a multi-homed user pushes only while every hub before it is down (minimum 1; [`multihoming.md`](multihoming.md) §8) |
+| `GIM_HUB_FETCH_BLOB_PER_MINUTE` | stored live | `600` | Blob chunk requests (`FetchBlob`, up to 4 MiB each) served per peer hub and minute (minimum 1; [`federation.md`](federation.md) §5.6) |
 
 The allowlist lists one peer `hub_id` per line, optionally followed by static multiaddrs without
 `/p2p/`; `#` starts a comment and the hub's own `hub_id` is ignored:
@@ -74,8 +82,20 @@ Allowlist, bootstrap and external addresses may be `/ip4/`, `/ip6/`, `/dns4/` or
 multiaddrs. DNS names are resolved with the system resolver (`/etc/resolv.conf`, `/etc/hosts`) at
 dial time, over TCP and QUIC alike (with a PSK, TCP only).
 
-A missing or empty allowlist, an invalid line, or a QUIC address together with
-`GIM_HUB_P2P_PSK_FILE` stops startup. On SIGHUP the file is re-read; an invalid file is logged and
+Where the allowlist comes from:
+
+1. `GIM_HUB_FEDERATION_ALLOWLIST` set (environment or stored): that file. The admin API and the
+   CLI show it read-only (`source: file`).
+2. Otherwise, a non-empty `federation_allowlist` table in the database (`source: stored`),
+   edited with `PUT /admin/api/federation/allowlist` or `gim-hub config allowlist set <file>`.
+   A change applies at once (admin API) or within about a second (CLI), like SIGHUP.
+3. Otherwise, the legacy default file `$GIM_HUB_DATA_DIR/allowlist` if it exists (`source:
+   file`, not read-only): the first edit through the admin API or the CLI stores the entries in
+   the table, which is used from then on; the file is left alone.
+4. Otherwise the allowlist is empty, which stops startup.
+
+A missing or empty allowlist, an invalid line, or a QUIC address together with a PSK
+(`GIM_HUB_P2P_PSK_FILE` or `GIM_HUB_P2P_PSK`) stops startup. On SIGHUP the file is re-read; an invalid file is logged and
 the previous allowlist stays in force; hubs no longer listed are disconnected. With federation
 enabled the data directory also holds `runtime_key` (32-byte Ed25519 seed of the libp2p host key,
 mode 0600) and `runtime_cert` (its certificate, signed by `hub_key` and renewed automatically when
@@ -166,15 +186,15 @@ server at `GIM_HUB_PUSH_WEBHOOK_URL`, which owns platform delivery and credentia
 those pushes are logged as skipped. The `log` provider is always available. A URL without a valid
 secret stops startup. Keep the secret out of the image (e.g. inject it from `/run/secrets`).
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `GIM_HUB_PUSH_MEMBER_EVENTS` | `false` | Also push `group.member_added` / `group.member_removed` (silent) |
-| `GIM_HUB_PUSH_MINIMAL` | `false` | `true` sends minimal wake-up payloads `{"v":1,"type":"wake","collapse_id"}` only (no group, sequence or MLS message; see `push.md`) |
-| `GIM_HUB_PUSH_QUEUE_CAPACITY` | `10000` | Most devices with a queued push; further pushes are dropped (minimum 1) |
-| `GIM_HUB_PUSH_LOG_ENDPOINT` | `false` | Serve the unauthenticated, test-only `GET /v2/debug/push-log`; never enable in production |
-| `GIM_HUB_PUSH_WEBHOOK_URL` | unset | `http` or `https` URL of the push server; every non-`log` push is POSTed there. Unset: those pushes are skipped |
-| `GIM_HUB_PUSH_WEBHOOK_SECRET` | unset | HMAC-SHA256 key of `X-Gim-Signature`; required with the URL, at least 32 bytes |
-| `GIM_HUB_PUSH_WEBHOOK_TIMEOUT_SECONDS` | `10` | Timeout of one webhook request; a timeout is retried (minimum 1) |
+| Variable | Tier | Default | Meaning |
+| --- | --- | --- | --- |
+| `GIM_HUB_PUSH_MEMBER_EVENTS` | stored live | `false` | Also push `group.member_added` / `group.member_removed` (silent) |
+| `GIM_HUB_PUSH_MINIMAL` | stored live | `false` | `true` sends minimal wake-up payloads `{"v":1,"type":"wake","collapse_id"}` only (no group, sequence or MLS message; see `push.md`) |
+| `GIM_HUB_PUSH_QUEUE_CAPACITY` | stored live | `10000` | Most devices with a queued push; further pushes are dropped (minimum 1) |
+| `GIM_HUB_PUSH_LOG_ENDPOINT` | stored live | `false` | Serve the unauthenticated, test-only `GET /v2/debug/push-log`; never enable in production |
+| `GIM_HUB_PUSH_WEBHOOK_URL` | stored live | unset | `http` or `https` URL of the push server; every non-`log` push is POSTed there. Unset: those pushes are skipped |
+| `GIM_HUB_PUSH_WEBHOOK_SECRET` | stored live (secret) | unset | HMAC-SHA256 key of `X-Gim-Signature`; required with the URL, at least 32 bytes |
+| `GIM_HUB_PUSH_WEBHOOK_TIMEOUT_SECONDS` | stored live | `10` | Timeout of one webhook request; a timeout is retried (minimum 1) |
 
 ### Admin API
 
@@ -183,20 +203,76 @@ The admin API and UI listen on a separate socket, off unless
 `GIM_HUB_LISTEN`. Setup, the security model and every endpoint:
 [`admin.md`](admin.md).
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `GIM_HUB_ADMIN_LISTEN` | unset | Socket address of the admin listener (recommended `127.0.0.1:8081` behind a TLS proxy); unset disables it and the other `GIM_HUB_ADMIN_*` variables are ignored |
-| `GIM_HUB_ADMIN_TOKEN_FILE` | unset | File holding the admin token (trimmed, at least 32 characters); recommended, e.g. a Docker/compose secret mounted as a file |
-| `GIM_HUB_ADMIN_TOKEN` | unset | The admin token itself (same rules); mutually exclusive with `GIM_HUB_ADMIN_TOKEN_FILE`. With neither set, token login is disabled |
-| `GIM_HUB_ADMIN_TRUSTED_HEADER` | unset | Identity header set by a reverse proxy (e.g. `X-Forwarded-User`); requires `GIM_HUB_ADMIN_TRUSTED_PROXIES` |
-| `GIM_HUB_ADMIN_TRUSTED_PROXIES` | unset | Comma-separated CIDRs whose `X-Forwarded-For` and identity header are trusted |
-| `GIM_HUB_ADMIN_COOKIE_SECURE` | `false` | `true` sets `Secure` on the session cookie |
+| Variable | Tier | Default | Meaning |
+| --- | --- | --- | --- |
+| `GIM_HUB_ADMIN_LISTEN` | env-only | unset | Socket address of the admin listener (recommended `127.0.0.1:8081` behind a TLS proxy); unset disables it and the other `GIM_HUB_ADMIN_*` variables are ignored |
+| `GIM_HUB_ADMIN_TOKEN_FILE` | env-only | unset | File holding the admin token (trimmed, at least 32 characters); recommended, e.g. a Docker/compose secret mounted as a file |
+| `GIM_HUB_ADMIN_TOKEN` | env-only | unset | The admin token itself (same rules); mutually exclusive with `GIM_HUB_ADMIN_TOKEN_FILE`. With neither set, token login is disabled |
+| `GIM_HUB_ADMIN_TRUSTED_HEADER` | env-only | unset | Identity header set by a reverse proxy (e.g. `X-Forwarded-User`); requires `GIM_HUB_ADMIN_TRUSTED_PROXIES` |
+| `GIM_HUB_ADMIN_TRUSTED_PROXIES` | env-only | unset | Comma-separated CIDRs whose `X-Forwarded-For` and identity header are trusted |
+| `GIM_HUB_ADMIN_COOKIE_SECURE` | env-only | `false` | `true` sets `Secure` on the session cookie |
 
 With `GIM_HUB_ADMIN_LISTEN` set, at least one of `GIM_HUB_ADMIN_TOKEN`,
 `GIM_HUB_ADMIN_TOKEN_FILE` and the trusted header is required; otherwise the
 hub does not start. Prefer the file: an environment token is visible in
 `docker inspect` and `/proc/<pid>/environ`, is inherited by child processes,
 and is plaintext in `lode.toml` `[env]`.
+
+## Stored settings
+
+Every setting marked `stored live` or `stored restart` in the tables above can also be stored in
+the database (table `settings`), through the admin API ([`admin.md`](admin.md), "Settings") or
+the CLI below. Bootstrap settings (`env-only`: listeners, data directory, database path, admin
+token and proxy settings) are never stored; they are needed before the database is open or
+protect the admin API itself.
+
+- Precedence: environment variable > stored value > default. A setting set by the environment
+  is read-only: the admin API answers 409 "set by environment" and the CLI refuses it; unset the
+  variable to manage the setting in the database.
+- Validation: a stored value is checked with the same parser as the environment variable, in
+  the context of the other settings, before anything is written (e.g. a webhook URL needs a
+  valid secret first; enabling federation needs a public URL). An invalid value is refused with
+  the parser's message and nothing is stored.
+- Secrets (`GIM_HUB_PUSH_WEBHOOK_SECRET`, `GIM_HUB_P2P_PSK`) are write-only: the admin API
+  returns `value: null` and `is_set`, the CLI prints `(set)` / `(unset)`, the audit log `***`.
+  They are stored in plaintext in the database, like the rest of its content; protect the data
+  directory accordingly or keep secrets in the environment (e.g. `/run/secrets`).
+- Apply: a `stored live` change takes effect in the running hub (rate limits, push options and
+  webhook, caches, outbox limits, retention, message and blob limits, ...); a `stored restart`
+  change is reported as `restart_pending` until the hub restarts.
+- Reload: every write bumps a version in the database; the hub polls it every second, so a
+  change made by the CLI (or another process) applies within about one second. A change through
+  the admin API applies before the response.
+- An invalid stored value found at startup (e.g. written by a newer release or by hand) is
+  logged at `error` and ignored, so the default applies; the hub still starts. An invalid
+  environment variable still stops startup.
+- Every change is audited in the admin audit log (`setting_update`, `setting_unset`,
+  `allowlist_update`), with actor `cli` for the CLI.
+- PSK: `GIM_HUB_P2P_PSK_FILE` names a `swarm.key` file; `GIM_HUB_P2P_PSK` holds the same content
+  (stored as a secret, or in the environment). The file wins when both are set. Both apply at
+  restart.
+
+### CLI
+
+`gim-hub config` reads and writes the stored settings of the database named by the bootstrap
+environment (`GIM_HUB_DATA_DIR`, `GIM_HUB_DATABASE_PATH`); run it with the hub's environment, e.g.
+`docker exec <container> gim-hub config list`. It works while the hub runs (SQLite WAL); the hub
+picks changes up within about a second.
+
+```
+gim-hub config list                   # every setting: value, source (env/stored/default), apply
+gim-hub config get KEY                # one setting with its description and default
+gim-hub config set KEY VALUE          # validate and store
+gim-hub config unset KEY              # delete the stored value (the default applies)
+gim-hub config allowlist list         # the effective allowlist and its source
+gim-hub config allowlist set FILE     # validate FILE (allowlist format) and store it in the table
+```
+
+A key set in the CLI's environment is refused by `set` and `unset` (exit 1), as the environment
+would override the stored value. `allowlist set` is refused while `GIM_HUB_FEDERATION_ALLOWLIST`
+names a file. Invalid values exit 1 with the parser's message and store nothing. Every change,
+and every invalid value refused, is audited with actor `cli` (a refused environment key is not:
+nothing was attempted).
 
 ## Data directory
 
@@ -359,8 +435,8 @@ set; without it nothing changes.
   `stop_grace_period: 40s`).
 - **Version reporting.** `GET /healthz`, `GET /v2/hub` (`version`) and
   `gim-hub version` report `LODE_ACTIVE_VERSION` when supervised (the
-  version lode installed, e.g. `0.3.1`), else the package version (`0.3.1`).
-  `gim-hub version` adds the build revision: `gim-hub 0.3.1 (<rev>)`. The
+  version lode installed, e.g. `0.4.0`), else the package version (`0.4.0`).
+  `gim-hub version` adds the build revision: `gim-hub 0.4.0 (<rev>)`. The
   same version names the pre-migration backups.
 - **Rollback and the database.** lode rolls back the binary, not the data.
   Only an older release whose schema is not behind the database can run on
@@ -390,7 +466,8 @@ set; without it nothing changes.
 - **Smoke test.** `scripts/lode-smoke.sh` builds the admin UI, the hub and
   the image, serves a signed native manifest from a sibling container and
   checks a real install (with a pre-migration backup) serving the embedded
-  admin UI on its own port, an update, a rollback from a release that fails
+  admin UI on its own port with an environment-only configuration (reported
+  as source `env` by `gim-hub config`), an update, a rollback from a release that fails
   at startup and a graceful `docker stop`.
 
 ## Shutdown

@@ -77,7 +77,7 @@ pub async fn list_events(
     // Subscribe before reading so an event committed in between wakes us.
     let mut wake = state.notifier.subscribe(&auth.user_id, &auth.device_id);
     let mut events = fetch_events(&state, &auth, cursor, limit).await?;
-    let wait = wait.min(state.config.longpoll_max_wait_seconds);
+    let wait = wait.min(state.config.load().longpoll_max_wait_seconds);
     if events.is_empty() && wait > 0 {
         // A timeout simply returns the (empty) result.
         let _ = tokio::time::timeout(Duration::from_secs(wait.into()), wake.changed()).await;

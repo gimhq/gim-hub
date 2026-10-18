@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicI64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, PoisonError, RwLock,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -22,7 +22,9 @@ use crate::{
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
-    pub config: Arc<Config>,
+    /// The effective configuration; replaced when live settings change
+    /// ([`AppState::apply_live`]).
+    pub config: SharedConfig,
     pub hub: HubIdentity,
     pub notifier: Notifier,
     pub clock: Clock,
@@ -86,7 +88,7 @@ impl AppState {
         );
         Self {
             db,
-            config: Arc::new(config),
+            config: SharedConfig::new(config),
             hub,
             notifier,
             clock,
@@ -99,6 +101,54 @@ impl AppState {
             recovery_reads,
             blob_fetches: BlobFetches::default(),
         }
+    }
+}
+
+impl AppState {
+    /// Applies `config` at once (docs/operations.md, "Stored settings"):
+    /// the handlers read it from the next request on, and the rate limits
+    /// and the push dispatcher (options and webhook) are reconfigured. The
+    /// caller keeps restart-only fields at their startup values.
+    pub fn apply_live(&self, config: Config) -> Result<(), String> {
+        self.public_reads.reconfigure(
+            config.public_read_per_ip_per_min,
+            config.public_read_per_user_per_min,
+            config.trust_forwarded_for,
+        );
+        self.recovery_reads.reconfigure(
+            config.recovery_read_per_ip_per_min,
+            config.recovery_read_per_user_per_min,
+            config.trust_forwarded_for,
+        );
+        let push = self
+            .push
+            .reconfigure(&config.push, self.hub.hub_id().as_str());
+        self.config.store(config);
+        push
+    }
+}
+
+/// The hub configuration shared by all clones of the state, replaced as a
+/// whole when live settings change.
+#[derive(Debug, Clone)]
+pub struct SharedConfig(Arc<RwLock<Arc<Config>>>);
+
+impl SharedConfig {
+    pub fn new(config: Config) -> Self {
+        Self(Arc::new(RwLock::new(Arc::new(config))))
+    }
+
+    /// The current configuration.
+    pub fn load(&self) -> Arc<Config> {
+        self.0
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Replaces the configuration.
+    pub fn store(&self, config: Config) {
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(config);
     }
 }
 

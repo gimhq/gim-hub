@@ -554,7 +554,7 @@ async fn removed_hub_refuses_writes_then_purges_and_can_be_listed_again() {
     // record stays as a tombstone.
     let removed = record(1, 4, &[(101, 0)]);
     assert_eq!(put_record(b, 1, &removed).await.0, StatusCode::OK);
-    let grace = i64::from(b.hub.state.config.unhosted_grace_hours) * HOUR;
+    let grace = i64::from(b.hub.state.config.load().unhosted_grace_hours) * HOUR;
     let is_local = || {
         let (db, user) = (b.hub.state.db.clone(), alice.user_id.clone());
         async move {

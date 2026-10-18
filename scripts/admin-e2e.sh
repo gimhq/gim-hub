@@ -9,7 +9,7 @@
 #   1. login with the token
 #   2. search the seeded user and open the detail
 #   3. revoke the device's sessions (UI, API and database)
-#   4. add a second fake hub to the allowlist (API and file on disk)
+#   4. add a second fake hub to the allowlist (API and the stored table)
 #   5. lode "check now" (state.json check_nonce bumped, lode's fields intact)
 #   6. audit entries for the revoke, allowlist_update and lode_check
 #   7. GET <client listener>/admin/ is 404
@@ -116,8 +116,9 @@ od -An -tx1 -N32 /dev/urandom | tr -d ' \n' >"$WORK/admin.token"
 TOKEN="$(cat "$WORK/admin.token")"
 HUB_ONE="$(multihash_id h)"
 HUB_TWO="$(multihash_id h)"
-printf '# admin-e2e allowlist\n%s /dns4/hub-one.example.eu/tcp/4001\n' "$HUB_ONE" >"$WORK/allowlist"
-cp "$WORK/allowlist" "$WORK/allowlist.orig"
+# The stored allowlist (docs/operations.md, "Stored settings"): no
+# GIM_HUB_FEDERATION_ALLOWLIST file, so the admin API edits the table.
+sqlite3 "$DB" "INSERT INTO federation_allowlist (hub_id, addrs) VALUES ('$HUB_ONE', '[\"/dns4/hub-one.example.eu/tcp/4001\"]');"
 
 cat >"$STATE" <<'JSON'
 {
@@ -150,7 +151,6 @@ docker run -d "${LABELS[@]}" --name "$HUB" --network "$NET" \
     -e GIM_HUB_ADMIN_TOKEN_FILE="$WORK/admin.token" \
     -e GIM_HUB_FEDERATION=true \
     -e GIM_HUB_PUBLIC_URL=https://hub-e2e.example.eu \
-    -e GIM_HUB_FEDERATION_ALLOWLIST="$WORK/allowlist" \
     -e LODE_DIR="$WORK/lode" \
     -e LODE_INSTANCE="$RUN" \
     -e LODE_ACTIVE_VERSION=0.3.0 \
@@ -185,10 +185,10 @@ left="$(sqlite3 "$DB" "SELECT count(*) FROM sessions WHERE user_id = '$USER_ID'"
 [[ "$left" == 0 ]] || fail "3: $left sessions left in the database"
 pass "3. database: no session left for $USER_ID"
 
-grep -q "^$HUB_ONE " "$WORK/allowlist" && grep -q "^$HUB_TWO " "$WORK/allowlist" ||
-    fail "4: allowlist file: $(cat "$WORK/allowlist")"
-! cmp -s "$WORK/allowlist" "$WORK/allowlist.orig" || fail "4: allowlist file unchanged"
-pass "4. allowlist file on disk lists $HUB_ONE and $HUB_TWO"
+stored="$(sqlite3 "$DB" "SELECT hub_id FROM federation_allowlist ORDER BY hub_id")"
+grep -qx "$HUB_ONE" <<<"$stored" && grep -qx "$HUB_TWO" <<<"$stored" ||
+    fail "4: federation_allowlist table: $stored"
+pass "4. federation_allowlist table lists $HUB_ONE and $HUB_TWO"
 
 [[ "$(jq .check_nonce "$STATE")" == 1 ]] || fail "5: check_nonce $(jq .check_nonce "$STATE")"
 lode_fields='{status, current, available, last_good, channel, last_check, history, config_generation, checked_nonce, restart_nonce}'

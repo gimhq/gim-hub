@@ -82,7 +82,7 @@ pub async fn upload_key_packages(
         let bytes = STANDARD
             .decode(&encoded.0)
             .map_err(|_| ApiError::ValidationFailed("key_packages must be base64".into()))?;
-        if bytes.len() > state.config.max_message_bytes {
+        if bytes.len() > state.config.load().max_message_bytes {
             return Err(ApiError::PayloadTooLarge);
         }
         let (hash, leaf) = mls::parse_key_package(&bytes)?;
@@ -539,7 +539,7 @@ async fn claim_local(
         });
     }
     let now = state.clock.now_ms();
-    let threshold = state.config.keypackage_low_threshold;
+    let threshold = state.config.load().keypackage_low_threshold;
     let (result, low) = state
         .db
         .write(move |tx| {

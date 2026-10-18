@@ -11,7 +11,10 @@ use axum::{
     Router,
 };
 use gim_hub_admin::{AdminConfig, AdminState};
-use gim_hub_api::testing::TestHub;
+use gim_hub_api::{
+    settings::{self, Runtime, Sources, Vars},
+    testing::TestHub,
+};
 use gim_hub_s2s::{FederationConfig, FederationService};
 use serde_json::Value;
 use tempfile::TempDir;
@@ -55,6 +58,9 @@ pub struct Options {
     /// Federation settings without a running service.
     pub federation_config: Option<FederationConfig>,
     pub lode_dir: Option<PathBuf>,
+    /// The hub's environment as seen by the stored settings (besides
+    /// `GIM_HUB_DATA_DIR`), e.g. env-set keys.
+    pub env: Vec<(&'static str, String)>,
 }
 
 impl Default for Options {
@@ -65,6 +71,7 @@ impl Default for Options {
             federation: None,
             federation_config: None,
             lode_dir: None,
+            env: Vec::new(),
         }
     }
 }
@@ -90,16 +97,33 @@ impl Admin {
             Some((config, service)) => (config, Some(service)),
             None => (
                 options.federation_config.unwrap_or_else(|| {
-                    FederationConfig::from_vars(Vec::new(), &hub.state.config.data_dir).unwrap()
+                    FederationConfig::from_vars(Vec::new(), &hub.state.config.load().data_dir)
+                        .unwrap()
                 }),
                 None,
             ),
         };
+        let mut env = Vars::new();
+        env.insert(
+            "GIM_HUB_DATA_DIR".into(),
+            hub.state.config.load().data_dir.display().to_string(),
+        );
+        env.extend(options.env.into_iter().map(|(k, v)| (k.to_owned(), v)));
+        // The test database has no stored settings yet.
+        let startup = settings::load(&Sources {
+            env: env.clone(),
+            ..Sources::default()
+        })
+        .unwrap()
+        .vars;
+        let runtime = Runtime::new(hub.state.db.clone(), env, startup, 0);
+        settings::install(&runtime, hub.state.clone(), federation.clone(), None);
         let state = AdminState::new(
             hub.state.clone(),
             config,
             federation_config,
             federation,
+            runtime,
             options.lode_dir,
         );
         Self {
