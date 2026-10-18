@@ -118,16 +118,18 @@ impl std::fmt::Debug for FederationService {
 
 impl FederationService {
     /// Starts federation with the closed-federation [`AllowlistPolicy`]
-    /// from `config`, reloaded on SIGHUP.
+    /// from `config`: the stored allowlist when `allowlist_text` is set,
+    /// else the file, reloaded on SIGHUP.
     pub async fn start_with_allowlist(
         config: &FederationConfig,
         hub_root: &SigningKey,
     ) -> Result<Self, StartError> {
         let hub_id = HubId::from_root_pubkey(&hub_root.verifying_key());
-        let allowlist = Arc::new(
-            AllowlistPolicy::load(&config.allowlist_path, &hub_id, config.psk)?
-                .with_fetch_blob_limit(config.fetch_blob_per_minute),
-        );
+        let policy = match &config.allowlist_text {
+            Some(text) => AllowlistPolicy::from_text(text, &hub_id, config.psk)?,
+            None => AllowlistPolicy::load(&config.allowlist_path, &hub_id, config.psk)?,
+        };
+        let allowlist = Arc::new(policy.with_fetch_blob_limit(config.fetch_blob_per_minute));
         let service =
             Self::start_with_policy(config, hub_root, allowlist.clone(), Some(allowlist)).await?;
         #[cfg(unix)]
@@ -273,6 +275,19 @@ impl FederationService {
         };
         allowlist.reload()?;
         tracing::info!(hubs = allowlist.hub_ids().len(), "allowlist reloaded");
+        self.inner.transport.policy_changed();
+        Ok(())
+    }
+
+    /// Puts the stored allowlist `text` in force and re-applies the policy
+    /// to bound peers, like [`Self::reload_allowlist`]; the file is no longer
+    /// used. On error the previous allowlist stays in force.
+    pub fn set_allowlist_text(&self, text: &str) -> Result<(), PolicyError> {
+        let Some(allowlist) = &self.inner.allowlist else {
+            return Ok(());
+        };
+        allowlist.set_text(text)?;
+        tracing::info!(hubs = allowlist.hub_ids().len(), "stored allowlist applied");
         self.inner.transport.policy_changed();
         Ok(())
     }

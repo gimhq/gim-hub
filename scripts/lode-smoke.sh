@@ -8,11 +8,13 @@
 # native manifest served over http by a sibling container on a per-run
 # network, signed with a throwaway key generated here (never printed):
 #
-#   a. install 0.3.1 over a seeded schema-(N-1) database -> ready, pre-migration
-#      backup taken, data written, admin UI served on the admin listener
-#   b. publish 0.3.2 (same binary) -> update -> ready on 0.3.2, data kept
-#   c. publish a broken 0.3.3 (exits 3 at startup) -> update -> lode rolls
-#      back to 0.3.2, data kept
+#   a. install 0.4.0 over a seeded schema-(N-1) database with an env-only
+#      (0.3.x style) configuration -> ready, pre-migration backup taken, data
+#      written, admin UI served on the admin listener, the env settings applied
+#      and reported by `gim-hub config` as source env (read-only)
+#   b. publish 0.4.1 (same binary) -> update -> ready on 0.4.1, data kept
+#   c. publish a broken 0.4.2 (exits 3 at startup) -> update -> lode rolls
+#      back to 0.4.1, data kept
 #   d. docker stop -t 30 -> clean exit, time printed
 #
 # Requires docker, jq and sqlite3. Every container, network and image carries
@@ -163,45 +165,55 @@ chmod 666 "$WORK/data/hub.db"
 od -An -tx1 -N32 /dev/urandom | tr -d ' \n' >"$WORK/data/admin.token"
 chmod 644 "$WORK/data/admin.token"
 
-# --- a. install 0.3.1 ---------------------------------------------------------
-publish 0.3.1 "$WORK/bin/good"
+# --- a. install 0.4.0 ---------------------------------------------------------
+publish 0.4.0 "$WORK/bin/good"
+# An env-only configuration as a 0.3.x deployment has it (no stored settings).
 docker run -d "${LABELS[@]}" --name "$LODE" --network "$NET" \
     -e GIM_HUB_ADMIN_LISTEN=0.0.0.0:8081 -e GIM_HUB_ADMIN_TOKEN_FILE=/data/admin.token \
+    -e GIM_HUB_PUBLIC_URL=https://hub.example.eu -e GIM_HUB_EVENT_RETENTION_DAYS=14 \
     -v "$WORK/lode:/srv/lode" -v "$WORK/data:/data" "$IMAGE" >/dev/null
-wait_for 90 "a: 0.3.1 running and ready" serving 0.3.1
-[[ -f "$WORK/data/backups/hub-$from-0.3.1.db" ]] || fail "a: backup hub-$from-0.3.1.db missing: $(ls "$WORK/data/backups" 2>&1)"
-[[ "$(sqlite3 "$WORK/data/backups/hub-$from-0.3.1.db" 'PRAGMA user_version')" == "$from" ]] || fail "a: backup schema"
+wait_for 90 "a: 0.4.0 running and ready" serving 0.4.0
+[[ -f "$WORK/data/backups/hub-$from-0.4.0.db" ]] || fail "a: backup hub-$from-0.4.0.db missing: $(ls "$WORK/data/backups" 2>&1)"
+[[ "$(sqlite3 "$WORK/data/backups/hub-$from-0.4.0.db" 'PRAGMA user_version')" == "$from" ]] || fail "a: backup schema"
 [[ "$(sqlite3 "$WORK/data/hub.db" 'PRAGMA user_version')" == "$schema" ]] || fail "a: schema not migrated"
-[[ ! -e "$WORK/lode/versions/0.3.1/hub.db" ]] || fail "a: data written into LODE_DIR"
-sqlite3 "$WORK/data/hub.db" "INSERT INTO meta (key, value) VALUES ('smoke-0.3.1', '$RUN');"
+[[ ! -e "$WORK/lode/versions/0.4.0/hub.db" ]] || fail "a: data written into LODE_DIR"
+sqlite3 "$WORK/data/hub.db" "INSERT INTO meta (key, value) VALUES ('smoke-0.4.0', '$RUN');"
 HUB_ID="$(hub_id)"
 admin_ui="$(hub_get /admin/users 8081)" || fail "a: admin listener"
 grep -q '<div id="root"' <<<"$admin_ui" || fail "a: /admin/ is not the embedded admin UI"
-pass "a: install 0.3.1 (signed, fetched + verified) -> status=$(state .status) current=$(state .current) ready=$(state .ready) version=$(hub_version); backup backups/hub-$from-0.3.1.db; data written; admin UI served on :8081"
+[[ "$(hub_get /v2/hub | jq -r .public_url)" == https://hub.example.eu ]] || fail "a: env GIM_HUB_PUBLIC_URL not applied"
+# The CLI with the hub's environment (the container env plus lode.toml's data dir).
+hub_cli() { docker exec -e GIM_HUB_DATA_DIR=/data "$LODE" /srv/lode/versions/0.4.0/gim-hub config "$@"; }
+retention="$(hub_cli get GIM_HUB_EVENT_RETENTION_DAYS)" || fail "a: gim-hub config get"
+grep -q '^value: *14$' <<<"$retention" && grep -q '^source: *env$' <<<"$retention" ||
+    fail "a: config get GIM_HUB_EVENT_RETENTION_DAYS: $retention"
+! hub_cli set GIM_HUB_EVENT_RETENTION_DAYS 30 >/dev/null 2>&1 || fail "a: config set accepted an env-set key"
+[[ "$(sqlite3 "$WORK/data/hub.db" 'SELECT count(*) FROM settings')" == 0 ]] || fail "a: settings stored"
+pass "a: install 0.4.0 (signed, fetched + verified) -> status=$(state .status) current=$(state .current) ready=$(state .ready) version=$(hub_version); backup backups/hub-$from-0.4.0.db; data written; admin UI served on :8081; env-only config applied (public_url, retention 14 from env, read-only to the CLI)"
 
-# --- b. update to 0.3.2 -------------------------------------------------------
-publish 0.3.2 "$WORK/bin/good"
-lode_cli update --version 0.3.2 >/dev/null
-wait_for 90 "b: 0.3.2 running and ready" serving 0.3.2
-wait_for 30 "b: 0.3.2 committed as last_good" test "$(state .last_good)" == 0.3.2
+# --- b. update to 0.4.1 -------------------------------------------------------
+publish 0.4.1 "$WORK/bin/good"
+lode_cli update --version 0.4.1 >/dev/null
+wait_for 90 "b: 0.4.1 running and ready" serving 0.4.1
+wait_for 30 "b: 0.4.1 committed as last_good" test "$(state .last_good)" == 0.4.1
 [[ "$(hub_id)" == "$HUB_ID" ]] || fail "b: hub identity changed"
-[[ "$(meta smoke-seed)" == "$RUN" && "$(meta smoke-0.3.1)" == "$RUN" ]] || fail "b: data lost"
-[[ "$(ls "$WORK/data/backups")" == "hub-$from-0.3.1.db" ]] || fail "b: unexpected backups: $(ls "$WORK/data/backups")"
-pass "b: update 0.3.1 -> 0.3.2 -> current=$(state .current) last_good=$(state .last_good) version=$(hub_version); data kept; no backup (schema current)"
+[[ "$(meta smoke-seed)" == "$RUN" && "$(meta smoke-0.4.0)" == "$RUN" ]] || fail "b: data lost"
+[[ "$(ls "$WORK/data/backups")" == "hub-$from-0.4.0.db" ]] || fail "b: unexpected backups: $(ls "$WORK/data/backups")"
+pass "b: update 0.4.0 -> 0.4.1 -> current=$(state .current) last_good=$(state .last_good) version=$(hub_version); data kept; no backup (schema current)"
 
-# --- c. broken 0.3.3 rolls back -----------------------------------------------
-publish 0.3.3 "$WORK/bin/broken"
-lode_cli update --version 0.3.3 >/dev/null || true
+# --- c. broken 0.4.2 rolls back -----------------------------------------------
+publish 0.4.2 "$WORK/bin/broken"
+lode_cli update --version 0.4.2 >/dev/null || true
 rolled_back() {
-    [[ "$(state '[.history[]? | select(.version == "0.3.3" and .result == "bad")] | length')" -ge 1 ]] &&
-        serving 0.3.2
+    [[ "$(state '[.history[]? | select(.version == "0.4.2" and .result == "bad")] | length')" -ge 1 ]] &&
+        serving 0.4.1
 }
-wait_for 120 "c: rollback from 0.3.3 to 0.3.2" rolled_back
-[[ "$(state .last_good)" == 0.3.2 ]] || fail "c: last_good $(state .last_good)"
+wait_for 120 "c: rollback from 0.4.2 to 0.4.1" rolled_back
+[[ "$(state .last_good)" == 0.4.1 ]] || fail "c: last_good $(state .last_good)"
 [[ "$(hub_id)" == "$HUB_ID" ]] || fail "c: hub identity changed"
-[[ "$(meta smoke-seed)" == "$RUN" && "$(meta smoke-0.3.1)" == "$RUN" ]] || fail "c: data lost"
-[[ "$(ls "$WORK/data/backups")" == "hub-$from-0.3.1.db" ]] || fail "c: unexpected backups: $(ls "$WORK/data/backups")"
-pass "c: broken 0.3.3 -> rolled back: current=$(state .current) last_good=$(state .last_good) version=$(hub_version); data kept; backups: $(ls "$WORK/data/backups")"
+[[ "$(meta smoke-seed)" == "$RUN" && "$(meta smoke-0.4.0)" == "$RUN" ]] || fail "c: data lost"
+[[ "$(ls "$WORK/data/backups")" == "hub-$from-0.4.0.db" ]] || fail "c: unexpected backups: $(ls "$WORK/data/backups")"
+pass "c: broken 0.4.2 -> rolled back: current=$(state .current) last_good=$(state .last_good) version=$(hub_version); data kept; backups: $(ls "$WORK/data/backups")"
 
 # --- d. graceful stop ---------------------------------------------------------
 start=$(date +%s%N)

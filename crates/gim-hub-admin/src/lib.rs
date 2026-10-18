@@ -66,6 +66,10 @@ from `state.json`. Every non-2xx JSON response has the shape `{\"error\":{\"code
         h::lode::lode_restart,
         h::lode::lode_rollback,
         h::config::get_config,
+        h::settings::list_settings,
+        h::settings::get_setting,
+        h::settings::put_setting,
+        h::settings::delete_setting,
         h::audit::list_audit,
     ),
     modifiers(&SecurityAddon),
@@ -76,6 +80,7 @@ from `state.json`. Every non-2xx JSON response has the shape `{\"error\":{\"code
         (name = "federation", description = "Federation status and allowlist"),
         (name = "lode", description = "The lode supervisor"),
         (name = "config", description = "Effective configuration"),
+        (name = "settings", description = "Stored settings"),
         (name = "audit", description = "Admin audit log"),
     ),
 )]
@@ -145,6 +150,13 @@ pub fn api_router(state: AdminState) -> Router {
         .route("/admin/api/lode/restart", post(h::lode::lode_restart))
         .route("/admin/api/lode/rollback", post(h::lode::lode_rollback))
         .route("/admin/api/config", get(h::config::get_config))
+        .route("/admin/api/settings", get(h::settings::list_settings))
+        .route(
+            "/admin/api/settings/{key}",
+            get(h::settings::get_setting)
+                .put(h::settings::put_setting)
+                .delete(h::settings::delete_setting),
+        )
         .route("/admin/api/audit", get(h::audit::list_audit))
         .route("/admin/api/{*rest}", axum::routing::any(not_found))
         .route_layer(middleware::from_fn_with_state(

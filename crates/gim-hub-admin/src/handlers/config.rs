@@ -25,9 +25,30 @@ is `null` and `redacted` is true when one is set. File paths are shown, never fi
     ),
 )]
 pub async fn get_config(State(state): State<AdminState>) -> Json<ConfigView> {
+    let federation = live_federation(&state).await;
     Json(ConfigView {
-        items: effective_config(&state.app.config, &state.federation_config, &state.config),
+        items: effective_config(&state.app.config.load(), &federation, &state.config),
     })
+}
+
+/// The federation settings the hub started with, with the live settings at
+/// their current values.
+async fn live_federation(state: &AdminState) -> FederationConfig {
+    let mut config = state.federation_config.clone();
+    let applied = match state.settings.sources().await {
+        Ok(sources) => state.settings.applied(&sources).ok(),
+        Err(_) => None,
+    };
+    if let Some(live) = applied.map(|e| e.federation).filter(|f| f.enabled) {
+        config.hosting_cache_seconds = live.hosting_cache_seconds;
+        config.device_list_cache_hours = live.device_list_cache_hours;
+        config.outbox_ttl_hours = live.outbox_ttl_hours;
+        config.outbox_max_entries_per_peer = live.outbox_max_entries_per_peer;
+        config.outbox_max_bytes_per_peer = live.outbox_max_bytes_per_peer;
+        config.outbox_backoff_max_seconds = live.outbox_backoff_max_seconds;
+        config.fetch_blob_per_minute = live.fetch_blob_per_minute;
+    }
+    config
 }
 
 /// Whether the value of `key` is a secret.

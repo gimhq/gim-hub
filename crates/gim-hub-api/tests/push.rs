@@ -288,7 +288,7 @@ async fn message_id(hub: &TestHub, seq: i64) -> String {
 
 #[tokio::test]
 async fn messages_push_to_other_members_with_inline_payload_by_size() {
-    let mut hub = TestHub::new();
+    let hub = TestHub::new();
     let alice = hub.create_session("u1", "d1").await;
     let bob = hub.create_session("u2", "d1").await;
     let _carol = hub.create_session("u3", "d1").await;
@@ -352,9 +352,9 @@ async fn messages_push_to_other_members_with_inline_payload_by_size() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let mut config = (*hub.state.config).clone();
+    let mut config = (*hub.state.config.load()).clone();
     config.push.log_endpoint = true;
-    hub.state.config = Arc::new(config);
+    hub.state.config.store(config);
     let (status, body) = call(
         &hub,
         Method::GET,

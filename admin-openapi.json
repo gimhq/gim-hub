@@ -159,10 +159,11 @@
           "federation"
         ],
         "summary": "The federation allowlist",
+        "description": "The allowlist in force. With `GIM_HUB_FEDERATION_ALLOWLIST` set it is that file (`source` `file`, `read_only`). Otherwise it is the stored allowlist (`source` `stored`, table `federation_allowlist`), except on a hub that still has the default file `$GIM_HUB_DATA_DIR/allowlist` and nothing stored: that file is shown (`source` `file`, not read-only) until the first PUT stores an allowlist.",
         "operationId": "get_allowlist",
         "responses": {
           "200": {
-            "description": "The allowlist file and its entries",
+            "description": "The allowlist and its entries",
             "content": {
               "application/json": {
                 "schema": {
@@ -202,8 +203,8 @@
         "tags": [
           "federation"
         ],
-        "summary": "Replace the federation allowlist",
-        "description": "Validates the text with the allowlist rules, writes it atomically to `GIM_HUB_FEDERATION_ALLOWLIST` and applies it at once, as SIGHUP does. On a validation error the file is unchanged. Audited as `allowlist_update`.",
+        "summary": "Replace the stored federation allowlist",
+        "description": "Validates the text with the allowlist rules (file format; the own hub is skipped, an allowlist naming no other hub is invalid), stores it in the table `federation_allowlist` and applies it at once, as SIGHUP does for the file; comments are not kept. On a validation error nothing changes. 409 while `GIM_HUB_FEDERATION_ALLOWLIST` is set: the file is authoritative. Audited as `allowlist_update`.",
         "operationId": "put_allowlist",
         "requestBody": {
           "content": {
@@ -258,6 +259,16 @@
           },
           "404": {
             "description": "Federation is off (`not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The allowlist file is authoritative (`conflict`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -819,6 +830,292 @@
         ]
       }
     },
+    "/admin/api/settings": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Stored settings",
+        "description": "Every stored setting with its effective value and source. Precedence: environment variable > stored value > default; a setting set by the environment is read-only. Secrets are never returned (`value` is `null`, `is_set` tells whether one exists). The bootstrap settings (listeners, data directory, database path, admin token and proxy settings) are environment-only and not listed here; see GET /admin/api/config.",
+        "operationId": "list_settings",
+        "responses": {
+          "200": {
+            "description": "Settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
+    "/admin/api/settings/{key}": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "One stored setting",
+        "operationId": "get_setting",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "description": "The environment variable name, e.g. GIM_HUB_EVENT_RETENTION_DAYS",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The setting",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingItem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or bootstrap key (`not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Store a setting",
+        "description": "Validates the value with the same parser as the environment variable, in the context of the other settings (dependent values are written in order: the webhook secret before the URL, the public URL before enabling federation), stores it and applies a `live` setting at once; a `restart` setting is reported as `restart_pending` until the hub restarts. Secrets take a string and are never returned. Audited as `setting_update` (detail `old -> new`, secrets as `***`).",
+        "operationId": "put_setting",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "description": "The environment variable name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingItem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or bootstrap key (`not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Set by the environment (`conflict`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid value; the message is the parser's (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Unset a stored setting",
+        "description": "Deletes the stored value: the default applies (a `live` setting at once). The remaining settings must stay valid (e.g. the public URL cannot be unset while federation is enabled: 422). Audited as `setting_unset`.",
+        "operationId": "delete_setting",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "description": "The environment variable name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingItem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session (`unauthorized`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or bootstrap key (`not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Set by the environment (`conflict`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The other settings need a value (`validation_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "adminSession": []
+          }
+        ]
+      }
+    },
     "/admin/api/users": {
       "get": {
         "tags": [
@@ -1203,7 +1500,9 @@
         "required": [
           "path",
           "text",
-          "entries"
+          "entries",
+          "source",
+          "read_only"
         ],
         "properties": {
           "entries": {
@@ -1215,11 +1514,20 @@
           },
           "path": {
             "type": "string",
-            "description": "`GIM_HUB_FEDERATION_ALLOWLIST`."
+            "description": "The allowlist file (`GIM_HUB_FEDERATION_ALLOWLIST`, else the default\n`$GIM_HUB_DATA_DIR/allowlist`) when `source` is `file`; for `stored`\nthe database file and table, `<database path>#federation_allowlist`."
+          },
+          "read_only": {
+            "type": "boolean",
+            "description": "True when `GIM_HUB_FEDERATION_ALLOWLIST` is set: the file is\nauthoritative and PUT answers 409."
+          },
+          "source": {
+            "type": "string",
+            "description": "`file` or `stored` (table `federation_allowlist`).",
+            "example": "stored"
           },
           "text": {
             "type": "string",
-            "description": "The file contents."
+            "description": "The file contents, or the stored allowlist in the file format (one\n`hub_id [multiaddr ...]` line per hub, sorted, without comments)."
           }
         }
       },
@@ -1874,6 +2182,128 @@
           }
         }
       },
+      "SettingItem": {
+        "type": "object",
+        "description": "One stored setting. `key` is the environment variable name.",
+        "required": [
+          "key",
+          "group",
+          "type",
+          "description",
+          "default",
+          "value",
+          "is_set",
+          "source",
+          "read_only",
+          "apply",
+          "restart_pending"
+        ],
+        "properties": {
+          "apply": {
+            "type": "string",
+            "description": "`live` (applied at once) or `restart`.",
+            "example": "live"
+          },
+          "default": {
+            "description": "The default as a JSON value (number, boolean, string or array of\nstrings); `null` for secrets and settings without a default."
+          },
+          "description": {
+            "type": "string"
+          },
+          "enum": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Choices of an `enum` setting."
+          },
+          "group": {
+            "type": "string",
+            "description": "UI group: `general`, `federation`, `push`, `limits`, `storage` or\n`users`.",
+            "example": "storage"
+          },
+          "is_set": {
+            "type": "boolean",
+            "description": "For secrets whether a value exists (environment or stored); otherwise\nwhether `value` differs from `default`."
+          },
+          "key": {
+            "type": "string",
+            "example": "GIM_HUB_EVENT_RETENTION_DAYS"
+          },
+          "read_only": {
+            "type": "boolean",
+            "description": "True when `source` is `env`: the environment overrides any stored\nvalue."
+          },
+          "restart_pending": {
+            "type": "boolean",
+            "description": "A restart setting whose effective value differs from the value the\nrunning process uses."
+          },
+          "source": {
+            "type": "string",
+            "description": "`env`, `stored` or `default`.",
+            "example": "stored"
+          },
+          "type": {
+            "type": "string",
+            "description": "`string`, `integer`, `bool`, `url`, `duration_seconds`, `list`,\n`secret` or `enum`.",
+            "example": "integer"
+          },
+          "updated_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the stored value was written; `null` when not stored."
+          },
+          "updated_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`token`, `header:<id>` or `cli`; `null` when not stored."
+          },
+          "value": {
+            "description": "The effective JSON value; always `null` for secrets."
+          }
+        }
+      },
+      "SettingList": {
+        "type": "object",
+        "description": "GET /admin/api/settings.",
+        "required": [
+          "items",
+          "restart_pending"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SettingItem"
+            },
+            "description": "Every stored setting (bootstrap settings are not listed), grouped."
+          },
+          "restart_pending": {
+            "type": "boolean",
+            "description": "Some restart setting has a stored value the running process does not\nuse yet."
+          }
+        }
+      },
+      "SettingUpdate": {
+        "type": "object",
+        "description": "PUT /admin/api/settings/{key} body.",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "description": "The new value: a JSON value of the setting's type (number, boolean,\narray of strings for a list) or its environment-variable string."
+          }
+        }
+      },
       "Storage": {
         "type": "object",
         "required": [
@@ -2051,6 +2481,10 @@
     {
       "name": "config",
       "description": "Effective configuration"
+    },
+    {
+      "name": "settings",
+      "description": "Stored settings"
     },
     {
       "name": "audit",
