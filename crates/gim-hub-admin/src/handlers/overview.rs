@@ -28,8 +28,8 @@ is a count only.",
 )]
 pub async fn get_overview(State(state): State<AdminState>) -> Result<Json<Overview>, AdminError> {
     let counts = state.app.db.read(admin::counts).await?;
-    let db_path = state.app.config.database_path.clone();
-    let blobs_dir = state.app.config.blobs_dir();
+    let db_path = state.app.config.load().database_path.clone();
+    let blobs_dir = state.app.config.load().blobs_dir();
     let storage = tokio::task::spawn_blocking(move || Storage {
         db_bytes: file_size(&db_path) + file_size(&wal_path(&db_path)),
         blob_bytes: dir_size(&blobs_dir),
@@ -39,12 +39,12 @@ pub async fn get_overview(State(state): State<AdminState>) -> Result<Json<Overvi
     let push = state.app.push.metrics();
     let now = state.now_ms();
     Ok(Json(Overview {
-        version: state.app.config.release_version.clone(),
+        version: state.app.config.load().release_version.clone(),
         revision: option_env!("GIM_HUB_BUILD_REV")
             .unwrap_or("unknown")
             .to_owned(),
         hub_id: state.app.hub.hub_id().to_string(),
-        public_url: state.app.config.public_url.clone(),
+        public_url: state.app.config.load().public_url.clone(),
         started_at: seconds(state.started_at),
         uptime_seconds: seconds(now - state.started_at).max(0),
         storage,
@@ -65,7 +65,7 @@ pub async fn get_overview(State(state): State<AdminState>) -> Result<Json<Overvi
             retried: push.retried,
             failed: push.failed,
         },
-        event_retention_days: state.app.config.event_retention_days,
+        event_retention_days: state.app.config.load().event_retention_days,
     }))
 }
 

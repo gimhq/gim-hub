@@ -96,12 +96,17 @@ function AllowlistEditor({ allowlist }: { allowlist: Allowlist }) {
   const [text, setText] = useState(allowlist.text)
   const [saved, setSaved] = useState(false)
   const invalid = save.isError
+  const readOnly = allowlist.read_only
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>{t('federation.allowlist')}</CardTitle>
-        <CardDescription>{t('federation.allowlist_description', { path: allowlist.path })}</CardDescription>
+        <CardDescription>
+          {allowlist.source === 'file'
+            ? t('federation.allowlist_description_file', { path: allowlist.path ?? '' })
+            : t('federation.allowlist_description_stored')}
+        </CardDescription>
       </CardHeader>
       <CardContent>
         <form
@@ -122,6 +127,7 @@ function AllowlistEditor({ allowlist }: { allowlist: Allowlist }) {
             id="allowlist-text"
             className="min-h-48 font-mono text-xs"
             spellCheck={false}
+            disabled={readOnly}
             value={text}
             aria-invalid={invalid || undefined}
             aria-describedby={invalid ? 'allowlist-error' : undefined}
@@ -135,9 +141,10 @@ function AllowlistEditor({ allowlist }: { allowlist: Allowlist }) {
               {errorMessage(save.error, t('common.error_generic'))}
             </p>
           )}
+          {readOnly && <p className="text-sm text-muted-foreground">{t('federation.allowlist_read_only')}</p>}
           {saved && <p role="status" className="text-sm text-muted-foreground">{t('federation.allowlist_saved')}</p>}
           <div className="flex items-center gap-2">
-            <Button type="submit" disabled={save.isPending || text === allowlist.text}>
+            <Button type="submit" disabled={readOnly || save.isPending || text === allowlist.text}>
               {t('federation.allowlist_save')}
             </Button>
             <span className="text-xs text-muted-foreground">

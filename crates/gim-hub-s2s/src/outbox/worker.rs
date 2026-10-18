@@ -28,7 +28,7 @@ const BACKOFF_BASE: Duration = Duration::from_secs(1);
 
 pub(super) async fn supervise(outbox: Outbox) {
     let inner = &outbox.inner;
-    let sweep_every = i64::try_from(inner.config.sweep_interval.as_millis()).unwrap_or(i64::MAX);
+    let sweep_every = i64::try_from(outbox.config().sweep_interval.as_millis()).unwrap_or(i64::MAX);
     let mut next_sweep = i64::MIN;
     let mut drains = JoinSet::new();
     loop {
@@ -279,7 +279,7 @@ async fn resync(outbox: &Outbox, hub_id: &HubId) -> Result<(), gim_hub_db::DbErr
 
 /// Counts a failure of `peer` and defers its next attempt (§7.4).
 async fn defer(outbox: &Outbox, peer: &str, reason: &str) {
-    let max = outbox.inner.config.backoff_max;
+    let max = outbox.config().backoff_max;
     let jitter = random_jitter();
     let now = outbox.now();
     let result = {

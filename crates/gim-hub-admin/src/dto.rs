@@ -182,12 +182,21 @@ pub struct PeerItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Allowlist {
-    /// `GIM_HUB_FEDERATION_ALLOWLIST`.
+    /// The allowlist file (`GIM_HUB_FEDERATION_ALLOWLIST`, else the default
+    /// `$GIM_HUB_DATA_DIR/allowlist`) when `source` is `file`; for `stored`
+    /// the database file and table, `<database path>#federation_allowlist`.
     pub path: String,
-    /// The file contents.
+    /// The file contents, or the stored allowlist in the file format (one
+    /// `hub_id [multiaddr ...]` line per hub, sorted, without comments).
     pub text: String,
     /// Parsed entries by hub ID (the own hub is skipped).
     pub entries: Vec<AllowlistEntry>,
+    /// `file` or `stored` (table `federation_allowlist`).
+    #[schema(example = "stored")]
+    pub source: String,
+    /// True when `GIM_HUB_FEDERATION_ALLOWLIST` is set: the file is
+    /// authoritative and PUT answers 409.
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -195,6 +204,69 @@ pub struct AllowlistEntry {
     pub hub_id: String,
     /// Static multiaddrs.
     pub addrs: Vec<String>,
+}
+
+/// GET /admin/api/settings.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SettingList {
+    /// Every stored setting (bootstrap settings are not listed), grouped.
+    pub items: Vec<SettingItem>,
+    /// Some restart setting has a stored value the running process does not
+    /// use yet.
+    pub restart_pending: bool,
+}
+
+/// One stored setting. `key` is the environment variable name.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SettingItem {
+    #[schema(example = "GIM_HUB_EVENT_RETENTION_DAYS")]
+    pub key: String,
+    /// UI group: `general`, `federation`, `push`, `limits`, `storage` or
+    /// `users`.
+    #[schema(example = "storage")]
+    pub group: String,
+    /// `string`, `integer`, `bool`, `url`, `duration_seconds`, `list`,
+    /// `secret` or `enum`.
+    #[serde(rename = "type")]
+    #[schema(example = "integer")]
+    pub kind: String,
+    /// Choices of an `enum` setting.
+    #[serde(rename = "enum")]
+    pub choices: Option<Vec<String>>,
+    pub description: String,
+    /// The default as a JSON value (number, boolean, string or array of
+    /// strings); `null` for secrets and settings without a default.
+    pub default: serde_json::Value,
+    /// The effective JSON value; always `null` for secrets.
+    pub value: serde_json::Value,
+    /// For secrets whether a value exists (environment or stored); otherwise
+    /// whether `value` differs from `default`.
+    pub is_set: bool,
+    /// `env`, `stored` or `default`.
+    #[schema(example = "stored")]
+    pub source: String,
+    /// True when `source` is `env`: the environment overrides any stored
+    /// value.
+    pub read_only: bool,
+    /// `live` (applied at once) or `restart`.
+    #[schema(example = "live")]
+    pub apply: String,
+    /// A restart setting whose effective value differs from the value the
+    /// running process uses.
+    pub restart_pending: bool,
+    /// When the stored value was written; `null` when not stored.
+    pub updated_at: Option<i64>,
+    /// `token`, `header:<id>` or `cli`; `null` when not stored.
+    pub updated_by: Option<String>,
+}
+
+/// PUT /admin/api/settings/{key} body.
+// No `Debug`: the value may be a secret.
+#[derive(Clone, Deserialize, ToSchema)]
+pub struct SettingUpdate {
+    /// The new value: a JSON value of the setting's type (number, boolean,
+    /// array of strings for a list) or its environment-variable string.
+    pub value: serde_json::Value,
 }
 
 /// PUT /admin/api/federation/allowlist body.

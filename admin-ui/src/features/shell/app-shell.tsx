@@ -30,6 +30,7 @@ export function AppShell() {
           <Link to="/users" className={linkClass}>{t('nav.users')}</Link>
           <Link to="/federation" className={linkClass}>{t('nav.federation')}</Link>
           {lode.data?.supervised && <Link to="/lode" className={linkClass}>{t('nav.lode')}</Link>}
+          <Link to="/settings" className={linkClass}>{t('nav.settings')}</Link>
           <Link to="/config" className={linkClass}>{t('nav.config')}</Link>
           <Link to="/audit" className={linkClass}>{t('nav.audit')}</Link>
         </nav>

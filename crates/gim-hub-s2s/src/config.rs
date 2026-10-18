@@ -34,7 +34,12 @@ pub struct FederationConfig {
     pub bootstrap: Vec<Multiaddr>,
     /// `GIM_HUB_FEDERATION_ALLOWLIST`: allowlist file.
     pub allowlist_path: PathBuf,
-    /// `GIM_HUB_P2P_PSK_FILE`, already read and parsed. `Some` means TCP only.
+    /// The stored allowlist (file format) to use instead of the file at
+    /// `allowlist_path`. Never set from variables: the settings loader sets
+    /// it when the stored allowlist is in force.
+    pub allowlist_text: Option<String>,
+    /// `GIM_HUB_P2P_PSK_FILE` (read and parsed), else `GIM_HUB_P2P_PSK` (the
+    /// `swarm.key` contents, parsed). `Some` means TCP only.
     pub psk: Option<Psk>,
     /// `GIM_HUB_RUNTIME_CERT_DAYS`: runtime certificate lifetime.
     pub runtime_cert_days: u32,
@@ -123,6 +128,13 @@ impl FederationConfig {
             };
             let text = std::fs::read_to_string(path).map_err(|err| invalid(err.to_string()))?;
             config.psk = Some(parse_swarm_key(&text).map_err(invalid)?);
+        } else if let Some(text) = get("GIM_HUB_P2P_PSK") {
+            // The value is secret: the error never shows it.
+            config.psk = Some(parse_swarm_key(text).map_err(|reason| ConfigError {
+                name: "GIM_HUB_P2P_PSK",
+                value: "***".into(),
+                reason,
+            })?);
         }
         if config.psk.is_some() {
             for (name, list) in [
@@ -170,6 +182,7 @@ impl FederationConfig {
             external_addrs: Vec::new(),
             bootstrap: Vec::new(),
             allowlist_path: data_dir.join("allowlist"),
+            allowlist_text: None,
             psk: None,
             runtime_cert_days: 30,
             s2s_timeout: Duration::from_secs(10),
@@ -420,6 +433,37 @@ mod tests {
         .unwrap();
         let expected: Psk = std::array::from_fn(|i| i as u8);
         assert_eq!(config.psk, Some(expected));
+    }
+
+    #[test]
+    fn psk_from_the_variable() {
+        let config = load(&[
+            ("GIM_HUB_FEDERATION", "true"),
+            ("GIM_HUB_P2P_PSK", KEY),
+            ("GIM_HUB_P2P_LISTEN", "/ip4/0.0.0.0/tcp/4001"),
+        ])
+        .unwrap();
+        let expected: Psk = std::array::from_fn(|i| i as u8);
+        assert_eq!(config.psk, Some(expected));
+        let err = load(&[("GIM_HUB_FEDERATION", "true"), ("GIM_HUB_P2P_PSK", KEY)]).unwrap_err();
+        assert_eq!(err.name, "GIM_HUB_P2P_LISTEN");
+        let bad = KEY.replace("0001", "zz01");
+        let err = load(&[("GIM_HUB_FEDERATION", "true"), ("GIM_HUB_P2P_PSK", &bad)]).unwrap_err();
+        assert_eq!(err.name, "GIM_HUB_P2P_PSK");
+        assert!(!err.to_string().contains("zz01"), "{err}");
+
+        // The file wins over the variable.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("swarm.key");
+        std::fs::write(&file, KEY.replace("1e1f", "1e20")).unwrap();
+        let config = load(&[
+            ("GIM_HUB_FEDERATION", "true"),
+            ("GIM_HUB_P2P_PSK", KEY),
+            ("GIM_HUB_P2P_PSK_FILE", file.to_str().unwrap()),
+            ("GIM_HUB_P2P_LISTEN", "/ip4/0.0.0.0/tcp/4001"),
+        ])
+        .unwrap();
+        assert_eq!(config.psk.unwrap()[31], 0x20);
     }
 
     #[test]

@@ -8,7 +8,10 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Mutex, RwLock},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Mutex, RwLock,
+    },
     time::{Duration, Instant},
 };
 
@@ -99,6 +102,8 @@ pub enum PolicyError {
     Invalid { line: usize, reason: String },
     #[error("allowlist {0} lists no other hub")]
     Empty(PathBuf),
+    #[error("the stored allowlist (table federation_allowlist) lists no other hub")]
+    EmptyStored,
 }
 
 /// Parsed allowlist: allowed hubs and their static addresses.
@@ -112,20 +117,23 @@ const LOOKUP_LIMIT: u32 = 600;
 pub const FETCH_BLOB_LIMIT: u32 = 600;
 const LIMIT_WINDOW: Duration = Duration::from_secs(60);
 
-/// Closed-federation policy backed by an allowlist file, reloaded on SIGHUP.
+/// Closed-federation policy backed by an allowlist file, reloaded on SIGHUP,
+/// or by the stored allowlist (table `federation_allowlist`), replaced with
+/// [`AllowlistPolicy::set_text`].
 pub struct AllowlistPolicy {
-    path: PathBuf,
+    /// The allowlist file; `None` once the stored allowlist is in force.
+    path: RwLock<Option<PathBuf>>,
     own_hub_id: HubId,
     psk: Option<Psk>,
     hubs: RwLock<Allowlist>,
-    fetch_blob_limit: u32,
+    fetch_blob_limit: AtomicU32,
     buckets: Mutex<HashMap<(HubId, Bucket), TokenBucket>>,
 }
 
 impl std::fmt::Debug for AllowlistPolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AllowlistPolicy")
-            .field("path", &self.path)
+            .field("path", &self.path())
             .field("hubs", &self.hubs.read().expect("allowlist lock").len())
             .field("psk", &self.psk.is_some())
             .finish_non_exhaustive()
@@ -137,33 +145,72 @@ impl AllowlistPolicy {
     /// is an error (federation does not start).
     pub fn load(path: &Path, own_hub_id: &HubId, psk: Option<Psk>) -> Result<Self, PolicyError> {
         let hubs = read_allowlist(path, own_hub_id, psk.is_some())?;
-        Ok(Self {
-            path: path.to_owned(),
+        Ok(Self::new(Some(path.to_owned()), own_hub_id, psk, hubs))
+    }
+
+    /// A policy on the stored allowlist `text` (file format, see
+    /// [`parse_allowlist`]). An invalid or empty allowlist is an error.
+    pub fn from_text(
+        text: &str,
+        own_hub_id: &HubId,
+        psk: Option<Psk>,
+    ) -> Result<Self, PolicyError> {
+        let hubs = parse_stored(text, own_hub_id, psk.is_some())?;
+        Ok(Self::new(None, own_hub_id, psk, hubs))
+    }
+
+    fn new(path: Option<PathBuf>, own_hub_id: &HubId, psk: Option<Psk>, hubs: Allowlist) -> Self {
+        Self {
+            path: RwLock::new(path),
             own_hub_id: own_hub_id.clone(),
             psk,
             hubs: RwLock::new(hubs),
-            fetch_blob_limit: FETCH_BLOB_LIMIT,
+            fetch_blob_limit: AtomicU32::new(FETCH_BLOB_LIMIT),
             buckets: Mutex::default(),
-        })
+        }
     }
 
     /// Sets the `FetchBlob` requests allowed per caller and minute.
-    pub fn with_fetch_blob_limit(mut self, per_minute: u32) -> Self {
-        self.fetch_blob_limit = per_minute;
+    pub fn with_fetch_blob_limit(self, per_minute: u32) -> Self {
+        self.set_fetch_blob_limit(per_minute);
         self
     }
 
+    /// Changes the `FetchBlob` requests allowed per caller and minute; the
+    /// callers' blob budgets start over.
+    pub fn set_fetch_blob_limit(&self, per_minute: u32) {
+        if self.fetch_blob_limit.swap(per_minute, Ordering::Relaxed) != per_minute {
+            self.buckets
+                .lock()
+                .expect("rate limit lock")
+                .retain(|(_, bucket), _| *bucket != Bucket::Blob);
+        }
+    }
+
     /// Re-reads the allowlist file. On error the previous allowlist stays in
-    /// force.
+    /// force. Nothing to do while the stored allowlist is in force.
     pub fn reload(&self) -> Result<(), PolicyError> {
-        let hubs = read_allowlist(&self.path, &self.own_hub_id, self.psk.is_some())?;
+        let Some(path) = self.path() else {
+            return Ok(());
+        };
+        let hubs = read_allowlist(&path, &self.own_hub_id, self.psk.is_some())?;
         *self.hubs.write().expect("allowlist lock") = hubs;
         Ok(())
     }
 
-    /// The allowlist file.
-    pub fn path(&self) -> &Path {
-        &self.path
+    /// Puts the stored allowlist `text` in force, replacing the file if one
+    /// was used (a later [`Self::reload`] keeps the stored one). On error the
+    /// previous allowlist stays in force.
+    pub fn set_text(&self, text: &str) -> Result<(), PolicyError> {
+        let hubs = parse_stored(text, &self.own_hub_id, self.psk.is_some())?;
+        *self.hubs.write().expect("allowlist lock") = hubs;
+        *self.path.write().expect("allowlist lock") = None;
+        Ok(())
+    }
+
+    /// The allowlist file; `None` while the stored allowlist is in force.
+    pub fn path(&self) -> Option<PathBuf> {
+        self.path.read().expect("allowlist lock").clone()
     }
 
     /// The allowed hubs.
@@ -194,7 +241,7 @@ impl AllowlistPolicy {
         let (bucket, limit) = match op {
             OpKind::ClaimKeyPackage => (Bucket::Claim, CLAIM_LIMIT),
             OpKind::GetDeviceList | OpKind::GetHostingRecord => (Bucket::Lookup, LOOKUP_LIMIT),
-            OpKind::FetchBlob => (Bucket::Blob, self.fetch_blob_limit),
+            OpKind::FetchBlob => (Bucket::Blob, self.fetch_blob_limit.load(Ordering::Relaxed)),
             _ => return Decision::Allow,
         };
         self.buckets
@@ -249,6 +296,16 @@ fn read_allowlist(path: &Path, own_hub_id: &HubId, psk: bool) -> Result<Allowlis
     let hubs = parse_allowlist(&text, own_hub_id, psk)?;
     if hubs.is_empty() {
         return Err(PolicyError::Empty(path.to_owned()));
+    }
+    Ok(hubs)
+}
+
+/// Parses the stored allowlist `text`; an allowlist naming no other hub is
+/// invalid.
+fn parse_stored(text: &str, own_hub_id: &HubId, psk: bool) -> Result<Allowlist, PolicyError> {
+    let hubs = parse_allowlist(text, own_hub_id, psk)?;
+    if hubs.is_empty() {
+        return Err(PolicyError::EmptyStored);
     }
     Ok(hubs)
 }
@@ -494,6 +551,47 @@ mod tests {
             policy.admit_at(&hub(2), OpKind::GetDeviceList, now),
             Decision::Allow
         );
+        // A new budget applies at once.
+        policy.set_fetch_blob_limit(3);
+        for _ in 0..3 {
+            assert_eq!(
+                policy.admit_at(&hub(2), OpKind::FetchBlob, now),
+                Decision::Allow
+            );
+        }
+        assert!(matches!(
+            policy.admit_at(&hub(2), OpKind::FetchBlob, now),
+            Decision::RateLimited { .. }
+        ));
+    }
+
+    #[test]
+    fn stored_allowlist_replaces_the_file() {
+        let own = hub(1);
+        assert!(matches!(
+            AllowlistPolicy::from_text(&format!("# only me\n{own}\n"), &own, None),
+            Err(PolicyError::EmptyStored)
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("allowlist");
+        std::fs::write(&path, format!("{}\n", hub(2))).unwrap();
+        let policy = AllowlistPolicy::load(&path, &own, None).unwrap();
+        assert_eq!(policy.path(), Some(path.clone()));
+        assert!(policy.set_text("garbage\n").is_err());
+        assert!(policy.set_text(&format!("{own}\n")).is_err());
+        assert!(policy.may_contact(&hub(2)));
+        policy
+            .set_text(&format!("{} /dns4/hub-c.example.eu/tcp/4001\n", hub(3)))
+            .unwrap();
+        assert_eq!(policy.path(), None);
+        assert_eq!(policy.hub_ids(), vec![hub(3)]);
+        // SIGHUP no longer reads the file.
+        policy.reload().unwrap();
+        assert_eq!(policy.hub_ids(), vec![hub(3)]);
+
+        let stored = AllowlistPolicy::from_text(&format!("{}\n", hub(2)), &own, None).unwrap();
+        assert_eq!(stored.path(), None);
+        assert!(stored.may_contact(&hub(2)));
     }
 
     #[test]

@@ -124,7 +124,7 @@ peer outside `GIM_HUB_ADMIN_TRUSTED_PROXIES` is treated as unauthenticated.
 JSON bodies; errors use the hub's envelope `{"error":{"code","message"}}`.
 Codes: `unauthorized` (401), `csrf_failed` (403), `forbidden` (403),
 `not_found` (404), `validation_failed` (400 malformed request, 422 invalid
-allowlist), `conflict` (409), `rate_limited` (429), `unavailable` (503, e.g.
+allowlist or setting), `conflict` (409), `rate_limited` (429), `unavailable` (503, e.g.
 not supervised by lode), `internal` (500).
 
 Timestamps are integer seconds since the Unix epoch. lode's fields
@@ -150,14 +150,18 @@ for failed logins.
 | `DELETE /admin/api/users/{user_id}/devices/{device_id}/sessions` | 200 `{revoked}`; 404 unknown device | `device_sessions_revoke` (`<user_id>/<device_id>`) |
 | `POST /admin/api/handles/{handle}/release` | 204; 404 unknown handle. The user keeps existing without a handle | `handle_release` (handle; detail: owner) |
 | `GET /admin/api/federation` | `enabled`, `peer_id`, `listen_addrs`, `external_addrs`, peers | |
-| `GET /admin/api/federation/allowlist` | `{path, text, entries}`; 404 with federation off | |
-| `PUT /admin/api/federation/allowlist` `{"text"}` | 200 (same body as GET); 422 invalid; 404 with federation off | `allowlist_update` (file path) |
+| `GET /admin/api/federation/allowlist` | `{path, text, entries, source: "file"\|"stored", read_only}`; 404 with federation off | |
+| `PUT /admin/api/federation/allowlist` `{"text"}` | 200 (same body as GET); 409 read-only (`GIM_HUB_FEDERATION_ALLOWLIST` set); 422 invalid; 404 with federation off | `allowlist_update` (`federation_allowlist`; detail: `N hubs`) |
 | `GET /admin/api/lode` | `{"supervised":false}`, or lode's `status`, `current`, `available`, `last_good`, `last_check`, `last_error`, `history` | |
 | `POST /admin/api/lode/check` | 202 (bumps `check_nonce`) | `lode_check` |
 | `POST /admin/api/lode/update` `{"version"}` | 202 (sets `target`: a version or `latest`) | `lode_update` (version) |
 | `POST /admin/api/lode/restart` | 202 (bumps `restart_nonce`) | `lode_restart` |
 | `POST /admin/api/lode/rollback` `{"version"?}` | 202 (sets `target` to the version, else `last_good`); 409 with neither | `lode_rollback` (version) |
-| `GET /admin/api/config` | `{items: [{key, value, redacted}]}`: every `GIM_HUB_*` setting with defaults applied | |
+| `GET /admin/api/config` | `{items: [{key, value, redacted}]}`: every `GIM_HUB_*` setting as applied, defaults included | |
+| `GET /admin/api/settings` | `{items: [setting], restart_pending}`: every stored-capable setting | |
+| `GET /admin/api/settings/{key}` | The setting; 404 unknown or bootstrap key | |
+| `PUT /admin/api/settings/{key}` `{"value"}` | 200 the setting; 409 set by environment; 422 invalid (the parser's message) | `setting_update` (key; detail: `old -> new`, secrets `***`) |
+| `DELETE /admin/api/settings/{key}` | 200 the setting; 409 set by environment; 422 other settings need it | `setting_unset` (key; detail: `old -> new`, secrets `***`) |
 | `GET /admin/api/audit?limit=&cursor=` | Audit entries newest first; `limit` 1-200 (default 50) | |
 
 A failed mutation is audited too, with result `error`. The lode endpoints
@@ -188,14 +192,48 @@ answer 503 `unavailable` unless the hub runs under lode (`LODE_DIR`).
   admitted connection); `outbox_backlog` counts queued S2S outbox entries;
   `last_error` is set while deliveries keep failing (`N consecutive delivery
   failures`); `last_seen` is the last connection.
+- The allowlist's `source` follows [`operations.md`](operations.md),
+  "Federation": `file` with `read_only: true` while
+  `GIM_HUB_FEDERATION_ALLOWLIST` names a file (edit the file and send SIGHUP;
+  PUT answers 409); `stored` for the `federation_allowlist` table (`path` is
+  `<database path>#federation_allowlist`, `text` is rendered from the table,
+  without comments); `file` with `read_only: false` for the legacy default
+  `$GIM_HUB_DATA_DIR/allowlist`, which the first PUT replaces by the table.
 - The allowlist PUT validates the text with the allowlist loader's rules (one
   `hub_id [multiaddr ...]` per line, `#` comments, no `/p2p/`, no QUIC with a
   PSK, at least one other hub); an invalid text answers 422 with the parser's
-  message and leaves the file unchanged. A valid text is written atomically
-  (temporary file and rename, keeping the file's permissions) to
-  `GIM_HUB_FEDERATION_ALLOWLIST` and applied at once, exactly like SIGHUP:
-  newly listed hubs are admitted and bound hubs no longer listed are
-  disconnected.
+  message and stores nothing. A valid text replaces the table and is applied
+  at once, exactly like SIGHUP: newly listed hubs are admitted and bound hubs
+  no longer listed are disconnected. Comments are not kept.
+
+### Settings
+
+Stored settings, their precedence, reload and CLI:
+[`operations.md`](operations.md), "Stored settings". A setting item:
+
+| Field | Meaning |
+| --- | --- |
+| `key` | Environment variable name, e.g. `GIM_HUB_EVENT_RETENTION_DAYS` |
+| `group` | `general`, `limits`, `storage`, `push` or `federation` |
+| `type` | `integer`, `bool`, `duration_seconds` (integer seconds), `url`, `string`, `list` (array of strings), `secret`, `enum` |
+| `enum` | Allowed values, or `null` (no setting has a fixed set today) |
+| `description` | One line |
+| `default` | The default as JSON (`null`: unset) |
+| `value` | The effective value as JSON: the default when neither env nor stored (`null` for a setting without default); always `null` for a secret |
+| `is_set` | Secrets: whether one is set (env or stored). Other settings: whether `value` differs from `default` |
+| `source` | `env`, `stored` or `default` |
+| `read_only` | `true` when set by the environment |
+| `apply` | `live` (applied at once) or `restart` |
+| `restart_pending` | `true` while the effective value differs from the one the hub started with (`restart` settings only) |
+| `updated_at`, `updated_by` | Last write of the stored row (seconds; actor verbatim: `token`, `header:<identity>`, `cli`), or `null` without a stored row; kept when the environment overrides the row |
+
+PUT takes the value in its JSON type or as a string in the environment
+variable's syntax (`30`, `"30"`, `true`, `"a,b"` and `["a","b"]` are all
+accepted where they fit); `null` and empty values are refused (use DELETE).
+The value is validated with the environment variable's parser in the context
+of the other settings and stored only when valid; a `live` setting is applied
+before the response, the running hub of another process picks a CLI change up
+within about a second.
 
 ### lode
 

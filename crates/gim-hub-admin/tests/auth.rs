@@ -243,6 +243,7 @@ fn concrete(template: &str) -> String {
         .replace("{user_id}", "uexample")
         .replace("{device_id}", "dexample")
         .replace("{handle}", "alice")
+        .replace("{key}", "GIM_HUB_EVENT_RETENTION_DAYS")
 }
 
 fn operations() -> Vec<(Method, String)> {
@@ -269,7 +270,7 @@ async fn every_route_requires_a_session_and_csrf() {
     let login = admin.login().await;
     let cookie = format!("gim_admin_session={}", login.cookie);
     let operations = operations();
-    assert_eq!(operations.len(), 20);
+    assert_eq!(operations.len(), 24);
     let mut mutations = 0;
     for (method, uri) in operations {
         if uri == "/admin/api/login" {
@@ -309,7 +310,7 @@ async fn every_route_requires_a_session_and_csrf() {
         assert_eq!(wrong.status, StatusCode::FORBIDDEN, "{method} {uri}");
         assert_eq!(wrong.code(), "csrf_failed", "{method} {uri}");
     }
-    assert_eq!(mutations, 10);
+    assert_eq!(mutations, 12);
     // Unknown API paths, too.
     let unknown = admin
         .send(Method::GET, "/admin/api/nope", PEER, &[], None)

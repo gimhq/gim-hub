@@ -511,9 +511,12 @@ async fn audit_log_pages() {
     assert_eq!(bad.status, StatusCode::BAD_REQUEST);
 }
 
+/// A federated admin whose allowlist is the default file
+/// `$GIM_HUB_DATA_DIR/allowlist` of an existing deployment
+/// (`GIM_HUB_FEDERATION_ALLOWLIST` unset, nothing stored).
 async fn federated_admin() -> (Admin, Arc<std::path::PathBuf>) {
     let hub = TestHub::new();
-    let data_dir = hub.state.config.data_dir.clone();
+    let data_dir = hub.state.config.load().data_dir.clone();
     let allowlist = data_dir.join("allowlist");
     let peer = HubIdentity::from_seed(&[9; 32]);
     std::fs::write(
@@ -525,7 +528,6 @@ async fn federated_admin() -> (Admin, Arc<std::path::PathBuf>) {
         [
             ("GIM_HUB_FEDERATION", "true"),
             ("GIM_HUB_P2P_LISTEN", "/ip4/127.0.0.1/tcp/0"),
-            ("GIM_HUB_FEDERATION_ALLOWLIST", allowlist.to_str().unwrap()),
         ]
         .map(|(k, v)| (k.to_owned(), v.to_owned())),
         &data_dir,
@@ -555,15 +557,19 @@ async fn allowlist_edit_takes_effect_immediately() {
     assert!(matches!(policy.allow_hub(&new), Decision::Deny(_)));
     let login = admin.login().await;
 
+    // The default file is shown (and editable) until an allowlist is stored.
     let get = admin
         .call(Method::GET, "/admin/api/federation/allowlist", &login, None)
         .await;
     assert_eq!(get.status, StatusCode::OK);
     assert_eq!(get.body["path"], path.display().to_string());
+    assert_eq!(get.body["source"], "file");
+    assert_eq!(get.body["read_only"], false);
     assert_eq!(
         get.body["entries"],
         json!([{ "hub_id": old.as_str(), "addrs": ["/ip4/127.0.0.1/tcp/4999"] }])
     );
+    let file = std::fs::read_to_string(&*path).unwrap();
 
     let status = admin
         .call(Method::GET, "/admin/api/federation", &login, None)
@@ -584,14 +590,37 @@ async fn allowlist_edit_takes_effect_immediately() {
         )
         .await;
     assert_eq!(put.status, StatusCode::OK, "{}", put.body);
-    assert_eq!(put.body["text"], text);
+    // Stored in the table (comments are not kept); the file is left alone.
+    assert_eq!(put.body["text"], format!("{new}\n"));
+    assert_eq!(put.body["source"], "stored");
+    assert_eq!(put.body["read_only"], false);
+    assert!(put.body["path"]
+        .as_str()
+        .unwrap()
+        .ends_with("#federation_allowlist"));
     assert_eq!(
         put.body["entries"],
         json!([{ "hub_id": new.as_str(), "addrs": [] }])
     );
-    assert_eq!(std::fs::read_to_string(&*path).unwrap(), text);
+    assert_eq!(std::fs::read_to_string(&*path).unwrap(), file);
+    let stored = admin
+        .hub
+        .state
+        .db
+        .read(gim_hub_db::settings::allowlist)
+        .await
+        .unwrap();
+    assert_eq!(stored, [(new.to_string(), Vec::<String>::new())]);
     assert_eq!(policy.allow_hub(&new), Decision::Allow);
     assert!(matches!(policy.allow_hub(&old), Decision::Deny(_)));
+    // SIGHUP no longer reads the file.
+    federation.reload_allowlist().unwrap();
+    assert_eq!(policy.allow_hub(&new), Decision::Allow);
+    let get = admin
+        .call(Method::GET, "/admin/api/federation/allowlist", &login, None)
+        .await;
+    assert_eq!(get.body["source"], "stored");
+    assert_eq!(get.body["text"], format!("{new}\n"));
 
     for invalid in ["not-a-hub-id\n", "# nothing\n", &format!("{new} /p2p/x\n")] {
         let response = admin
@@ -608,7 +637,6 @@ async fn allowlist_edit_takes_effect_immediately() {
             "{invalid}"
         );
         assert_eq!(response.code(), "validation_failed");
-        assert_eq!(std::fs::read_to_string(&*path).unwrap(), text);
     }
     assert_eq!(policy.allow_hub(&new), Decision::Allow);
     let first_error = admin
@@ -634,11 +662,12 @@ async fn allowlist_edit_takes_effect_immediately() {
         json!([
             "token",
             "allowlist_update",
-            path.display().to_string(),
+            "federation_allowlist",
             "127.0.0.1",
             "ok"
         ])
     );
+    assert_eq!(ok["detail"], "1 hubs");
     federation.shutdown();
 }
 
@@ -844,9 +873,9 @@ async fn lode_unsupervised() {
 
 #[tokio::test]
 async fn config_redacts_secrets() {
-    let mut hub = TestHub::new();
+    let hub = TestHub::new();
     let webhook_secret = "w3bhook-secret-".repeat(3);
-    let data_dir = hub.state.config.data_dir.display().to_string();
+    let data_dir = hub.state.config.load().data_dir.display().to_string();
     let config = Config::from_vars(
         [
             ("GIM_HUB_DATA_DIR", data_dir.as_str()),
@@ -856,7 +885,7 @@ async fn config_redacts_secrets() {
         .map(|(k, v)| (k.to_owned(), v.to_owned())),
     )
     .unwrap();
-    hub.state.config = Arc::new(config);
+    hub.state.config.store(config);
     let admin = Admin::with(hub, Options::default());
     let login = admin.login().await;
     let response = admin
@@ -904,7 +933,7 @@ async fn config_redacts_the_psk() {
     let hub = TestHub::new();
     let mut federation_config = FederationConfig::from_vars(
         [("GIM_HUB_FEDERATION".to_owned(), "true".to_owned())],
-        &hub.state.config.data_dir,
+        &hub.state.config.load().data_dir,
     )
     .unwrap();
     federation_config.psk = Some([0x5a; 32]);

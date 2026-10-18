@@ -10,7 +10,7 @@ use std::{
 };
 
 use axum::http::HeaderMap;
-use gim_hub_api::AppState;
+use gim_hub_api::{settings::Runtime, AppState};
 use gim_hub_db::admin::{self, AuditEntry};
 use gim_hub_s2s::{FederationConfig, FederationService};
 use sha2::{Digest, Sha256};
@@ -62,6 +62,8 @@ pub struct Inner {
     pub federation_config: FederationConfig,
     /// The running federation service, if enabled.
     pub federation: Option<FederationService>,
+    /// The stored settings of the running hub.
+    pub settings: Runtime,
     /// The lode `state.json` handle, when supervised (`LODE_DIR`).
     pub(crate) lode: Option<Arc<Lode>>,
     /// When the admin state was created (the hub start), ms.
@@ -90,6 +92,7 @@ impl AdminState {
         config: AdminConfig,
         federation_config: FederationConfig,
         federation: Option<FederationService>,
+        settings: Runtime,
         lode_dir: Option<PathBuf>,
     ) -> Self {
         let started_at = app.clock.now_ms();
@@ -98,6 +101,7 @@ impl AdminState {
             config,
             federation_config,
             federation,
+            settings,
             lode: lode_dir.map(|dir| Arc::new(Lode::new(dir, ""))),
             started_at,
             sessions: Mutex::default(),
