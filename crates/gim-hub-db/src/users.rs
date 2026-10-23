@@ -147,6 +147,38 @@ pub fn active_device_ids(conn: &Connection, user_id: &str) -> Result<Vec<String>
     Ok(ids)
 }
 
+/// Deletes the account of a local user (account deletion): the user and
+/// its devices, handle, recovery backup, sessions, sign-in challenges,
+/// KeyPackages, push registrations, hosting record, queued events and
+/// pending Welcomes. Group rosters and the group logs are left alone: the
+/// user's devices leave their groups first, and other members' clients
+/// remove what remains. `false` if there is no such user.
+pub fn delete_user(tx: &Transaction<'_>, user_id: &str) -> Result<bool, DbError> {
+    if tx.execute("DELETE FROM users WHERE user_id = ?1", [user_id])? == 0 {
+        return Ok(false);
+    }
+    // Most rows already went with the user through ON DELETE CASCADE; the
+    // tables without a foreign key to it are cleared here.
+    for table in [
+        "devices",
+        "handles",
+        "recovery_backups",
+        "sessions",
+        "auth_challenges",
+        "key_packages",
+        "push_registrations",
+        "hosting_records",
+        "events",
+        "pending_welcomes",
+    ] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE user_id = ?1"),
+            [user_id],
+        )?;
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +241,62 @@ mod tests {
             .unwrap();
         assert_eq!(active, ["d1", "d3"]);
         assert_eq!(sessions, 0);
+    }
+
+    #[tokio::test]
+    async fn delete_user_removes_the_account_and_its_inbox() {
+        let db = Db::open_in_memory().unwrap();
+        let key = |id: &str| (id.to_owned(), vec![9; 32]);
+        db.write(move |tx| {
+            put_device_list(tx, &list(1))?;
+            set_active_devices(tx, "u1", &[key("d1")], 10)?;
+            tx.execute_batch(
+                "INSERT INTO sessions (token_hash, user_id, device_id, created_at, expires_at) \
+                 VALUES (x'01', 'u1', 'd1', 0, 100); \
+                 INSERT INTO handles (handle, user_id, created_at) VALUES ('alice', 'u1', 0); \
+                 INSERT INTO recovery_backups (user_id, backup, updated_at) VALUES ('u1', x'01', 0); \
+                 INSERT INTO events (user_id, device_id, type, payload, created_at) \
+                 VALUES ('u1', 'd1', 'x', '', 0), ('u2', 'd1', 'x', '', 0);",
+            )?;
+            Ok::<_, DbError>(())
+        })
+        .await
+        .unwrap();
+
+        assert!(db.write(|tx| delete_user(tx, "u1")).await.unwrap());
+        assert!(!db.write(|tx| delete_user(tx, "u1")).await.unwrap());
+        let counts = db
+            .read(|conn| {
+                let count = |table: &str| -> Result<i64, DbError> {
+                    Ok(conn.query_row(
+                        &format!("SELECT count(*) FROM {table} WHERE user_id = 'u1'"),
+                        [],
+                        |row| row.get(0),
+                    )?)
+                };
+                Ok::<_, DbError>(
+                    [
+                        "users",
+                        "devices",
+                        "sessions",
+                        "handles",
+                        "recovery_backups",
+                        "events",
+                    ]
+                    .map(|t| count(t).unwrap()),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(counts, [0; 6]);
+        let others: i64 = db
+            .read(|conn| {
+                Ok::<_, DbError>(
+                    conn.query_row("SELECT count(*) FROM events", [], |row| row.get(0))?,
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(others, 1);
     }
 }

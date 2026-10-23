@@ -2,7 +2,7 @@
 
 use axum::{
     extract::{rejection::JsonRejection, Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, Uri},
     Json,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -11,7 +11,7 @@ use gim_hub_db::{
     users::{self, StoredDeviceList},
     Db, DbError, Transaction,
 };
-use gim_hub_identity::{HubId, UserId};
+use gim_hub_identity::{verify_root_request, HubId, RootRequestHeaders, UserId};
 use gim_hub_s2s::{outbox::NewEntry, BoxFuture, DeviceListEvents, FederationService, OutboxSender};
 
 use crate::{
@@ -398,6 +398,73 @@ pub async fn get_user(
         device_list: STANDARD.encode(device_list),
         handle,
     }))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/v2/users/{user_id}",
+    tag = "identity",
+    summary = "Delete an account",
+    description = "Deletes a local user's account: its DeviceList and devices, handle, recovery \
+backup, sessions, KeyPackages, push registration, hosting record, queued events and pending \
+Welcomes. Group rosters and messages stay; the client leaves its groups first. Authenticated by \
+a request signed with the user's root key (gim-core `docs/identity.md`, \"Root-signed \
+requests\"): headers `Gim-Key`, `Gim-Timestamp`, `Gim-Signature`, over the method, this path and \
+the (empty) body, within 5 minutes of the hub clock. No bearer token is needed, so an account \
+can be deleted after its devices were revoked.",
+    params(
+        ("user_id" = String, Path, description = "Opaque user ID (format owned by gim-core)", example = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa"),
+        ("Gim-Key" = String, Header, description = "Root public key, unpadded base64url"),
+        ("Gim-Timestamp" = String, Header, description = "Unix milliseconds, decimal"),
+        ("Gim-Signature" = String, Header, description = "Root-key signature, unpadded base64url"),
+    ),
+    responses(
+        (status = 204, description = "Account deleted"),
+        (status = 401, description = "Missing, malformed, expired or wrong signature (`invalid_signature`)", body = Error),
+        (status = 403, description = "The key is not `user_id`'s root key (`forbidden`)", body = Error),
+        (status = 404, description = "No such local user (`not_found`)", body = Error),
+    ),
+)]
+pub async fn delete_user(
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .ok_or(ApiError::InvalidSignature)
+    };
+    let path = uri
+        .path_and_query()
+        .map_or_else(|| uri.path(), |pq| pq.as_str());
+    let signer = verify_root_request(
+        "DELETE",
+        path,
+        b"",
+        RootRequestHeaders {
+            key: header("gim-key")?,
+            timestamp: header("gim-timestamp")?,
+            signature: header("gim-signature")?,
+        },
+        u64::try_from(state.clock.now_ms()).unwrap_or_default(),
+    )
+    .map_err(|_| ApiError::InvalidSignature)?;
+    if signer.as_str() != user_id {
+        return Err(ApiError::Forbidden(
+            "the signing key is not this user's root key".into(),
+        ));
+    }
+    if !state
+        .db
+        .write(move |tx| users::delete_user(tx, &user_id))
+        .await?
+    {
+        return Err(ApiError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(

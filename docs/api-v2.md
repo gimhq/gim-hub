@@ -133,6 +133,17 @@ token; rate limited per client IP and per `user_id`, `GIM_HUB_RECOVERY_READ_PER_
 (default 20) and `GIM_HUB_RECOVERY_READ_PER_USER_PER_MIN` (default 10) requests per minute, 429
 `rate_limited` with `Retry-After`) returns it for decryption with the recovery code.
 
+Account deletion: `DELETE /v2/users/{user_id}` deletes a local user's account (DeviceList and
+devices, handle, recovery backup, sessions, sign-in challenges, KeyPackages, push registration,
+hosting record, queued events and pending Welcomes) and answers 204. It takes no bearer token: the
+request is signed with the user's root key (gim-core *Root-signed requests*: headers `Gim-Key`,
+`Gim-Timestamp`, `Gim-Signature` over `DELETE`, the path as sent and the empty body), so an
+account whose devices were all revoked can still be deleted. 401 `invalid_signature` for a
+missing, malformed, wrong or expired signature (more than 5 minutes from the hub clock), 403
+`forbidden` if the key is another user's, 404 `not_found` for no such user (a replay after the
+deletion). Group rosters and logs are left as they are: the client leaves its groups first, and
+the events of devices that remain in a roster age out with the event retention.
+
 ### Public reads
 
 `GET /v2/users/{user_id}/device-list` and `GET /v2/users/{user_id}` need no token; a bearer token,

@@ -18,6 +18,7 @@
 //!   verification. The issued-challenge / single-use nonce store is the
 //!   caller's.
 //! - The hub-proposed hub proof of possession (`GET /v2/hub?nonce=`).
+//! - Root-signed requests (account deletion): verify only.
 //! - The MLS credential `0xF001` (`GimCredential`), at the byte level of
 //!   its content.
 //! - `RootKeyBackup` and sealed `LinkBundle`: structural checks only; the hub
@@ -42,6 +43,7 @@ mod keys;
 mod list;
 mod proof;
 mod relay;
+mod request;
 mod runtime;
 
 pub use auth::{
@@ -61,6 +63,9 @@ pub use keys::parse_public_key;
 pub use list::{DeviceList, DEVICE_LIST_CONTEXT};
 pub use proof::{sign_hub_proof, verify_hub_proof, HUB_PROOF_CONTEXT, HUB_PROOF_MAX_URL_LEN};
 pub use relay::{check_recovery_backup, check_sealed_link_bundle};
+pub use request::{
+    verify_root_request, RootRequestHeaders, ROOT_REQUEST_CONTEXT, ROOT_REQUEST_MAX_SKEW_MS,
+};
 pub use runtime::{libp2p_peer_id, HubRuntimeCert, HUB_RUNTIME_CERT_CONTEXT, PEER_ID_LEN};
 
 /// The body format version of every form except `AuthChallenge` v2.

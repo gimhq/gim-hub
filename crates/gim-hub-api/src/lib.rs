@@ -58,6 +58,7 @@ opaque strings whose format is owned by gim-core. Every non-2xx JSON response ha
         h::put_device_list,
         h::get_device_list,
         h::get_user,
+        h::delete_user,
         h::get_me,
         h::put_handle,
         h::delete_handle,
@@ -144,7 +145,10 @@ pub fn router(state: AppState) -> Router {
             "/v2/users/{user_id}/device-list",
             put(h::put_device_list).get(h::get_device_list),
         )
-        .route("/v2/users/{user_id}", get(h::get_user))
+        .route(
+            "/v2/users/{user_id}",
+            get(h::get_user).delete(h::delete_user),
+        )
         .route("/v2/me", get(h::get_me))
         .route(
             "/v2/handles/{handle}",

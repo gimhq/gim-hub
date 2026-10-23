@@ -1760,6 +1760,88 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "identity"
+        ],
+        "summary": "Delete an account",
+        "description": "Deletes a local user's account: its DeviceList and devices, handle, recovery backup, sessions, KeyPackages, push registration, hosting record, queued events and pending Welcomes. Group rosters and messages stay; the client leaves its groups first. Authenticated by a request signed with the user's root key (gim-core `docs/identity.md`, \"Root-signed requests\"): headers `Gim-Key`, `Gim-Timestamp`, `Gim-Signature`, over the method, this path and the (empty) body, within 5 minutes of the hub clock. No bearer token is needed, so an account can be deleted after its devices were revoked.",
+        "operationId": "delete_user",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "Opaque user ID (format owned by gim-core)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa"
+          },
+          {
+            "name": "Gim-Key",
+            "in": "header",
+            "description": "Root public key, unpadded base64url",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Gim-Timestamp",
+            "in": "header",
+            "description": "Unix milliseconds, decimal",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Gim-Signature",
+            "in": "header",
+            "description": "Root-key signature, unpadded base64url",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Account deleted"
+          },
+          "401": {
+            "description": "Missing, malformed, expired or wrong signature (`invalid_signature`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key is not `user_id`'s root key (`forbidden`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such local user (`not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v2/users/{user_id}/device-list": {

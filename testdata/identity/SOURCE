@@ -1,3 +1,4 @@
-gim-core 96b4955 docs/identity.md crates/gim-identity/tests/vectors/negative.json crates/gim-crypto/tests/vectors/credential.json
+gim-core 96b4955 crates/gim-identity/tests/vectors/negative.json crates/gim-crypto/tests/vectors/credential.json
 gim-core 01835f0 crates/gim-identity/tests/vectors/identity.json crates/gim-identity/tests/vectors/hosting.json crates/gim-identity/tests/vectors/auth.json crates/gim-identity/tests/vectors/recovery.json crates/gim-identity/tests/vectors/link.json
 gim-hub (hub-proposed, H7; replace when gim-core publishes official vectors) auth-v2.json hub-proof.json public-url.json
+gim-core 259c8cf docs/identity.md crates/gim-identity/tests/vectors/request.json

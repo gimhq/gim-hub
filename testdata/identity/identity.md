@@ -2,8 +2,8 @@
 
 Normative specification of the identity wire formats implemented by
 `crates/gim-identity`. Test vectors: `crates/gim-identity/tests/vectors/identity.json`,
-`hosting.json` and `auth.json` in the same directory; negative vectors in
-`negative.json` (see *Negative vectors*).
+`hosting.json`, `auth.json`, `auth-v2.json`, `hub-proof.json`, `public-url.json`
+and `request.json` in the same directory; negative vectors in `negative.json` (see *Negative vectors*).
 
 The key words MUST, MUST NOT and SHOULD are to be interpreted as in RFC 2119.
 
@@ -290,20 +290,91 @@ Verification of a `SignedHostingRecord` at time `now`:
 A verifier that looked the record up by user id MUST also check that the
 record's `user_id` is the one it looked up.
 
+### Publication
+
+The client builds and signs the record; the hub never holds the user root
+key. It asks its hub for an entry (`HostingEntry` CBOR as above, with the
+hub's `hub_id` and `hub_root_pubkey` alongside), checks that the entry's key
+is the one named and derives that `hub_id`, and builds the record: `seq` one
+above the hub's current record (1 without one), `expires_at` seven days
+ahead, the hub signature checked by the builder. Renewals keep the entries
+and take the next `seq`. On a `seq` conflict the client reads the current
+record, verifies it and rebuilds once.
+
 ### Ordering and primary hub
 
 - Replacing a stored record follows *Update and seq rules*.
 - The primary hub is the entry with the lowest `priority`; ties are broken
   by the lexicographically smallest `hub_id`.
 
-## Device authentication
+## Hub URLs
 
-A device logs in to a hub with a signature challenge.
+A hub with a public client API URL (`GIM_HUB_PUBLIC_URL`) binds its proof
+of possession and its sign-in challenges to that URL in this normalized
+form, and a client compares it with the normalized URL it contacted:
+
+1. Inputs longer than 65535 bytes are rejected; surrounding ASCII
+   whitespace is trimmed. Non-ASCII input and percent-encoding (`%`) are
+   rejected.
+2. The scheme, before `://`, is `http` or `https` in any case and is
+   lowercased.
+3. The authority ends at the first `/`, `?` or `#`. What follows it MUST be
+   empty or a single `/` (removed): other paths, a query (even a bare `?`)
+   and a fragment are rejected. Userinfo (`@`) is rejected.
+4. The host is a bracketed IPv6 address (`[...]`, valid as an IPv6
+   address, lowercased; only `:port` may follow the `]`), or else a DNS
+   name or IPv4 address: lowercased, non-empty labels of `[a-z0-9-]`
+   separated by `.`, without a trailing dot.
+5. An optional `:port` is decimal digits only (leading zeros allowed), in
+   1..65535; it is dropped when it is 80 for `http` or 443 for `https`.
+
+The result is `scheme://host[:port]`. Vectors: `public-url.json` (40 cases;
+the `error` strings are not normative).
+
+## Hub proof of possession
+
+`GET /v2/hub?nonce=<n>` (hub API v2) proves that the hub at the contacted
+URL holds the root key of its `hub_id` and serves that URL. The client
+picks `n`, 32 fresh random bytes, per check and never reuses it. The hub
+answers its `hub_id`, `hub_root_pubkey`, normalized `public_url` and
 
 ```
-AuthChallenge = [
+proof = Ed25519(hub root key, "gim-hub-proof-v1" || 0x00 || HubProofTbs)
+HubProofTbs = nonce (32 bytes)
+  || u16be(len(hub_id)) || hub_id
+  || u16be(len(public_url)) || public_url
+```
+
+with `hub_id` and `public_url` in UTF-8 and each length a big-endian byte
+count. The client accepts the URL `U` for the hub `H` only if `hub_id ==
+H`, `hub_id` derives from `hub_root_pubkey` (*Identifiers*), `public_url`
+equals the normalization of `U` and `proof` verifies (strict Ed25519) under
+`hub_root_pubkey` over the message built from its own nonce, `H` and
+`public_url`. A hub that reports no `public_url` cannot prove: gim-core
+accepts that only for the home hub it was configured with in single-hub
+development (AuthChallenge v1); any other hub stays unverified. A relay at
+another URL fails the URL check, a replayed answer the signature check.
+Vectors: `hub-proof.json` (`message` is the exact signed input).
+
+## Device authentication
+
+A device logs in to a hub with a signature challenge. A hub with a public
+URL issues version 2, bound to that URL; a hub without one (single-hub
+development, no federation) issues version 1.
+
+```
+AuthChallenge = AuthChallengeV1 / AuthChallengeV2
+AuthChallengeV1 = [
   1,                            ; version
   audience: tstr,               ; hub_id of the issuing hub
+  nonce: bstr .size 32,
+  issued_at: uint,              ; Unix time, milliseconds
+  expires_at: uint,             ; Unix time, milliseconds, exclusive
+]
+AuthChallengeV2 = [
+  2,                            ; version
+  audience: tstr,               ; hub_id of the issuing hub
+  audience_url: tstr,           ; its normalized public URL (*Hub URLs*)
   nonce: bstr .size 32,
   issued_at: uint,              ; Unix time, milliseconds
   expires_at: uint,             ; Unix time, milliseconds, exclusive
@@ -322,12 +393,24 @@ AuthResponse = [
 ]
 ```
 
+A version 1 challenge decodes as exactly five elements, a version 2
+challenge as exactly six (`decode_error` otherwise); other versions are
+`unsupported_version`. The `AuthResponse` framing is the same for both
+versions.
+
 The challenge is unsigned: the hub remembers the challenges it issued and
 MUST accept each nonce at most once. The device signs the challenge bytes as
-received, without re-encoding them.
+received, without re-encoding them. Before signing, the device checks the
+challenge against the hub proof of the URL it contacted: `audience` is
+that `hub_id` (`audience_mismatch`) and, if the proof reported a
+`public_url`, the challenge is version 2 with `audience_url` equal to it,
+or else version 1 (`audience_url_mismatch`). So a device never answers a
+version 1 challenge of a hub that reported a public URL, nor a challenge
+for another URL.
 
-Verification of an `AuthResponse` by the hub `expected_audience` at time
-`now`, given the user's `SignedDeviceList`:
+Verification of an `AuthResponse` by the hub `expected_audience` with the
+public URL `expected_audience_url` (if any) at time `now`, given the user's
+`SignedDeviceList`:
 
 1. The response decodes with version `1` and exactly five elements;
    `user_id` and `device_id` are syntactically valid ids.
@@ -335,8 +418,10 @@ Verification of an `AuthResponse` by the hub `expected_audience` at time
 3. `device_id` is not revoked and is certified in the list.
 4. `sig` is a valid signature by the certified `device_sig_pubkey` over
    `"gim/auth-response/v1" || 0x00 || AuthResponseTbs`.
-5. `challenge` decodes as an `AuthChallenge` with version `1`; its
-   `audience` equals `expected_audience`.
+5. `challenge` decodes as an `AuthChallenge`; its `audience` equals
+   `expected_audience` (`audience_mismatch`). With an
+   `expected_audience_url` it is version 2 with that `audience_url`;
+   without one it is version 1 (`audience_url_mismatch` otherwise).
 6. `issued_at < expires_at` (`invalid_validity_window`), then
    `expires_at - issued_at <= 300000` (`AUTH_CHALLENGE_MAX_LIFETIME_MS`,
    5 minutes; `lifetime_too_long`), then `issued_at <= now`
@@ -502,6 +587,46 @@ every Add and Update proposal of an incoming commit before merging it; Add
 and Update proposals before storing them; and the KeyPackages it adds
 itself. A rejected Welcome or commit leaves the local group state unchanged.
 
+## Root-signed requests
+
+Test vectors: `crates/gim-identity/tests/vectors/request.json`.
+
+An HTTP request signed with the user's root key proves that the sender
+holds the root key of the user id the presented key derives; the verifier
+needs no stored state. gim app servers authenticate every request this way,
+and hubs authenticate account deletion.
+
+```
+tbs       = method "\n" path "\n" decimal(timestamp_ms) "\n" hex(SHA-256(body))
+signature = Ed25519(root key, "gim/root-request/v1" || 0x00 || tbs)
+```
+
+- `method` is the uppercase HTTP method; `path` the request path with its
+  query string exactly as sent; `timestamp_ms` Unix milliseconds in decimal
+  without leading zeros; the digest is lowercase hex (the empty body for a
+  request without one). All UTF-8.
+- Headers: `Gim-Key` (the 32-byte root public key), `Gim-Timestamp`
+  (`timestamp_ms`) and `Gim-Signature` (64 bytes); keys and signatures in
+  unpadded base64url.
+- The verifier MUST check the signature with strict verification, MUST
+  reject a timestamp more than 5 minutes from its clock (either way), and
+  takes `user_id` as derived from `Gim-Key` (see *Identifiers*). A route
+  scoped to a user MUST compare that id with the user in the path.
+
+### App-server storage
+
+What a user stores on an app server is sealed with a key the server never
+sees:
+
+```
+storage_key = HKDF-SHA256(salt = none, ikm = root seed, info = "gim/app-storage/v1", L = 32)
+sealed      = nonce(12) || AES-256-GCM(storage_key, nonce, plaintext, aad = slot name)
+```
+
+The slot name (UTF-8) is bound as AAD, so a server cannot swap two slots.
+Every own device holds the root key, and a restore from the recovery code
+recovers it, so each of them can open the slots.
+
 ## Reserved
 
 Recovery backups and device-link bundles are specified by the following
@@ -572,6 +697,15 @@ Opening a blob with a recovery code for an expected `user_id`:
 6. The user id derived from the root public key of `root_seed` equals the
    expected `user_id`.
 
+**Restore.** gim-core restores a user on a fresh device by opening the
+backup, reading the user's current signed DeviceList from the hub (a public
+read; the device cannot sign in yet) and verifying it against the recovered
+root key. It then publishes the next list (`seq + 1`) certifying the new
+device. When the other devices are revoked, every device the current list
+certifies moves to `revoked` (explicitly, not dropped); otherwise they all
+stay certified. If a newer list lands concurrently, the list is read and
+rebuilt once.
+
 ### Device link
 
 Adds a new device to a user who already has a device. Implemented in
@@ -589,6 +723,77 @@ Adds a new device to a user who already has a device. Implemented in
 3. The new device opens and verifies the bundle.
 4. Both devices display the SAS; the user confirms they match before either
    device treats the link as complete.
+
+#### Device link flow
+
+How gim-core (`gim-sdk`, exposed by gim-ffi) runs the flow against a hub.
+The bundle carries the root key seed, the new device's certificate and the
+DeviceList certifying it, and **no self-group Welcome**: a Welcome needs a
+KeyPackage of the new device, and the new device can only publish
+KeyPackages once it holds its certificate, i.e. after it opened the bundle.
+gim-core always seals `self_group_welcome = null` and ignores a non-null
+one. The new device joins the self group and the chats from Welcomes the
+old device sends after the SAS was confirmed.
+
+```
+New device (N)                     Hub                         Old device (O)
+--------------                     ---                         --------------
+start_link: device key, offer
+show QR (LinkOffer) ----------------------- scan ----------------------->
+                                                               approve_link:
+                                                                 cert(seq+1), DeviceList
+                                       <-- PUT /v2/users/{u}/device-list
+                                       <-- POST /v2/link-bundles {link_id, sealed}
+                                                               show SAS
+wait_link:
+  GET /v2/link-bundles/{link_id}?wait=30 -->  (deleted on first fetch)
+  open + verify bundle, store root
+  and device keys, sign in, upload
+  KeyPackages
+show SAS
+                   user compares both SAS and confirms on BOTH devices
+confirm_link(true)                                             confirm_approval(true):
+                                                                 add N to the self group
+                                                                 and to every joined chat
+                                       <-- commits + Welcomes for N
+sync: join the self group and chats
+  from the Welcomes  <---------------- Welcomes
+```
+
+Who does what:
+
+1. **N** `start_link(hubs)`: creates its device signing key and a
+   `LinkOffer` and shows it as a QR code. It must not have a session.
+2. **O** `approve_link(qr)`: issues a `SignedDeviceCert` for N, publishes a
+   DeviceList (seq + 1) certifying it, seals the bundle to the offer, posts
+   it through the hub (lifetime 600 s) and shows the SAS. N is now a listed
+   device but in no MLS group.
+3. **N** `wait_link`: long-polls the hub for the bundle (up to 10 minutes),
+   opens and verifies it, stores the root and device keys, signs in and
+   uploads KeyPackages, then shows the SAS.
+4. The user compares the two SAS values and confirms on both devices.
+5. **O** `confirm_approval(true)`: adds N to the self group (sharing the
+   DeviceList and profile) and to every joined chat. N must have finished
+   step 3, otherwise it has no KeyPackages to claim.
+6. **N** `confirm_link(true)`: completes the link; on its next sync it joins
+   the self group and the chats from the Welcomes the hub delivers.
+
+Failure and reject paths:
+
+- **SAS mismatch on N** (`confirm_link(false)`): the bundle may come from
+  someone else. N deletes the session, the root and device keys and its
+  local database, and must start over with a new offer.
+- **SAS mismatch on O** (`confirm_approval(false)`): O revokes N in a new
+  DeviceList; the hub drops N's sessions and peers reject its credential.
+- The user must reject on both devices; rejecting on one only is not
+  enough (an unrevoked N keeps a valid certificate, an unwiped N keeps the
+  keys).
+- **No bundle** within 10 minutes, or a bundle that does not open or verify:
+  `wait_link` fails and stores nothing. A `LinkSession` accepts a single
+  bundle; start a new one. If O already approved, the listed but unused N
+  should be revoked from O (`revoke_device`).
+- The bundle is fetched once: the hub deletes it on the first fetch and
+  after its lifetime.
 
 #### LinkOffer
 
