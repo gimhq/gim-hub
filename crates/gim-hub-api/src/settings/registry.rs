@@ -221,6 +221,14 @@ pub static SETTINGS: &[Setting] = &[
         "Canonical client-API base URL (scheme://host[:port]); required with federation",
     ),
     setting(
+        "GIM_HUB_STATUS_PAGE",
+        "general",
+        Bool,
+        B(true),
+        Live,
+        "Serve the status page (version and system information) at / and /status; 404 there when off",
+    ),
+    setting(
         "GIM_HUB_SESSION_TTL_DAYS",
         "general",
         Integer,

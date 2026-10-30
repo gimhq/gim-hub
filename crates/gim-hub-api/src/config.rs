@@ -48,6 +48,9 @@ pub struct Config {
     /// `GIM_HUB_TRUST_FORWARDED_FOR`: key client limits by the left-most
     /// `X-Forwarded-For` address instead of the peer address.
     pub trust_forwarded_for: bool,
+    /// `GIM_HUB_STATUS_PAGE`: serve the status page (version and system
+    /// information) at `/` and `/status`; 404 there when off.
+    pub status_page: bool,
     /// `GIM_HUB_PUSH_*`: push gateway.
     pub push: PushConfig,
     /// `GIM_HUB_PUBLIC_URL`: the canonical client-API base URL, normalized
@@ -197,6 +200,7 @@ impl Config {
                 Some(1),
             )?,
             trust_forwarded_for: parse(get, "GIM_HUB_TRUST_FORWARDED_FOR", false, None)?,
+            status_page: parse(get, "GIM_HUB_STATUS_PAGE", true, None)?,
             push: push_config(get)?,
             unhosted_grace_hours: parse(get, "GIM_HUB_UNHOSTED_GRACE_HOURS", 168, Some(1))?,
             user_policy: get(MODE_KEY)

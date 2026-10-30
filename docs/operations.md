@@ -23,6 +23,7 @@ deployment behaves exactly as before 0.4.0.
 | `GIM_HUB_MAX_MESSAGE_BYTES` | stored live | `262144` | Largest accepted MLS message (minimum 1) |
 | `GIM_HUB_MAX_BLOB_BYTES` | stored live | `104857600` | Largest accepted blob (minimum 1) |
 | `GIM_HUB_LONGPOLL_MAX_WAIT_SECONDS` | stored live | `30` | Upper bound for long-poll `wait` |
+| `GIM_HUB_STATUS_PAGE` | stored live | `true` | Serve an HTML status page (version, build revision, platform, hub ID, public URL) at `/` and `/status`; `false` answers 404 there |
 | `GIM_HUB_SESSION_TTL_DAYS` | stored live | `30` | Lifetime of device bearer tokens (minimum 1) |
 | `GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN` | stored live | `120` | Unauthenticated `GET /v2/users/{user_id}`, `.../device-list` and `.../hosting-record` requests per client IP (IPv6: per /64) per minute (minimum 1) |
 | `GIM_HUB_PUBLIC_READ_PER_USER_PER_MIN` | stored live | `60` | Unauthenticated reads of one `user_id` per minute, across all clients (minimum 1) |

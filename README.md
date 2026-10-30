@@ -13,7 +13,7 @@ Design basis: cluster-architecture.md (hub model).
 - `crates/gim-hub-db`: SQLite storage.
 - `crates/gim-hub-api`: client HTTP/WebSocket API v2.
 - `crates/gim-hub-s2s`: hub-to-hub federation.
-- `crates/gim-hub`: server binary (`GIM_HUB_LISTEN`, default `0.0.0.0:8080`; `GET /healthz`).
+- `crates/gim-hub`: server binary (`GIM_HUB_LISTEN`, default `0.0.0.0:8080`; `GET /healthz`; a status page at `GET /` and `GET /status`, switched by `GIM_HUB_STATUS_PAGE`).
 
 ## Run
 

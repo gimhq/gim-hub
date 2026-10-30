@@ -137,7 +137,9 @@ pub fn openapi_json() -> String {
 /// Routes of the client API, including `/healthz`.
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/", get(h::status_page))
         .route("/healthz", get(h::healthz))
+        .route("/status", get(h::status_page))
         .route("/v2/hub", get(h::get_hub))
         .route("/v2/auth/challenge", post(h::create_auth_challenge))
         .route("/v2/auth/session", post(h::create_session))

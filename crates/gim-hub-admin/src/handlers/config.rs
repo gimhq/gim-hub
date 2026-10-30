@@ -128,6 +128,7 @@ pub(crate) fn effective_config(
             s(&hub.recovery_read_per_user_per_min),
         ),
         item("GIM_HUB_TRUST_FORWARDED_FOR", s(&hub.trust_forwarded_for)),
+        item("GIM_HUB_STATUS_PAGE", s(&hub.status_page)),
         item("GIM_HUB_UNHOSTED_GRACE_HOURS", s(&hub.unhosted_grace_hours)),
         item("GIM_HUB_PUSH_MEMBER_EVENTS", s(&hub.push.member_events)),
         item("GIM_HUB_PUSH_MINIMAL", s(&hub.push.minimal)),
