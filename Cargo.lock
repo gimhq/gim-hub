@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "gim-hub"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1205,7 +1205,7 @@ dependencies = [
 
 [[package]]
 name = "gim-hub-admin"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1229,7 +1229,7 @@ dependencies = [
 
 [[package]]
 name = "gim-hub-api"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "gim-hub-db"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "gim-hub-identity",
  "rusqlite",
@@ -1279,7 +1279,7 @@ dependencies = [
 
 [[package]]
 name = "gim-hub-identity"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ciborium",
  "data-encoding",
@@ -1291,7 +1291,7 @@ dependencies = [
 
 [[package]]
 name = "gim-hub-proto"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "prost",
  "prost-build",
@@ -1300,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "gim-hub-push"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -1318,7 +1318,7 @@ dependencies = [
 
 [[package]]
 name = "gim-hub-s2s"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "ciborium",
@@ -1340,7 +1340,7 @@ dependencies = [
 
 [[package]]
 name = "gim-push-mock"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "axum",
  "hex",
