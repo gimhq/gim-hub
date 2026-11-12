@@ -212,10 +212,6 @@ pub struct User {
     /// gim-core DeviceList CBOR, base64.
     #[schema(content_encoding = "base64")]
     pub device_list: String,
-    /// Handle claimed in this hub's directory, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(pattern = "^[a-z0-9_]{3,32}$", example = "alice")]
-    pub handle: Option<String>,
 }
 
 /// The calling device.
@@ -227,25 +223,6 @@ pub struct Me {
     /// Opaque device ID (format owned by gim-core).
     #[schema(example = json!(DEVICE_ID_EXAMPLE))]
     pub device_id: String,
-    /// Handle claimed in this hub's directory, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(pattern = "^[a-z0-9_]{3,32}$", example = "alice")]
-    pub handle: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// Handles
-// ---------------------------------------------------------------------------
-
-/// A handle directory entry.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct Handle {
-    /// Handle: 3-32 chars of a-z, 0-9, _.
-    #[schema(pattern = "^[a-z0-9_]{3,32}$", example = "alice")]
-    pub handle: String,
-    /// Opaque user ID (format owned by gim-core).
-    #[schema(example = json!(USER_ID_EXAMPLE))]
-    pub user_id: String,
 }
 
 // ---------------------------------------------------------------------------

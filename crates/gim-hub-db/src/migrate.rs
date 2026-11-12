@@ -23,6 +23,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0012_admin.sql"),
     include_str!("../migrations/0013_settings.sql"),
     include_str!("../migrations/0014_user_policy.sql"),
+    include_str!("../migrations/0015_drop_handles.sql"),
 ];
 
 /// Schema version after all migrations.
@@ -153,7 +154,6 @@ mod tests {
                 "federation_allowlist",
                 "group_members",
                 "groups",
-                "handles",
                 "hosting_records",
                 "key_packages",
                 "link_bundles",

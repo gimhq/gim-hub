@@ -24,14 +24,13 @@ use gim_hub_api::{
 };
 use gim_hub_db::{
     admin::{self, AuditEntry},
-    handles,
     user_policy::{self as policy_db, ListEntry},
     Db, DbError,
 };
 use serde_json::Value;
 
 const USAGE: &str = "usage: gim-hub config list | get <key> | set <key> <value> | unset <key> \
-| allowlist list | allowlist set <file> | users list | users add <user_id|@handle> [note] \
+| allowlist list | allowlist set <file> | users list | users add <user_id> [note] \
 | users remove <user_id> | users set <file>";
 
 /// Runs `gim-hub config <args>` with the environment `env`, printing to
@@ -307,7 +306,7 @@ impl Cli {
     }
 
     /// The list in the `users set` format, after a header with the mode:
-    /// one user ID per line, the handle and note as a comment.
+    /// one user ID per line, the note as a comment.
     async fn users_list(&self, out: &mut impl Write) -> Result<(), Box<dyn Error>> {
         let sources = self.sources().await?;
         let state = settings::state(&sources, find(MODE_KEY)?, None);
@@ -319,42 +318,24 @@ impl Cli {
             state.source.as_str(),
             entries.len()
         )?;
-        for listed in entries {
-            let mut line = listed.entry.user_id;
-            let comment: Vec<String> = listed
-                .handle
-                .map(|handle| format!("@{handle}"))
-                .into_iter()
-                .chain(listed.entry.note)
-                .collect();
-            if !comment.is_empty() {
+        for entry in entries {
+            let mut line = entry.user_id;
+            if let Some(note) = entry.note {
                 line.push_str("  # ");
-                line.push_str(&comment.join(" "));
+                line.push_str(&note);
             }
             writeln!(out, "{line}")?;
         }
         Ok(())
     }
 
-    /// `user` is a user ID or `@handle` (resolved on this hub).
     async fn users_add(
         &self,
         user: &str,
         note: Option<&str>,
         out: &mut impl Write,
     ) -> Result<(), Box<dyn Error>> {
-        let user_id = if user.trim().starts_with('@') {
-            let name = user_policy::handle_name(user);
-            let owner = {
-                let name = name.clone();
-                self.db
-                    .read(move |conn| handles::owner(conn, &name))
-                    .await?
-            };
-            owner.ok_or_else(|| format!("unknown handle @{name}"))?
-        } else {
-            user_policy::parse_user_id(user)?
-        };
+        let user_id = user_policy::parse_user_id(user)?;
         let entry = ListEntry {
             user_id: user_id.clone(),
             added_at: now_ms(),
@@ -420,10 +401,7 @@ impl Cli {
         let detail = self
             .db
             .write(move |tx| {
-                let existing: Vec<ListEntry> = policy_db::load(tx)?
-                    .into_iter()
-                    .map(|listed| listed.entry)
-                    .collect();
+                let existing = policy_db::load(tx)?;
                 let entries: Vec<ListEntry> = user_ids
                     .into_iter()
                     .map(|user_id| {
@@ -603,27 +581,6 @@ mod tests {
 
     const ALICE: &str = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa";
 
-    /// A user of the hub at `dir` with `handle`.
-    async fn user_with_handle(dir: &std::path::Path, user_id: &str, handle: &str) {
-        let db = Db::open(&dir.join("hub.db")).unwrap();
-        let (user_id, handle) = (user_id.to_owned(), handle.to_owned());
-        db.write(move |tx| {
-            gim_hub_db::users::put_device_list(
-                tx,
-                &gim_hub_db::users::StoredDeviceList {
-                    user_id: user_id.clone(),
-                    root_pubkey: vec![0; 32],
-                    device_list: Vec::new(),
-                    seq: 0,
-                    updated_at: 1,
-                },
-            )?;
-            handles::claim(tx, &handle, &user_id, 1).map(drop)
-        })
-        .await
-        .unwrap();
-    }
-
     #[tokio::test]
     async fn users_add_list_remove_set() {
         let tmp = tempfile::tempdir().unwrap();
@@ -631,9 +588,8 @@ mod tests {
         let out = run_ok(dir, &[], &["users", "list"]).await;
         assert_eq!(out, "# mode: open (default), 0 entries\n");
         let err = run_err(dir, &[], &["users", "add", "@alice"]).await;
-        assert_eq!(err, "unknown handle @alice");
-        user_with_handle(dir, ALICE, "alice").await;
-        let out = run_ok(dir, &[], &["users", "add", "@Alice", "spam reports"]).await;
+        assert!(err.contains("invalid user ID"), "{err}");
+        let out = run_ok(dir, &[], &["users", "add", ALICE, "spam reports"]).await;
         assert!(out.starts_with(&format!("added {ALICE} ")), "{out}");
         let err = run_err(dir, &[], &["users", "add", ALICE]).await;
         assert!(err.contains("already listed"), "{err}");
@@ -643,7 +599,7 @@ mod tests {
         let listed = run_ok(dir, &[], &["users", "list"]).await;
         assert_eq!(
             listed,
-            format!("# mode: deny (stored), 1 entries\n{ALICE}  # @alice spam reports\n")
+            format!("# mode: deny (stored), 1 entries\n{ALICE}  # spam reports\n")
         );
         let out = run_ok(dir, &[("GIM_HUB_USER_POLICY", "allow")], &["users", "list"]).await;
         assert!(out.starts_with("# mode: allow (env), 1 entries\n"), "{out}");

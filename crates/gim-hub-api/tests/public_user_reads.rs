@@ -14,7 +14,7 @@ use gim_hub_api::{ratelimit::PublicReadLimits, testing::TestHub};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use identity_support::{b64, code, device_id, device_list, put_device_list, send, user_id};
+use identity_support::{b64, code, device_list, put_device_list, user_id};
 
 /// GET `uri` without a token, from `peer` (no ConnectInfo when `None`),
 /// with an optional `X-Forwarded-For`; returns the status, `Retry-After`
@@ -78,25 +78,6 @@ async fn local_user_is_readable_without_auth() {
     let (status, _, body) = get(&hub, &format!("/v2/users/{user}"), None, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, json!({ "user_id": user, "device_list": b64(&list) }));
-
-    // With a handle: exactly user_id, device_list and handle.
-    let token = hub.create_session(&user, &device_id(2)).await;
-    let (status, _) = send(&hub, Method::PUT, "/v2/handles/alice", Some(&token), None).await;
-    assert_eq!(status, StatusCode::OK);
-    let (status, _, body) = get(&hub, &format!("/v2/users/{user}"), None, None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        body,
-        json!({ "user_id": user, "device_list": b64(&list), "handle": "alice" })
-    );
-    let mut keys: Vec<&str> = body
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
-    keys.sort_unstable();
-    assert_eq!(keys, ["device_list", "handle", "user_id"]);
 
     let missing = user_id(5);
     for uri in [

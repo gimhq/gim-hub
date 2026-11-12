@@ -7,7 +7,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use gim_hub_db::{
-    events, groups, handles, hosting, remote_identity,
+    events, groups, hosting, remote_identity,
     users::{self, StoredDeviceList},
     Db, DbError, Transaction,
 };
@@ -367,10 +367,10 @@ pub async fn get_device_list(
     tag = "identity",
     summary = "Get a user",
     description = "No authentication (a bearer token, if sent, is ignored); returns only public \
-data: the self-certifying DeviceList and the handle. Rate limited per client IP and per \
+data: the self-certifying DeviceList. Rate limited per client IP and per \
 `user_id`, shared with `GET /v2/users/{user_id}/device-list`. For a user of another hub, the \
 DeviceList comes from the cache of remote \
-DeviceLists (fetched from the user's hub when missing or stale) and `handle` is absent.",
+DeviceLists (fetched from the user's hub when missing or stale).",
     params(("user_id" = String, Path, description = "Opaque user ID (format owned by gim-core)", example = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa")),
     responses(
         (status = 200, description = "User", body = User),
@@ -388,15 +388,9 @@ pub async fn get_user(
         .public_reads
         .check(client, &user_id, state.clock.now_ms())?;
     let device_list = state.device_lists.device_list_for(&user_id).await?;
-    let key = user_id.clone();
-    let handle = state
-        .db
-        .read(move |conn| handles::handle_of(conn, &key))
-        .await?;
     Ok(Json(User {
         user_id,
         device_list: STANDARD.encode(device_list),
-        handle,
     }))
 }
 
@@ -405,7 +399,7 @@ pub async fn get_user(
     path = "/v2/users/{user_id}",
     tag = "identity",
     summary = "Delete an account",
-    description = "Deletes a local user's account: its DeviceList and devices, handle, recovery \
+    description = "Deletes a local user's account: its DeviceList and devices, recovery \
 backup, sessions, KeyPackages, push registration, hosting record, queued events and pending \
 Welcomes. Group rosters and messages stay; the client leaves its groups first. Authenticated by \
 a request signed with the user's root key (gim-core `docs/identity.md`, \"Root-signed \
@@ -478,15 +472,9 @@ pub async fn delete_user(
         (status = 401, description = "Missing or invalid bearer token (`unauthorized`)", body = Error),
     ),
 )]
-pub async fn get_me(auth: AuthDevice, State(state): State<AppState>) -> Result<Json<Me>, ApiError> {
-    let user_id = auth.user_id.clone();
-    let handle = state
-        .db
-        .read(move |conn| handles::handle_of(conn, &user_id))
-        .await?;
-    Ok(Json(Me {
+pub async fn get_me(auth: AuthDevice) -> Json<Me> {
+    Json(Me {
         user_id: auth.user_id,
         device_id: auth.device_id,
-        handle,
-    }))
+    })
 }

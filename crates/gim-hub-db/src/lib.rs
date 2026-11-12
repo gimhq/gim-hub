@@ -10,7 +10,6 @@ pub mod auth;
 pub mod blobs;
 pub mod events;
 pub mod groups;
-pub mod handles;
 pub mod hosting;
 pub mod keypackages;
 pub mod links;

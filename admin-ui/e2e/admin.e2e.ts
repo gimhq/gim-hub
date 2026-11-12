@@ -10,7 +10,6 @@ function env(name: string): string {
 
 const token = env('E2E_TOKEN')
 const userId = env('E2E_USER_ID')
-const handle = env('E2E_HANDLE')
 const deviceId = env('E2E_DEVICE_ID')
 const sessionRef = env('E2E_SESSION_REF')
 const newHub = env('E2E_NEW_HUB')
@@ -39,14 +38,15 @@ test('admin UI end to end', async ({ page, request }) => {
 
   await test.step('2. search the user and open the detail', async () => {
     await nav.getByRole('link', { name: 'Users' }).click()
-    await page.getByLabel('Search users').fill(handle)
+    const query = userId.slice(-12)
+    await page.getByLabel('Search users').fill(query)
     await page.getByRole('button', { name: 'Search' }).click()
-    await expect(page).toHaveURL(new RegExp(`q=${handle}`))
+    await expect(page).toHaveURL(new RegExp(`q=${query}`))
     await page.getByRole('link', { name: userId }).click()
     await expect(page.getByRole('heading', { name: `User ${userId}` })).toBeVisible()
     await expect(page.getByRole('cell', { name: deviceId })).toBeVisible()
     await expect(page.getByText(sessionRef)).toBeVisible()
-    log(`ok   2. found ${handle}, detail of ${userId} shows device ${deviceId} with session ${sessionRef}`)
+    log(`ok   2. found ${query}, detail of ${userId} shows device ${deviceId} with session ${sessionRef}`)
   })
 
   await test.step('3. revoke the device sessions', async () => {
@@ -166,11 +166,11 @@ test('admin UI end to end', async ({ page, request }) => {
 
     await nav.getByRole('link', { name: 'User policy' }).click()
     await expect(page.getByText('Every user except those on the list is admitted.')).toBeVisible()
-    await page.getByLabel('Handle or user ID').fill(`@${handle}`)
+    await page.getByLabel('User ID', { exact: true }).fill(userId)
     await page.getByLabel('Note').fill('e2e')
     await page.getByRole('button', { name: 'Add', exact: true }).click()
     const entry = page.getByRole('row').filter({ has: page.getByRole('cell', { name: userId }) })
-    await expect(entry).toContainText(`@${handle}`)
+    await expect(entry).toContainText('e2e')
     await expect(page.getByText('1 user of this hub is not admitted')).toBeVisible()
 
     // Applied at once: the sessions (here of the second device) are gone and
@@ -183,7 +183,7 @@ test('admin UI end to end', async ({ page, request }) => {
     expect(await challenge.json()).toEqual({
       error: { code: 'user_not_admitted', message: 'user is not admitted on this hub' },
     })
-    log(`ok   10. GIM_HUB_USER_POLICY=deny with @${handle} listed: sessions deleted, POST /v2/auth/challenge -> 403 user_not_admitted`)
+    log(`ok   10. GIM_HUB_USER_POLICY=deny with ${userId} listed: sessions deleted, POST /v2/auth/challenge -> 403 user_not_admitted`)
 
     await entry.getByRole('button', { name: 'Remove' }).click()
     await page.getByRole('alertdialog').getByRole('button', { name: 'Remove' }).click()

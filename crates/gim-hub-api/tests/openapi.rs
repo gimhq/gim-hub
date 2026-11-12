@@ -34,7 +34,6 @@ fn concrete_path(template: &str) -> String {
         .replace("{gid}", &gid)
         .replace("{user_id}", "uexample")
         .replace("{device_id}", "dexample")
-        .replace("{handle}", "alice")
         .replace("{link_id}", "wgy33neayyoqouya3g77pwolne")
         .replace("{blob_id}", "b_example")
 }
@@ -126,6 +125,6 @@ async fn every_documented_operation_is_routed() {
             );
         }
     }
-    assert_eq!(operations, 36);
-    assert_eq!(authenticated, 23);
+    assert_eq!(operations, 33);
+    assert_eq!(authenticated, 20);
 }

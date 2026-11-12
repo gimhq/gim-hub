@@ -186,7 +186,6 @@ function ListCard({ policy }: { policy: UserPolicy }) {
           <TableHeader>
             <TableRow>
               <TableHead>{t('users.user_id')}</TableHead>
-              <TableHead>{t('users.handle')}</TableHead>
               <TableHead>{t('user_policy.added_at')}</TableHead>
               <TableHead>{t('user_policy.note')}</TableHead>
               <TableHead>{t('common.actions')}</TableHead>
@@ -195,13 +194,12 @@ function ListCard({ policy }: { policy: UserPolicy }) {
           <TableBody>
             {policy.entries.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="text-muted-foreground">{t('user_policy.empty')}</TableCell>
+                <TableCell colSpan={4} className="text-muted-foreground">{t('user_policy.empty')}</TableCell>
               </TableRow>
             )}
             {policy.entries.map(entry => (
               <TableRow key={entry.user_id}>
                 <TableCell className="font-mono">{entry.user_id}</TableCell>
-                <TableCell>{entry.handle ? `@${entry.handle}` : '—'}</TableCell>
                 <TableCell>
                   {t('settings.updated_value', { at: formatDateTime(entry.added_at, i18n.language), by: entry.added_by })}
                 </TableCell>
@@ -210,7 +208,7 @@ function ListCard({ policy }: { policy: UserPolicy }) {
                   <ConfirmAction
                     trigger={t('user_policy.remove')}
                     title={t('user_policy.remove_title')}
-                    description={t('user_policy.remove_description', { id: entry.handle ? `@${entry.handle}` : entry.user_id })}
+                    description={t('user_policy.remove_description', { id: entry.user_id })}
                     confirmLabel={t('user_policy.remove')}
                     variant="destructive"
                     onConfirm={() => remove.mutateAsync(entry.user_id)}

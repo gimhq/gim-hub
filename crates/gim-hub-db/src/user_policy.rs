@@ -20,30 +20,18 @@ pub struct ListEntry {
     pub note: Option<String>,
 }
 
-/// A listed user with the handle it has on this hub, if any.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ListedUser {
-    pub entry: ListEntry,
-    pub handle: Option<String>,
-}
-
-/// Every listed user with its handle, by user ID.
-pub fn load(conn: &Connection) -> Result<Vec<ListedUser>, DbError> {
+/// Every listed user, by user ID.
+pub fn load(conn: &Connection) -> Result<Vec<ListEntry>, DbError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT l.user_id, l.added_at, l.added_by, l.note, h.handle \
-         FROM user_policy_list l LEFT JOIN handles h ON h.user_id = l.user_id \
-         ORDER BY l.user_id",
+        "SELECT user_id, added_at, added_by, note FROM user_policy_list ORDER BY user_id",
     )?;
     let rows = stmt
         .query_map([], |row| {
-            Ok(ListedUser {
-                entry: ListEntry {
-                    user_id: row.get(0)?,
-                    added_at: row.get(1)?,
-                    added_by: row.get(2)?,
-                    note: row.get(3)?,
-                },
-                handle: row.get(4)?,
+            Ok(ListEntry {
+                user_id: row.get(0)?,
+                added_at: row.get(1)?,
+                added_by: row.get(2)?,
+                note: row.get(3)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -182,8 +170,7 @@ mod tests {
         assert_eq!(db.read(version).await.unwrap(), 2);
         assert_eq!(db.read(user_ids).await.unwrap(), ["u-a", "u-b"]);
         let loaded = db.read(load).await.unwrap();
-        assert_eq!(loaded[1].entry, entry("u-b", Some("spam")));
-        assert_eq!(loaded[1].handle, None);
+        assert_eq!(loaded[1], entry("u-b", Some("spam")));
         assert!(db.read(|conn| contains(conn, "u-a")).await.unwrap());
         assert!(!db.read(|conn| contains(conn, "u-c")).await.unwrap());
 

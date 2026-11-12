@@ -43,24 +43,23 @@ describe('user policy', () => {
     expect(screen.queryByText(/users of this hub are not admitted/)).not.toBeInTheDocument()
   })
 
-  it('adds by handle, warns about locked-out users and removes with a confirmation', async () => {
+  it('adds by user ID, warns about locked-out users and removes with a confirmation', async () => {
     setMode('deny')
     const user = userEvent.setup()
     renderApp('/user-policy')
-    await user.type(await screen.findByLabelText('Handle or user ID'), '@alice')
+    await user.type(await screen.findByLabelText('User ID'), ' u-alice ')
     await user.type(screen.getByLabelText('Note'), 'spam')
     await user.click(screen.getByRole('button', { name: 'Add' }))
 
     const row = (await screen.findByRole('cell', { name: 'u-alice' })).closest('tr')!
-    expect(within(row).getByText('@alice')).toBeInTheDocument()
     expect(within(row).getByText('spam')).toBeInTheDocument()
-    expect(state.mutations.at(-1)).toEqual({ key: 'POST /users/policy/entries', csrf: CSRF, body: { handle: 'alice', note: 'spam' } })
+    expect(state.mutations.at(-1)).toEqual({ key: 'POST /users/policy/entries', csrf: CSRF, body: { user_id: 'u-alice', note: 'spam' } })
     expect(screen.getByText('1 user of this hub is not admitted')).toBeInTheDocument()
     expect(screen.getByLabelText('User IDs')).toHaveValue('u-alice\n')
 
     await user.click(within(row).getByRole('button', { name: 'Remove' }))
     const dialog = within(await screen.findByRole('alertdialog'))
-    expect(dialog.getByText('@alice is removed from the user list. The change applies at once.')).toBeInTheDocument()
+    expect(dialog.getByText('u-alice is removed from the user list. The change applies at once.')).toBeInTheDocument()
     await user.click(dialog.getByRole('button', { name: 'Remove' }))
     expect(await screen.findByText('The list is empty.')).toBeInTheDocument()
     expect(state.mutations.at(-1)?.key).toBe('DELETE /users/policy/entries/u-alice')
@@ -69,10 +68,10 @@ describe('user policy', () => {
   it('shows an add error inline', async () => {
     const user = userEvent.setup()
     renderApp('/user-policy')
-    await user.type(await screen.findByLabelText('Handle or user ID'), '@nobody')
+    await user.type(await screen.findByLabelText('User ID'), '@nobody')
     await user.click(screen.getByRole('button', { name: 'Add' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('not found')
-    expect(screen.getByLabelText('Handle or user ID')).toHaveAttribute('aria-invalid', 'true')
+    expect(await screen.findByRole('alert')).toHaveTextContent('invalid user ID "@nobody"')
+    expect(screen.getByLabelText('User ID')).toHaveAttribute('aria-invalid', 'true')
   })
 
   it('shows the 422 line error inline, then replaces the list', async () => {
@@ -92,11 +91,10 @@ describe('user policy', () => {
     expect(state.mutations.at(-1)).toEqual({ key: 'PUT /users/policy', csrf: CSRF, body: { text: 'u-bob # suspended' } })
   })
 
-  it('tells handles from user IDs and renders the list as text', () => {
-    expect(addTarget(' @Alice ', '')).toEqual({ handle: 'Alice' })
-    expect(addTarget('bob_1', ' note ')).toEqual({ handle: 'bob_1', note: 'note' })
+  it('builds the add body and renders the list as text', () => {
     const id = 'uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa'
-    expect(addTarget(id, '')).toEqual({ user_id: id })
+    expect(addTarget(` ${id} `, '')).toEqual({ user_id: id })
+    expect(addTarget(id, ' note ')).toEqual({ user_id: id, note: 'note' })
     expect(listText([])).toBe('')
   })
 })

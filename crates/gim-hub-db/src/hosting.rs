@@ -256,7 +256,7 @@ pub fn remove_local_user(tx: &Transaction<'_>, user_id: &str) -> Result<(usize, 
 }
 
 /// Purges the local data of users removed at or before `cutoff` (§7.3): the
-/// `users` row (cascading devices, sessions, KeyPackages, handles, recovery
+/// `users` row (cascading devices, sessions, KeyPackages, recovery
 /// backups and push registrations), their events, pending Welcomes and the
 /// remote KeyPackage claims they made. The hosting record stays as a
 /// tombstone; group rosters are kept. Returns the purged user IDs.

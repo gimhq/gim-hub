@@ -52,7 +52,6 @@ export function UsersPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>{t('users.user_id')}</TableHead>
-                      <TableHead>{t('users.handle')}</TableHead>
                       <TableHead>{t('users.status')}</TableHead>
                       <TableHead>{t('users.devices')}</TableHead>
                       <TableHead>{t('users.created_at')}</TableHead>
@@ -62,7 +61,7 @@ export function UsersPage() {
                   <TableBody>
                     {items.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-muted-foreground">{t('users.empty')}</TableCell>
+                        <TableCell colSpan={5} className="text-muted-foreground">{t('users.empty')}</TableCell>
                       </TableRow>
                     )}
                     {items.map(user => (
@@ -72,7 +71,6 @@ export function UsersPage() {
                             {user.user_id}
                           </Link>
                         </TableCell>
-                        <TableCell>{user.handle ?? '—'}</TableCell>
                         <TableCell>
                           {user.suspended
                             ? <Badge variant="destructive">{t('users.suspended')}</Badge>

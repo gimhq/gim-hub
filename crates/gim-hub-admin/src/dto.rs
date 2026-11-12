@@ -101,7 +101,6 @@ pub struct UserList {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UserItem {
     pub user_id: String,
-    pub handle: Option<String>,
     pub suspended: bool,
     pub created_at: i64,
     /// Active devices.
@@ -113,7 +112,6 @@ pub struct UserItem {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UserDetail {
     pub user_id: String,
-    pub handle: Option<String>,
     pub suspended: bool,
     pub suspended_at: Option<i64>,
     pub created_at: i64,
@@ -299,8 +297,6 @@ pub struct UserPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UserPolicyEntry {
     pub user_id: String,
-    /// The user's handle on this hub, if any.
-    pub handle: Option<String>,
     pub added_at: i64,
     /// `token`, `header:<identity>` or `cli`.
     pub added_by: String,
@@ -315,14 +311,10 @@ pub struct UserPolicyUpdate {
     pub text: String,
 }
 
-/// POST /admin/api/users/policy/entries body: exactly one of `user_id` and
-/// `handle`.
+/// POST /admin/api/users/policy/entries body.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct UserPolicyAdd {
-    pub user_id: Option<String>,
-    /// A handle on this hub (a leading `@` is ignored), resolved to its
-    /// user ID.
-    pub handle: Option<String>,
+    pub user_id: String,
     pub note: Option<String>,
 }
 

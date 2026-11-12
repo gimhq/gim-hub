@@ -14,7 +14,6 @@ import { Label } from '@/shared/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/components/ui/table'
 import { formatDateTime } from '@/shared/lib/format'
 import {
-  useReleaseHandleMutation,
   useRevokeSessionsMutation,
   useSuspendMutation,
   useUnsuspendMutation,
@@ -46,7 +45,6 @@ function UserDetailView({ user }: { user: UserDetail }) {
   const lng = i18n.language
   const suspend = useSuspendMutation(user.user_id)
   const unsuspend = useUnsuspendMutation(user.user_id)
-  const release = useReleaseHandleMutation()
   const revoke = useRevokeSessionsMutation(user.user_id)
   const [reason, setReason] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
@@ -60,7 +58,6 @@ function UserDetailView({ user }: { user: UserDetail }) {
           <StatList
             items={[
               [t('users.user_id'), user.user_id],
-              [t('users.handle'), user.handle ?? '—'],
               [t('users.status'), user.suspended
                 ? <Badge key="status" variant="destructive">{t('users.suspended_since', { at: formatDateTime(user.suspended_at, lng) })}</Badge>
                 : <Badge key="status" variant="secondary">{t('users.active')}</Badge>],
@@ -97,16 +94,6 @@ function UserDetailView({ user }: { user: UserDetail }) {
                     </div>
                   </ConfirmAction>
                 )}
-            {user.handle && (
-              <ConfirmAction
-                variant="destructive"
-                trigger={t('users.release_handle')}
-                title={t('users.release_title')}
-                description={t('users.release_description', { handle: user.handle })}
-                confirmLabel={t('users.release_handle')}
-                onConfirm={() => release.mutateAsync(user.handle!)}
-              />
-            )}
           </div>
         </CardContent>
       </Card>

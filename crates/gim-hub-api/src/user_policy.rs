@@ -146,11 +146,6 @@ pub fn parse_list(text: &str) -> Result<Vec<String>, String> {
     Ok(user_ids)
 }
 
-/// A handle as typed by an admin (`@alice`, ` Alice `) as stored (`alice`).
-pub fn handle_name(raw: &str) -> String {
-    raw.trim().trim_start_matches('@').to_ascii_lowercase()
-}
-
 /// The number of users of this hub not admitted under `mode`.
 pub async fn count_not_admitted(db: &Db, mode: Mode) -> Result<i64, DbError> {
     let which = match mode {
@@ -234,6 +229,5 @@ mod tests {
         );
         assert!(parse_user_id(ALICE).is_ok());
         assert!(parse_user_id("@alice").is_err());
-        assert_eq!(handle_name(" @Alice_1 "), "alice_1");
     }
 }

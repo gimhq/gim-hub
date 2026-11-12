@@ -41,7 +41,6 @@ pub fn counts(conn: &Connection) -> Result<Counts, DbError> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserSummary {
     pub user_id: String,
-    pub handle: Option<String>,
     pub suspended_at: Option<i64>,
     pub created_at: i64,
     /// Active devices.
@@ -50,22 +49,21 @@ pub struct UserSummary {
     pub last_seen: Option<i64>,
 }
 
-const SUMMARY_COLUMNS: &str = "u.user_id, h.handle, u.suspended_at, u.created_at, \
+const SUMMARY_COLUMNS: &str = "u.user_id, u.suspended_at, u.created_at, \
      (SELECT count(*) FROM devices d WHERE d.user_id = u.user_id AND d.active = 1), \
      (SELECT max(s.created_at) FROM sessions s WHERE s.user_id = u.user_id)";
 
 fn summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<UserSummary> {
     Ok(UserSummary {
         user_id: row.get(0)?,
-        handle: row.get(1)?,
-        suspended_at: row.get(2)?,
-        created_at: row.get(3)?,
-        device_count: row.get(4)?,
-        last_seen: row.get(5)?,
+        suspended_at: row.get(1)?,
+        created_at: row.get(2)?,
+        device_count: row.get(3)?,
+        last_seen: row.get(4)?,
     })
 }
 
-/// Users whose user ID or handle contains `query` (case-insensitive),
+/// Users whose user ID contains `query` (case-insensitive),
 /// ordered by user ID, after the user ID `after`, at most `limit`.
 pub fn list_users(
     conn: &Connection,
@@ -74,9 +72,8 @@ pub fn list_users(
     limit: u32,
 ) -> Result<Vec<UserSummary>, DbError> {
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT {SUMMARY_COLUMNS} FROM users u LEFT JOIN handles h ON h.user_id = u.user_id \
-         WHERE (?1 IS NULL OR instr(lower(u.user_id), lower(?1)) > 0 \
-                OR instr(lower(coalesce(h.handle, '')), lower(?1)) > 0) \
+        "SELECT {SUMMARY_COLUMNS} FROM users u \
+         WHERE (?1 IS NULL OR instr(lower(u.user_id), lower(?1)) > 0) \
            AND (?2 IS NULL OR u.user_id > ?2) \
          ORDER BY u.user_id LIMIT ?3"
     ))?;
@@ -90,10 +87,7 @@ pub fn list_users(
 pub fn user(conn: &Connection, user_id: &str) -> Result<Option<UserSummary>, DbError> {
     Ok(conn
         .query_row(
-            &format!(
-                "SELECT {SUMMARY_COLUMNS} FROM users u \
-                 LEFT JOIN handles h ON h.user_id = u.user_id WHERE u.user_id = ?1"
-            ),
+            &format!("SELECT {SUMMARY_COLUMNS} FROM users u WHERE u.user_id = ?1"),
             [user_id],
             summary,
         )
@@ -338,7 +332,6 @@ mod tests {
     use super::*;
     use crate::{
         auth::{self, Challenge, Session},
-        handles,
         users::{self, Device, StoredDeviceList},
         Db,
     };
@@ -390,7 +383,6 @@ mod tests {
                 },
                 40,
             )?;
-            handles::claim(tx, "Bob", "u-beta", 0)?;
             Ok::<_, DbError>(())
         })
         .await
@@ -430,7 +422,6 @@ mod tests {
         assert_eq!(ids(None, None, 2).await, ["u-alpha", "u-beta"]);
         assert_eq!(ids(None, Some("u-beta"), 2).await, ["u-gamma"]);
         assert_eq!(ids(Some("GAM"), None, 10).await, ["u-gamma"]);
-        assert_eq!(ids(Some("bob"), None, 10).await, ["u-beta"]);
         assert!(ids(Some("zzz"), None, 10).await.is_empty());
 
         let alpha = db
@@ -442,7 +433,6 @@ mod tests {
         assert_eq!(alpha.last_seen, Some(100));
         assert_eq!(alpha.created_at, 10);
         let beta = db.read(|conn| user(conn, "u-beta")).await.unwrap().unwrap();
-        assert_eq!(beta.handle.as_deref(), Some("Bob"));
         assert_eq!(beta.last_seen, None);
         assert!(db
             .read(|conn| user(conn, "nobody"))

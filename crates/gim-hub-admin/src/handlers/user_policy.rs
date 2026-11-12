@@ -15,7 +15,6 @@ use gim_hub_api::{
     user_policy::{self as policy, MODE_KEY},
 };
 use gim_hub_db::{
-    handles,
     user_policy::{self as db, ListEntry},
     DbError,
 };
@@ -41,12 +40,11 @@ async fn current(state: &AdminState) -> Result<UserPolicy, AdminError> {
         not_admitted_users,
         entries: entries
             .into_iter()
-            .map(|listed| UserPolicyEntry {
-                user_id: listed.entry.user_id,
-                handle: listed.handle,
-                added_at: seconds(listed.entry.added_at),
-                added_by: listed.entry.added_by,
-                note: listed.entry.note,
+            .map(|entry| UserPolicyEntry {
+                user_id: entry.user_id,
+                added_at: seconds(entry.added_at),
+                added_by: entry.added_by,
+                note: entry.note,
             })
             .collect(),
     })
@@ -79,7 +77,7 @@ async fn finish(
     summary = "The user policy",
     description = "The mode in force (`GIM_HUB_USER_POLICY`: `open`, `allow` or `deny`) with its \
 source, the number of users of this hub it does not admit, and the user list (table \
-`user_policy_list`) with each user's handle. The mode is changed through the settings API \
+`user_policy_list`). The mode is changed through the settings API \
 (PUT /admin/api/settings/GIM_HUB_USER_POLICY), unless the environment sets it.",
     security(("adminSession" = [])),
     responses(
@@ -137,7 +135,7 @@ pub async fn put_user_policy(
                 .write(move |tx| {
                     let existing: BTreeMap<String, ListEntry> = db::load(tx)?
                         .into_iter()
-                        .map(|listed| (listed.entry.user_id.clone(), listed.entry))
+                        .map(|entry| (entry.user_id.clone(), entry))
                         .collect();
                     let entries: Vec<ListEntry> = user_ids
                         .into_iter()
@@ -171,17 +169,15 @@ pub async fn put_user_policy(
     path = "/admin/api/users/policy/entries",
     tag = "users",
     summary = "Add a user to the list",
-    description = "Adds one user by `user_id` (validated with the user ID parser) or by `handle` \
-(a handle on this hub, resolved to its user ID; a leading `@` is ignored), with an optional \
-`note`. Applied at once, as for PUT. Audited as `users_policy_add` (target the user ID).",
+    description = "Adds one user by `user_id` (validated with the user ID parser), with an \
+optional `note`. Applied at once, as for PUT. Audited as `users_policy_add` (target the user ID).",
     request_body = UserPolicyAdd,
     security(("adminSession" = [])),
     responses(
         (status = 200, description = "Added and applied", body = UserPolicy),
-        (status = 400, description = "Malformed body, or not exactly one of `user_id` and `handle` (`validation_failed`)", body = Error),
+        (status = 400, description = "Malformed body (`validation_failed`)", body = Error),
         (status = 401, description = "No session (`unauthorized`)", body = Error),
         (status = 403, description = "Missing or wrong X-CSRF-Token (`csrf_failed`)", body = Error),
-        (status = 404, description = "Unknown handle (`not_found`)", body = Error),
         (status = 409, description = "The user is already listed (`conflict`)", body = Error),
         (status = 422, description = "Invalid user ID (`validation_failed`)", body = Error),
     ),
@@ -191,7 +187,7 @@ pub async fn add_user_policy_entry(
     Extension(caller): Extension<Caller>,
     body: Result<Json<UserPolicyAdd>, JsonRejection>,
 ) -> Result<Json<UserPolicy>, AdminError> {
-    let user_id = resolve(&state, body).await;
+    let user_id = resolve(body);
     let target = user_id.as_ref().ok().map(|(user_id, _)| user_id.clone());
     let result = match user_id {
         Ok((user_id, note)) => {
@@ -214,8 +210,7 @@ pub async fn add_user_policy_entry(
 }
 
 /// The user ID and note of an add request.
-async fn resolve(
-    state: &AdminState,
+fn resolve(
     body: Result<Json<UserPolicyAdd>, JsonRejection>,
 ) -> Result<(String, Option<String>), AdminError> {
     let Json(add) = body.map_err(|err| AdminError::BadRequest(err.body_text()))?;
@@ -223,25 +218,7 @@ async fn resolve(
         .note
         .map(|note| note.trim().to_owned())
         .filter(|note| !note.is_empty());
-    let user_id = match (add.user_id, add.handle) {
-        (Some(user_id), None) => {
-            policy::parse_user_id(&user_id).map_err(AdminError::Unprocessable)?
-        }
-        (None, Some(handle)) => {
-            let name = policy::handle_name(&handle);
-            state
-                .app
-                .db
-                .read(move |conn| handles::owner(conn, &name))
-                .await?
-                .ok_or(AdminError::NotFound)?
-        }
-        _ => {
-            return Err(AdminError::BadRequest(
-                "exactly one of user_id and handle is required".into(),
-            ))
-        }
-    };
+    let user_id = policy::parse_user_id(&add.user_id).map_err(AdminError::Unprocessable)?;
     Ok((user_id, note))
 }
 

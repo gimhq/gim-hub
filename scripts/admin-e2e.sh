@@ -18,7 +18,7 @@
 #   9. GIM_HUB_PUBLIC_READ_PER_IP_PER_MIN set in the hub's env is read-only in
 #      the UI and PUT answers 409
 #  10. user policy: GIM_HUB_USER_POLICY=deny on the Settings page, the seeded
-#      user added by handle on the User policy page (its other device's
+#      user added by user ID on the User policy page (its other device's
 #      session deleted, sign-in 403 user_not_admitted), removed, mode open
 #
 # The user, device and session are seeded with sqlite3 into a database built
@@ -112,7 +112,6 @@ DEVICE_ID="$(head -c 16 /dev/urandom | id d)"
 # A second device whose session outlives step 3 and is deleted by step 10.
 OTHER_DEVICE_ID="$(head -c 16 /dev/urandom | id d)"
 OTHER_SESSION_HASH="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-HANDLE="e2e$(od -An -tx1 -N3 /dev/urandom | tr -d ' \n')"
 SESSION_HASH="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 SESSION_REF="$(printf '%s' "$SESSION_HASH" | cut -c1-16)"
 now_ms="$(($(date +%s) * 1000))"
@@ -123,7 +122,6 @@ INSERT INTO users (user_id, root_pubkey, device_list, device_list_seq, created_a
 INSERT INTO devices (user_id, device_id, sig_pubkey, active, updated_at, created_at)
     VALUES ('$USER_ID', '$DEVICE_ID', zeroblob(32), 1, $now_ms, $now_ms),
            ('$USER_ID', '$OTHER_DEVICE_ID', zeroblob(32), 1, $now_ms, $now_ms);
-INSERT INTO handles (handle, user_id, created_at) VALUES ('$HANDLE', '$USER_ID', $now_ms);
 INSERT INTO sessions (token_hash, user_id, device_id, created_at, expires_at)
     VALUES (x'$SESSION_HASH', '$USER_ID', '$DEVICE_ID', $now_ms, $((now_ms + 86400000))),
            (x'$OTHER_SESSION_HASH', '$USER_ID', '$OTHER_DEVICE_ID', $now_ms, $((now_ms + 86400000)));
@@ -156,7 +154,7 @@ cat >"$STATE" <<'JSON'
 }
 JSON
 cp "$STATE" "$WORK/state.orig.json"
-pass "seed: user $USER_ID (@$HANDLE), devices $DEVICE_ID (session $SESSION_REF) and $OTHER_DEVICE_ID (one session); allowlist with $HUB_ONE; state.json current 0.3.0, available 0.3.1"
+pass "seed: user $USER_ID, devices $DEVICE_ID (session $SESSION_REF) and $OTHER_DEVICE_ID (one session); allowlist with $HUB_ONE; state.json current 0.3.0, available 0.3.1"
 
 # --- hub ---------------------------------------------------------------------
 docker network create "${LABELS[@]}" "$NET" >/dev/null
@@ -190,7 +188,6 @@ docker run --rm "${LABELS[@]}" --name "ai-agent-$RUN-playwright" --network "$NET
     -e E2E_CLIENT_URL="http://$HUB:8080" \
     -e E2E_TOKEN="$TOKEN" \
     -e E2E_USER_ID="$USER_ID" \
-    -e E2E_HANDLE="$HANDLE" \
     -e E2E_DEVICE_ID="$DEVICE_ID" \
     -e E2E_OTHER_DEVICE_ID="$OTHER_DEVICE_ID" \
     -e E2E_SESSION_REF="$SESSION_REF" \

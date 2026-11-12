@@ -236,22 +236,8 @@ async fn lookups_are_public_and_report_missing_users() {
         assert_eq!(code(&body), "not_found");
     }
 
-    let (status, _) = send(&hub, Method::PUT, "/v2/handles/alice", Some(&token), None).await;
-    assert_eq!(status, StatusCode::OK);
-    let (_, body) = send(
-        &hub,
-        Method::GET,
-        &format!("/v2/users/{user}"),
-        Some(&token),
-        None,
-    )
-    .await;
-    assert_eq!(body["handle"], "alice");
     let (_, body) = send(&hub, Method::GET, "/v2/me", Some(&token), None).await;
-    assert_eq!(
-        body,
-        json!({ "user_id": user, "device_id": device_id(2), "handle": "alice" })
-    );
+    assert_eq!(body, json!({ "user_id": user, "device_id": device_id(2) }));
 }
 
 #[tokio::test]

@@ -148,7 +148,7 @@ pub fn active_device_ids(conn: &Connection, user_id: &str) -> Result<Vec<String>
 }
 
 /// Deletes the account of a local user (account deletion): the user and
-/// its devices, handle, recovery backup, sessions, sign-in challenges,
+/// its devices, recovery backup, sessions, sign-in challenges,
 /// KeyPackages, push registrations, hosting record, queued events and
 /// pending Welcomes. Group rosters and the group logs are left alone: the
 /// user's devices leave their groups first, and other members' clients
@@ -161,7 +161,6 @@ pub fn delete_user(tx: &Transaction<'_>, user_id: &str) -> Result<bool, DbError>
     // tables without a foreign key to it are cleared here.
     for table in [
         "devices",
-        "handles",
         "recovery_backups",
         "sessions",
         "auth_challenges",
@@ -253,7 +252,6 @@ mod tests {
             tx.execute_batch(
                 "INSERT INTO sessions (token_hash, user_id, device_id, created_at, expires_at) \
                  VALUES (x'01', 'u1', 'd1', 0, 100); \
-                 INSERT INTO handles (handle, user_id, created_at) VALUES ('alice', 'u1', 0); \
                  INSERT INTO recovery_backups (user_id, backup, updated_at) VALUES ('u1', x'01', 0); \
                  INSERT INTO events (user_id, device_id, type, payload, created_at) \
                  VALUES ('u1', 'd1', 'x', '', 0), ('u2', 'd1', 'x', '', 0);",
@@ -275,20 +273,13 @@ mod tests {
                     )?)
                 };
                 Ok::<_, DbError>(
-                    [
-                        "users",
-                        "devices",
-                        "sessions",
-                        "handles",
-                        "recovery_backups",
-                        "events",
-                    ]
-                    .map(|t| count(t).unwrap()),
+                    ["users", "devices", "sessions", "recovery_backups", "events"]
+                        .map(|t| count(t).unwrap()),
                 )
             })
             .await
             .unwrap();
-        assert_eq!(counts, [0; 6]);
+        assert_eq!(counts, [0; 5]);
         let others: i64 = db
             .read(|conn| {
                 Ok::<_, DbError>(

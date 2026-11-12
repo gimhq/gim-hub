@@ -9,7 +9,7 @@ beforeEach(() => {
 })
 
 describe('users', () => {
-  it('searches users by handle or id', async () => {
+  it('searches users by id', async () => {
     const user = userEvent.setup()
     const { router } = renderApp('/users')
     expect(await screen.findByText('u-alice')).toBeInTheDocument()
@@ -57,7 +57,7 @@ describe('users', () => {
   it('cancelling the confirmation sends nothing', async () => {
     const user = userEvent.setup()
     renderApp('/users/u-alice')
-    await user.click(await screen.findByRole('button', { name: 'Release handle' }))
+    await user.click(await screen.findByRole('button', { name: 'Suspend' }))
     await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Cancel' }))
     expect(state.mutations).toHaveLength(0)
   })
@@ -84,14 +84,6 @@ describe('users', () => {
     const dialog = await screen.findByRole('alertdialog')
     await user.click(within(dialog).getByRole('button', { name: 'Unsuspend' }))
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('user is not suspended')
-  })
-
-  it('releases the handle', async () => {
-    const user = userEvent.setup()
-    renderApp('/users/u-alice')
-    await user.click(await screen.findByRole('button', { name: 'Release handle' }))
-    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Release handle' }))
-    await vi.waitFor(() => expect(state.mutations.map(m => m.key)).toEqual(['POST /handles/alice/release']))
   })
 
   it('renders a not-found envelope for an unknown user', async () => {

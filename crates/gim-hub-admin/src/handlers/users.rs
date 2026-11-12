@@ -1,4 +1,4 @@
-//! Users, devices, sessions and handles. Metadata only (no group
+//! Users, devices and sessions. Metadata only (no group
 //! membership, peers or message metadata).
 
 use axum::{
@@ -11,7 +11,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use gim_hub_api::dto::Error;
 use gim_hub_db::{
     admin::{self, Suspension},
-    handles, hosting,
+    hosting,
 };
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -29,7 +29,7 @@ const MAX_LIMIT: u32 = 100;
 #[derive(Debug, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct UserQuery {
-    /// Case-insensitive substring of the user ID or handle.
+    /// Case-insensitive substring of the user ID.
     pub q: Option<String>,
     /// 1 to 100, default 50.
     pub limit: Option<u32>,
@@ -54,7 +54,7 @@ pub(crate) fn page_limit(limit: Option<u32>, default: u32, max: u32) -> Result<u
     path = "/admin/api/users",
     tag = "users",
     summary = "Search users",
-    description = "Users by user ID, optionally filtered by a substring of the user ID or handle.",
+    description = "Users by user ID, optionally filtered by a substring of the user ID.",
     params(UserQuery),
     security(("adminSession" = [])),
     responses(
@@ -97,7 +97,6 @@ pub async fn list_users(
             .into_iter()
             .map(|user| UserItem {
                 user_id: user.user_id,
-                handle: user.handle,
                 suspended: user.suspended_at.is_some(),
                 created_at: seconds(user.created_at),
                 device_count: user.device_count,
@@ -143,7 +142,6 @@ pub async fn get_user(
     let user = user.ok_or(AdminError::NotFound)?;
     Ok(Json(UserDetail {
         user_id: user.user_id,
-        handle: user.handle,
         suspended: user.suspended_at.is_some(),
         suspended_at: user.suspended_at.map(seconds),
         created_at: seconds(user.created_at),
@@ -318,49 +316,6 @@ pub async fn revoke_device_sessions(
             &result,
             detail,
         )
-        .await;
-    result
-}
-
-#[utoipa::path(
-    post,
-    path = "/admin/api/handles/{handle}/release",
-    tag = "users",
-    summary = "Release a handle",
-    description = "The handle becomes free; its user keeps existing without a handle. Audited as \
-`handle_release`.",
-    params(("handle" = String, Path, description = "Handle")),
-    security(("adminSession" = [])),
-    responses(
-        (status = 204, description = "Released"),
-        (status = 401, description = "No session (`unauthorized`)", body = Error),
-        (status = 403, description = "Missing or wrong X-CSRF-Token (`csrf_failed`)", body = Error),
-        (status = 404, description = "Unknown handle (`not_found`)", body = Error),
-    ),
-)]
-pub async fn release_handle(
-    State(state): State<AdminState>,
-    Extension(caller): Extension<Caller>,
-    Path(handle): Path<String>,
-) -> Result<StatusCode, AdminError> {
-    let name = handle.clone();
-    let owner = state
-        .app
-        .db
-        .write(move |tx| {
-            let owner = handles::owner(tx, &name)?;
-            if owner.is_some() {
-                handles::release(tx, &name)?;
-            }
-            Ok::<_, gim_hub_db::DbError>(owner)
-        })
-        .await?;
-    let detail = owner.as_ref().map(|owner| format!("owner {owner}"));
-    let result = owner
-        .map(|_| StatusCode::NO_CONTENT)
-        .ok_or(AdminError::NotFound);
-    caller
-        .audit(&state, "handle_release", Some(handle), &result, detail)
         .await;
     result
 }

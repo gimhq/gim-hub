@@ -60,9 +60,6 @@ opaque strings whose format is owned by gim-core. Every non-2xx JSON response ha
         h::get_user,
         h::delete_user,
         h::get_me,
-        h::put_handle,
-        h::delete_handle,
-        h::get_handle,
         h::put_recovery_backup,
         h::get_recovery_backup,
         h::create_link_bundle,
@@ -93,7 +90,6 @@ opaque strings whose format is owned by gim-core. Every non-2xx JSON response ha
         (name = "health", description = "Liveness"),
         (name = "auth", description = "Device sign-in by signature challenge"),
         (name = "identity", description = "Users and their self-certifying DeviceLists"),
-        (name = "handles", description = "Optional per-hub handle directory"),
         (name = "recovery", description = "Encrypted recovery backups"),
         (name = "linking", description = "Link-bundle relay for adding a device"),
         (name = "keypackages", description = "MLS KeyPackages"),
@@ -152,12 +148,6 @@ pub fn router(state: AppState) -> Router {
             get(h::get_user).delete(h::delete_user),
         )
         .route("/v2/me", get(h::get_me))
-        .route(
-            "/v2/handles/{handle}",
-            put(h::put_handle)
-                .delete(h::delete_handle)
-                .get(h::get_handle),
-        )
         .route(
             "/v2/users/{user_id}/recovery-backup",
             put(h::put_recovery_backup).get(h::get_recovery_backup),

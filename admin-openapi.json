@@ -295,67 +295,6 @@
         ]
       }
     },
-    "/admin/api/handles/{handle}/release": {
-      "post": {
-        "tags": [
-          "users"
-        ],
-        "summary": "Release a handle",
-        "description": "The handle becomes free; its user keeps existing without a handle. Audited as `handle_release`.",
-        "operationId": "release_handle",
-        "parameters": [
-          {
-            "name": "handle",
-            "in": "path",
-            "description": "Handle",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Released"
-          },
-          "401": {
-            "description": "No session (`unauthorized`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Unknown handle (`not_found`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "adminSession": []
-          }
-        ]
-      }
-    },
     "/admin/api/lode": {
       "get": {
         "tags": [
@@ -1122,13 +1061,13 @@
           "users"
         ],
         "summary": "Search users",
-        "description": "Users by user ID, optionally filtered by a substring of the user ID or handle.",
+        "description": "Users by user ID, optionally filtered by a substring of the user ID.",
         "operationId": "list_users",
         "parameters": [
           {
             "name": "q",
             "in": "query",
-            "description": "Case-insensitive substring of the user ID or handle.",
+            "description": "Case-insensitive substring of the user ID.",
             "required": false,
             "schema": {
               "type": "string"
@@ -1200,7 +1139,7 @@
           "users"
         ],
         "summary": "The user policy",
-        "description": "The mode in force (`GIM_HUB_USER_POLICY`: `open`, `allow` or `deny`) with its source, the number of users of this hub it does not admit, and the user list (table `user_policy_list`) with each user's handle. The mode is changed through the settings API (PUT /admin/api/settings/GIM_HUB_USER_POLICY), unless the environment sets it.",
+        "description": "The mode in force (`GIM_HUB_USER_POLICY`: `open`, `allow` or `deny`) with its source, the number of users of this hub it does not admit, and the user list (table `user_policy_list`). The mode is changed through the settings API (PUT /admin/api/settings/GIM_HUB_USER_POLICY), unless the environment sets it.",
         "operationId": "get_user_policy",
         "responses": {
           "200": {
@@ -1312,7 +1251,7 @@
           "users"
         ],
         "summary": "Add a user to the list",
-        "description": "Adds one user by `user_id` (validated with the user ID parser) or by `handle` (a handle on this hub, resolved to its user ID; a leading `@` is ignored), with an optional `note`. Applied at once, as for PUT. Audited as `users_policy_add` (target the user ID).",
+        "description": "Adds one user by `user_id` (validated with the user ID parser), with an optional `note`. Applied at once, as for PUT. Audited as `users_policy_add` (target the user ID).",
         "operationId": "add_user_policy_entry",
         "requestBody": {
           "content": {
@@ -1336,7 +1275,7 @@
             }
           },
           "400": {
-            "description": "Malformed body, or not exactly one of `user_id` and `handle` (`validation_failed`)",
+            "description": "Malformed body (`validation_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1357,16 +1296,6 @@
           },
           "403": {
             "description": "Missing or wrong X-CSRF-Token (`csrf_failed`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Unknown handle (`not_found`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2640,12 +2569,6 @@
               "$ref": "#/components/schemas/DeviceItem"
             }
           },
-          "handle": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "hosting_hubs": {
             "type": "array",
             "items": {
@@ -2685,12 +2608,6 @@
             "type": "integer",
             "format": "int64",
             "description": "Active devices."
-          },
-          "handle": {
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "last_seen": {
             "type": [
@@ -2763,15 +2680,11 @@
       },
       "UserPolicyAdd": {
         "type": "object",
-        "description": "POST /admin/api/users/policy/entries body: exactly one of `user_id` and\n`handle`.",
+        "description": "POST /admin/api/users/policy/entries body.",
+        "required": [
+          "user_id"
+        ],
         "properties": {
-          "handle": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "A handle on this hub (a leading `@` is ignored), resolved to its\nuser ID."
-          },
           "note": {
             "type": [
               "string",
@@ -2779,10 +2692,7 @@
             ]
           },
           "user_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         }
       },
@@ -2802,13 +2712,6 @@
           "added_by": {
             "type": "string",
             "description": "`token`, `header:<identity>` or `cli`."
-          },
-          "handle": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The user's handle on this hub, if any."
           },
           "note": {
             "type": [
@@ -2855,7 +2758,7 @@
     },
     {
       "name": "users",
-      "description": "Users, devices, sessions, handles and the user policy"
+      "description": "Users, devices, sessions and the user policy"
     },
     {
       "name": "federation",

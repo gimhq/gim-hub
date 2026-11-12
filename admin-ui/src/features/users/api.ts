@@ -3,7 +3,6 @@ import { request } from '@/shared/lib/http'
 
 export interface UserSummary {
   user_id: string
-  handle: string | null
   suspended: boolean
   created_at: number | string
   device_count: number
@@ -26,7 +25,6 @@ export interface Device {
 
 export interface UserDetail {
   user_id: string
-  handle: string | null
   suspended: boolean
   suspended_at: number | string | null
   created_at: number | string
@@ -87,9 +85,4 @@ export function useRevokeSessionsMutation(userId: string) {
       `/users/${encodeURIComponent(userId)}/devices/${encodeURIComponent(deviceId)}/sessions`,
       { method: 'DELETE' },
     ))
-}
-
-export function useReleaseHandleMutation() {
-  return useUserMutation((handle: string) =>
-    request<void>(`/handles/${encodeURIComponent(handle)}/release`, { method: 'POST' }))
 }

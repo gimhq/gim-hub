@@ -287,16 +287,6 @@ const NOT_ADMITTED: &str = "user is not admitted on this hub";
 /// A user ID that is not stored on the test hub.
 const OTHER: &str = "uciqgytfj5l477ei2pprxmxv2dgxqygyfkj4b6ho7onbwmqrwamhwaaa";
 
-/// Gives the auth.json user the handle `alice`.
-async fn claim_handle(hub: &TestHub) {
-    let user_id = text(&vectors("auth")["user_id"]);
-    hub.state
-        .db
-        .write(move |tx| gim_hub_db::handles::claim(tx, "alice", &user_id, 1).map(drop))
-        .await
-        .unwrap();
-}
-
 async fn put_mode(admin: &Admin, login: &support::Login, mode: &str) -> support::Response {
     admin
         .call(
@@ -358,7 +348,6 @@ async fn signed_in(hub: &TestHub) -> String {
 async fn user_policy_list_is_edited_validated_and_audited() {
     let admin = Admin::new();
     store_vector_user(&admin.hub).await;
-    claim_handle(&admin.hub).await;
     let alice = text(&vectors("auth")["user_id"]);
     let login = admin.login().await;
     let get = admin
@@ -406,17 +395,12 @@ async fn user_policy_list_is_edited_validated_and_audited() {
             .cloned()
     };
     let entry = listed(&replaced.body, &alice).unwrap();
-    assert_eq!(entry["handle"], "alice");
     assert_eq!(entry["added_by"], "token");
     assert_eq!(entry["note"], Value::Null);
     assert!(entry["added_at"].is_i64());
-    assert_eq!(
-        listed(&replaced.body, OTHER).unwrap()["handle"],
-        Value::Null
-    );
     assert_eq!(replaced.body["not_admitted_users"], 0, "open mode");
 
-    // Remove, then add back by handle with a note.
+    // Remove, then add back with a note.
     let remove = admin
         .call(
             Method::DELETE,
@@ -449,7 +433,7 @@ async fn user_policy_list_is_edited_validated_and_audited() {
                 .await
         }
     };
-    let added = add(json!({ "handle": "@Alice", "note": "spam" })).await;
+    let added = add(json!({ "user_id": alice, "note": "spam" })).await;
     assert_eq!(added.status, StatusCode::OK, "{}", added.body);
     assert_eq!(listed(&added.body, &alice).unwrap()["note"], "spam");
     assert_eq!(
@@ -457,14 +441,10 @@ async fn user_policy_list_is_edited_validated_and_audited() {
         StatusCode::CONFLICT
     );
     assert_eq!(
-        add(json!({ "handle": "nobody" })).await.status,
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
         add(json!({ "user_id": "bad user" })).await.status,
         StatusCode::UNPROCESSABLE_ENTITY
     );
-    for body in [json!({}), json!({ "user_id": alice, "handle": "alice" })] {
+    for body in [json!({}), json!({ "note": "spam" })] {
         assert_eq!(add(body).await.status, StatusCode::BAD_REQUEST);
     }
 
@@ -495,7 +475,6 @@ async fn user_policy_list_is_edited_validated_and_audited() {
             row("users_policy_add", Value::Null, "error"),
             row("users_policy_add", Value::Null, "error"),
             row("users_policy_add", Value::Null, "error"),
-            row("users_policy_add", Value::Null, "error"),
             row("users_policy_add", json!(alice), "error"),
             row("users_policy_add", json!(alice), "ok"),
             row("users_policy_remove", json!(alice), "error"),
@@ -511,11 +490,10 @@ async fn user_policy_refuses_sign_in_and_deletes_sessions() {
     let admin = Admin::new();
     let hub = &admin.hub;
     store_vector_user(hub).await;
-    claim_handle(hub).await;
     let alice = text(&vectors("auth")["user_id"]);
     let login = admin.login().await;
 
-    // Deny mode through the settings API, then deny alice by handle.
+    // Deny mode through the settings API, then deny alice.
     let token = signed_in(hub).await;
     let pending = challenge(hub).await;
     let mode = put_mode(&admin, &login, "deny").await;
@@ -530,7 +508,7 @@ async fn user_policy_refuses_sign_in_and_deletes_sessions() {
             Method::POST,
             "/admin/api/users/policy/entries",
             &login,
-            Some(&json!({ "handle": "alice" })),
+            Some(&json!({ "user_id": alice })),
         )
         .await;
     assert_eq!(added.status, StatusCode::OK, "{}", added.body);
@@ -700,7 +678,7 @@ async fn cli_list_change_is_applied_by_the_poll() {
 }
 
 #[tokio::test]
-async fn users_devices_sessions_and_handles() {
+async fn users_devices_and_sessions() {
     let admin = Admin::new();
     let hub = &admin.hub;
     let token = hub.create_session("u-alice", "d1").await;
@@ -710,7 +688,6 @@ async fn users_devices_sessions_and_handles() {
     hub.state
         .db
         .write(move |tx| {
-            gim_hub_db::handles::claim(tx, "alice", "u-alice", now)?;
             groups::create(
                 tx,
                 &groups::Group {
@@ -738,7 +715,6 @@ async fn users_devices_sessions_and_handles() {
         json!({
             "items": [{
                 "user_id": "u-alice",
-                "handle": "alice",
                 "suspended": false,
                 "created_at": now_s,
                 "device_count": 2,
@@ -785,7 +761,6 @@ async fn users_devices_sessions_and_handles() {
         [
             "created_at",
             "devices",
-            "handle",
             "hosting_hubs",
             "suspended",
             "suspended_at",
@@ -827,29 +802,6 @@ async fn users_devices_sessions_and_handles() {
         .await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
 
-    let release = admin
-        .call(
-            Method::POST,
-            "/admin/api/handles/alice/release",
-            &login,
-            None,
-        )
-        .await;
-    assert_eq!(release.status, StatusCode::NO_CONTENT);
-    let again = admin
-        .call(
-            Method::POST,
-            "/admin/api/handles/alice/release",
-            &login,
-            None,
-        )
-        .await;
-    assert_eq!(again.status, StatusCode::NOT_FOUND);
-    let user = admin
-        .call(Method::GET, "/admin/api/users/u-alice", &login, None)
-        .await;
-    assert_eq!(user.body["handle"], Value::Null);
-
     let overview = admin
         .call(Method::GET, "/admin/api/overview", &login, None)
         .await;
@@ -867,14 +819,12 @@ async fn users_devices_sessions_and_handles() {
         .audit(&login)
         .await
         .iter()
-        .take(4)
+        .take(2)
         .map(audit_row)
         .collect();
     assert_eq!(
         rows,
         [
-            json!(["token", "handle_release", "alice", "127.0.0.1", "error"]),
-            json!(["token", "handle_release", "alice", "127.0.0.1", "ok"]),
             json!([
                 "token",
                 "device_sessions_revoke",

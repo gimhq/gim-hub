@@ -22,7 +22,6 @@ export interface MockState {
 
 interface MockPolicyEntry {
   user_id: string
-  handle: string | null
   added_at: number
   added_by: string
   note: string | null
@@ -144,13 +143,12 @@ function authed(path: string, body: () => unknown) {
 }
 
 export const users = [
-  { user_id: 'u-alice', handle: 'alice', suspended: false, created_at: 1_760_000_000, device_count: 2, last_seen: 1_760_600_000 },
-  { user_id: 'u-bob', handle: null, suspended: true, created_at: 1_760_000_100, device_count: 1, last_seen: null },
+  { user_id: 'u-alice', suspended: false, created_at: 1_760_000_000, device_count: 2, last_seen: 1_760_600_000 },
+  { user_id: 'u-bob', suspended: true, created_at: 1_760_000_100, device_count: 1, last_seen: null },
 ]
 
 export const aliceDetail = {
   user_id: 'u-alice',
-  handle: 'alice',
   suspended: false,
   suspended_at: null,
   created_at: 1_760_000_000,
@@ -232,8 +230,7 @@ function userPolicy() {
 }
 
 function policyEntry(userId: string, note: string | null = null): MockPolicyEntry {
-  const handle = users.find(u => u.user_id === userId)?.handle ?? null
-  return { user_id: userId, handle, added_at: 1_760_700_000, added_by: 'token', note }
+  return { user_id: userId, added_at: 1_760_700_000, added_by: 'token', note }
 }
 
 const validUserId = (raw: string) => /^u-[a-z]+$/.test(raw)
@@ -269,7 +266,7 @@ export const handlers = [
     if (!state.loggedIn)
       return envelope(401, 'unauthorized', 'no session')
     const q = new URL(request.url).searchParams.get('q') ?? ''
-    const items = users.filter(u => u.user_id.includes(q) || (u.handle ?? '').includes(q))
+    const items = users.filter(u => u.user_id.includes(q))
     return HttpResponse.json({ items, next_cursor: null })
   }),
   authed('/users/policy', userPolicy),
@@ -289,16 +286,10 @@ export const handlers = [
     return HttpResponse.json(userPolicy())
   }),
   mutation('post', '/users/policy/entries', async (request) => {
-    const body = await request.json() as { user_id?: string, handle?: string, note?: string }
-    let userId = body.user_id
-    if (body.handle !== undefined) {
-      userId = users.find(u => u.handle === body.handle!.replace(/^@/, '').toLowerCase())?.user_id
-      if (!userId)
-        return envelope(404, 'not_found', 'not found')
-    }
-    else if (!userId || !validUserId(userId)) {
+    const body = await request.json() as { user_id?: string, note?: string }
+    const userId = body.user_id
+    if (!userId || !validUserId(userId))
       return envelope(422, 'validation_failed', `invalid user ID "${userId ?? ''}"`)
-    }
     if (state.policyEntries.some(e => e.user_id === userId))
       return envelope(409, 'conflict', 'the user is already listed')
     state.policyEntries = [...state.policyEntries, policyEntry(userId, body.note?.trim() || null)]
@@ -314,7 +305,6 @@ export const handlers = [
   authed('/users/u-alice', () => aliceDetail),
   mutation('delete', '/users/u-alice/devices/d-phone/sessions', () => HttpResponse.json({ revoked: 1 })),
   mutation('post', '/users/u-alice/suspend', () => new HttpResponse(null, { status: 204 })),
-  mutation('post', '/handles/alice/release', () => new HttpResponse(null, { status: 204 })),
   authed('/federation', () => ({
     enabled: true,
     peer_id: '12D3KooWAthens',

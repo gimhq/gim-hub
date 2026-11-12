@@ -42,8 +42,6 @@ pub enum ApiError {
     NotMember,
     #[error("not found")]
     NotFound,
-    #[error("handle is taken")]
-    HandleTaken,
     #[error("{0}")]
     Conflict(String),
     /// A KeyPackage of the upload was already claimed from another hub
@@ -101,8 +99,7 @@ impl ApiError {
             | Self::NotMember
             | Self::HostingRecordRequired => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
-            Self::HandleTaken
-            | Self::Conflict(_)
+            Self::Conflict(_)
             | Self::DuplicateKeyPackage
             | Self::StaleDeviceList
             | Self::StaleHostingRecord
@@ -133,7 +130,6 @@ impl ApiError {
             Self::NotAdmittedByPeer => "not_admitted_by_peer",
             Self::NotMember => "not_member",
             Self::NotFound => "not_found",
-            Self::HandleTaken => "handle_taken",
             Self::Conflict(_) => "conflict",
             Self::DuplicateKeyPackage => "duplicate_key_package",
             Self::StaleDeviceList => "stale_device_list",
