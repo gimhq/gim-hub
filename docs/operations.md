@@ -315,7 +315,7 @@ gim-hub config unset KEY              # delete the stored value (the default app
 gim-hub config allowlist list         # the effective allowlist and its source
 gim-hub config allowlist set FILE     # validate FILE (allowlist format) and store it in the table
 gim-hub config users list             # the user policy mode and its source, then the user list
-gim-hub config users add USER [NOTE]  # list a user: a user ID or @handle (a handle on this hub)
+gim-hub config users add USER [NOTE]  # list a user by user ID
 gim-hub config users remove USER_ID   # remove a user from the list
 gim-hub config users set FILE         # replace the list with FILE: one user ID per line, # comments
 ```

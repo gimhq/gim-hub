@@ -143,16 +143,15 @@ for failed logins.
 | `POST /admin/api/logout` | 204, cookie cleared | `logout` |
 | `GET /admin/api/session` | 200 `{actor, auth: "token"\|"header", csrf_token, expires_at}`; creates a trusted-header session | `login_ok` (trusted header) |
 | `GET /admin/api/overview` | version, revision, `hub_id`, `public_url`, `started_at`, `uptime_seconds`, storage (database file + WAL bytes, blob directory bytes), counts (users, active devices, groups, blobs), push dispatcher counters, `event_retention_days`, `user_policy` (the mode in force) | |
-| `GET /admin/api/users?q=&limit=&cursor=` | Users by user ID; `q` is a case-insensitive substring of the user ID or handle; `limit` 1-100 (default 50) | |
+| `GET /admin/api/users?q=&limit=&cursor=` | Users by user ID; `q` is a case-insensitive substring of the user ID; `limit` 1-100 (default 50) | |
 | `GET /admin/api/users/{user_id}` | The user, `hosting_hubs` (from the stored hosting record) and devices with their unexpired sessions | |
 | `POST /admin/api/users/{user_id}/suspend` `{"reason"?}` | 204; 409 if already suspended | `user_suspend` (user ID; detail: reason) |
 | `POST /admin/api/users/{user_id}/unsuspend` | 204; 409 if not suspended | `user_unsuspend` (user ID) |
 | `DELETE /admin/api/users/{user_id}/devices/{device_id}/sessions` | 200 `{revoked}`; 404 unknown device | `device_sessions_revoke` (`<user_id>/<device_id>`) |
-| `GET /admin/api/users/policy` | `{mode, mode_source, not_admitted_users, entries: [{user_id, handle, added_at, added_by, note}]}` | |
+| `GET /admin/api/users/policy` | `{mode, mode_source, not_admitted_users, entries: [{user_id, added_at, added_by, note}]}` | |
 | `PUT /admin/api/users/policy` `{"text"}` | 200 (same body as GET); 422 invalid line (`line N: ...`), nothing stored | `users_policy_update` (`N entries`; detail: `X added, Y removed`) |
-| `POST /admin/api/users/policy/entries` `{"user_id"\|"handle", "note"?}` | 200 (same body as GET); 400 not exactly one of `user_id` and `handle`; 404 unknown handle; 409 already listed; 422 invalid user ID | `users_policy_add` (user ID; detail: note) |
+| `POST /admin/api/users/policy/entries` `{"user_id", "note"?}` | 200 (same body as GET); 400 malformed body; 409 already listed; 422 invalid user ID | `users_policy_add` (user ID; detail: note) |
 | `DELETE /admin/api/users/policy/entries/{user_id}` | 200 (same body as GET); 404 not listed | `users_policy_remove` (user ID) |
-| `POST /admin/api/handles/{handle}/release` | 204; 404 unknown handle. The user keeps existing without a handle | `handle_release` (handle; detail: owner) |
 | `GET /admin/api/federation` | `enabled`, `peer_id`, `listen_addrs`, `external_addrs`, peers | |
 | `GET /admin/api/federation/allowlist` | `{path, text, entries, source: "file"\|"stored", read_only}`; 404 with federation off | |
 | `PUT /admin/api/federation/allowlist` `{"text"}` | 200 (same body as GET); 409 read-only (`GIM_HUB_FEDERATION_ALLOWLIST` set); 422 invalid; 404 with federation off | `allowlist_update` (`federation_allowlist`; detail: `N hubs`) |
@@ -199,14 +198,13 @@ The modes, what "not admitted" means and the CLI:
   PUT /admin/api/settings/GIM_HUB_USER_POLICY; set by the environment, it is
   read-only (409). `not_admitted_users` counts the users of this hub the mode
   in force does not admit (`0` in `open`).
-- `entries` is the list (table `user_policy_list`) in user ID order, with the
-  user's handle on this hub (`null` for a remote user or one without a
-  handle), `added_at` (seconds), `added_by` (the actor) and `note`.
+- `entries` is the list (table `user_policy_list`) in user ID order, with
+  `added_at` (seconds), `added_by` (the actor) and `note`.
 - The list can be edited in every mode. PUT replaces it with `text` (one user
   ID per line, `#` comments, blank lines skipped, duplicates merged); every
   line is checked with the user ID parser and nothing is stored on an invalid
   one. Users that stay listed keep their metadata. POST adds one user by
-  `user_id` or by `handle` (a handle on this hub, leading `@` ignored).
+  `user_id`.
 - Every change applies before the response: the policy in force is replaced
   and the sessions and pending sign-in challenges of every user it does not
   admit are deleted. Switching to `allow` with an empty list admits nobody;
@@ -214,7 +212,7 @@ The modes, what "not admitted" means and the CLI:
 
 The UI's "User policy" page shows the mode with its source (changed inline
 through the settings PUT, or a link to the Settings page when the environment
-sets it), the list (handle, added at, note) with add by handle or user ID and
+sets it), the list (added at, note) with add by user ID and
 remove with a confirmation, a bulk replace text area that shows a 422 inline,
 and warnings for `allow` with an empty list and for users of this hub the mode
 locks out. The overview shows the mode.
@@ -311,7 +309,7 @@ with Playwright (`admin-ui/e2e/`, in the pinned
 session revoke, allowlist edit, lode "check now", the audit log, no
 `/admin/` on the client listener, a live setting edit, a read-only setting
 from the environment, and the user policy (`deny` set on the Settings page,
-the seeded user added by handle on the User policy page: its sessions are
+the seeded user added by user ID on the User policy page: its sessions are
 deleted and POST /v2/auth/challenge answers 403 `user_not_admitted`; then
 removed and the mode set back to `open`). Every container and network carries
 `ai-agent=true` and a per-run `ai-agent-run` label and is removed on exit.
